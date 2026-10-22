@@ -1,5 +1,7 @@
 # free247jarvis
 
+![License](https://img.shields.io/github/license/riecodes/free247jarvis?style=flat-square&color=green) ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white) ![Claude Code](https://img.shields.io/badge/Claude%20Code-voice-D97757?style=flat-square&logo=anthropic&logoColor=white) ![Price](https://img.shields.io/badge/price-free-brightgreen?style=flat-square)
+
 Say **"Hey Claude"** and run your Claude Code terminals by voice.
 
 A small, free, open-source voice layer for Windows. A wake word wakes a "boss" Claude Code
