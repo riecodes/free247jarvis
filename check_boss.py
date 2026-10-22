@@ -93,9 +93,15 @@ def front(h: int) -> bool:
     return user32.GetForegroundWindow() == h
 
 
-def press_enter(h: int) -> None:
-    if front(h):
-        user32.keybd_event(0x0D, 0, 0, 0), user32.keybd_event(0x0D, 0, 2, 0)
+def press_enter(h: int) -> bool:
+    """Enter in window h; never in another window, where it could send someone's half-typed prompt."""
+    for _ in range(5):
+        if front(h):
+            user32.keybd_event(0x0D, 0, 0, 0), user32.keybd_event(0x0D, 0, 2, 0)
+            return True
+        time.sleep(0.5)
+    print(f"      could not bring window {h} to the front (foreground is {user32.GetForegroundWindow()})", flush=True)
+    return False
 
 
 def close(h: int) -> None:
@@ -212,9 +218,13 @@ try:
         boss = wait(lambda: next(iter(set(windows()) - old), None), 30, 0.5)
         assert boss, "the boss window did not open"
         opened.append(boss)
-        time.sleep(4)
-        press_enter(boss)  # "I am using this for local development"
-        assert wait(boss_up, 60), "the voice channel did not come up; check tmp\\voice.log"
+        # "I am using this for local development". Enter again is harmless: the prompt is still empty.
+        for _ in range(4):
+            time.sleep(4)
+            press_enter(boss)
+            if wait(boss_up, 20):
+                break
+        assert boss_up(), "the voice channel did not come up; check tmp\\voice.log"
     assert wait(lambda: idle("boss"), 120), "the boss is not idle"
 
     for name in ("t1", "t2"):

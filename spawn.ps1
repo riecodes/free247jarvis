@@ -110,9 +110,17 @@ if (Test-Path -LiteralPath (Join-Path $Dir '.mcp.json')) {
 # tool shells, which would start a colorless child of the boss session.
 Get-ChildItem env: | Where-Object Name -match '^(CLAUDE|NO_COLOR$|GIT_TERMINAL_PROMPT$)' | ForEach-Object { Remove-Item "env:$($_.Name)" }
 
+# A worker that is still starting shows "claude" as its title, so names also come from Claude Code's
+# command lines.
+function Running {
+    foreach ($p in Get-CimInstance Win32_Process -Filter "Name='claude.exe'") {
+        if ($p.CommandLine -match '--name\s+"?(t[1-9])\b') { $Matches[1] }
+    }
+}
+
 $opened = @()
 for ($i = 0; $i -lt $Count; $i++) {
-    $taken = @(Workers | ForEach-Object Name) + $opened
+    $taken = @(Workers | ForEach-Object Name) + @(Running) + $opened
     $n = 1..($Cols * $Rows) | Where-Object { "t$_" -notin $taken } | Select-Object -First 1
     if (-not $n) { "All $($Cols * $Rows) terminals are already open."; exit 1 }
     $before = [Cells]::Terminals()
