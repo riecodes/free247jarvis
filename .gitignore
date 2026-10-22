@@ -1,0 +1,17 @@
+# Installed or downloaded on each computer
+node_modules/
+.venv/
+models/
+__pycache__/
+
+# Keys and scratch files stay local
+.env
+tmp/
+
+# Sync tools
+*.sync-conflict-*
+~syncthing~*
+.stfolder/
+.stversions/
+.DS_Store
+Thumbs.db
