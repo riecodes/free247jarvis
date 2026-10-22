@@ -1,0 +1,6 @@
+# listener.py: wake word (pulls in scikit-learn for voice training), voice activity, microphone, voice out
+openwakeword>=0.6
+sounddevice>=0.5
+soundfile>=0.12
+kokoro-onnx>=0.4
+requests>=2.31
