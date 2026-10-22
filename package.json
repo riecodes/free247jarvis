@@ -1,0 +1,10 @@
+{
+  "name": "free247jarvis",
+  "private": true,
+  "type": "module",
+  "description": "Voice channel for a boss Claude Code session",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1"
+  }
+}

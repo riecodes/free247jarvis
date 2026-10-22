@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "voice": { "command": "node", "args": ["../voice.mjs"] }
+  }
+}
