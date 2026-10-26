@@ -1,7 +1,7 @@
 """End-to-end check against real Claude Code sessions. Run: .venv\\Scripts\\python check_boss.py
 
 Clips are synthesized with Kokoro, so no microphone is needed. Checks, in order:
-  wake      a "Hey Claude" clip wakes the listener (and plain speech does not)
+  wake      each wake word in WAKE_WORDS wakes the listener, also after a pause (and plain speech does not)
   taglish   a Taglish clip transcribes through Groq
   terminal  "tell terminal 2 to create tmp\\t2.txt" reaches t2 and the file appears
   free      "give this to whoever is free" goes to an idle session (t2 is kept busy meanwhile)
@@ -9,12 +9,14 @@ Clips are synthesized with Kokoro, so no microphone is needed. Checks, in order:
   gui       "open Notepad and type hello" leaves a Notepad window containing hello
   reply     the boss's spoken reply comes out as a Kokoro wav
 
-It starts the boss if it is not running (and confirms the development-channel warning for it), opens
+It starts the boss if it is not running (and confirms the development-channel warning for it; on the very
+first start it waits for you to pick "Yes, I trust this folder" in the boss window), opens
 workers t1 and t2 in this folder if they are missing, and closes every window it opened at the end.
 Prints ALL PASS when every check passes.
 """
 import ctypes
 import ctypes.wintypes as wt
+import json
 import os
 import re
 import subprocess
@@ -109,7 +111,9 @@ def close(h: int) -> None:
 
 
 def ps(script: str) -> str:
-    return subprocess.run(PS + ["-Command", script], capture_output=True, text=True, encoding="utf-8").stdout
+    # errors="replace": Notepad tabs can hold text the console encodes outside UTF-8, which killed the reader
+    return subprocess.run(PS + ["-Command", script], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace").stdout
 
 
 def workers() -> dict[str, int]:
@@ -148,6 +152,16 @@ def ask(text: str) -> None:
     print(f"      asked: {text}", flush=True)
 
 
+def trusted() -> bool:
+    """Whether Claude Code saved "Yes, I trust this folder" for the repo or the boss folder (as start.ps1 checks)."""
+    keys = {str(p).replace("\\", "/").lower() for p in (HERE, HERE / "boss")}
+    try:
+        projects = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8")).get("projects", {})
+    except (OSError, ValueError):  # missing, or caught mid-write
+        return False
+    return any(k.lower() in keys and v.get("hasTrustDialogAccepted") for k, v in projects.items())
+
+
 def boss_up() -> bool:
     try:
         return urllib.request.urlopen(URL, timeout=3).read() == b"ok"
@@ -177,6 +191,7 @@ def speak(text: str, voice: str = "am_michael", lang: str = "en-us") -> np.ndarr
 def hear(*parts: np.ndarray) -> list[dict]:
     """Feeds the parts plus 7s of quiet (enough for any timeout) and returns the events they caused."""
     heard.clear()
+    ears.busy_until = 0  # no reply comes here, so don't wait for one
     audio = np.concatenate([np.zeros(listener.RATE, np.int16), *parts, np.zeros(7 * listener.RATE, np.int16)])
     for i in range(0, len(audio) - listener.CHUNK + 1, listener.CHUNK):
         ears.feed(audio[i:i + listener.CHUNK])
@@ -190,14 +205,20 @@ def text_of(evs: list[dict]) -> str:
 assert listener.strip_wake("Hey Claude, what's up?") == "what's up?"
 assert listener.strip_wake("Hey, Cloud. Open Notepad") == "Open Notepad"
 assert listener.strip_wake("Cloudy skies today") == "Cloudy skies today"
+assert listener.strip_wake("Hey Jarvis, status") == "status"
+assert listener.strip_wake("Open Notepad. Hey Jarvis, and type hello") == "Open Notepad. and type hello"
 
-evs = hear(speak("Hey Claude, what time is it in Manila?"))
+# Every wake word in WAKE_WORDS, said in one breath with the request; the first one also with a pause, after which
+# it answers "Jarvis here" (out loud) and records the request.
+WAKE = [w.replace("_", " ").title() for w in ears.words]
+evs = [hear(speak(f"{w}, what time is it in Manila?")) for w in WAKE]
+evs.append(hear(speak(f"{WAKE[0]}."), np.zeros(listener.RATE, np.int16), speak("What time is it in Manila?")))
 quiet_evs = hear(speak("The weather is nice today, so we went for a walk by the river."))
-check("wake", [e["event"] for e in evs][:2] == ["wake", "heard"] and "time" in text_of(evs) and quiet_evs == [],
-      f"{evs} / no wake word: {quiet_evs}")
+check("wake", all([e["event"] for e in x][:2] == ["wake", "heard"] and "time" in text_of(x) for x in evs)
+      and quiet_evs == [], f"{WAKE}, then with a pause: {evs} / no wake word: {quiet_evs}")
 
 # Tagalog read with Kokoro's Spanish voice (it has no Tagalog one), the English words with an English voice.
-taglish = np.concatenate([speak("Hey Claude,"), speak("pakisabi mo kay", "em_alex", "es"), speak("terminal two"),
+taglish = np.concatenate([speak(f"{WAKE[0]},"), speak("pakisabi mo kay", "em_alex", "es"), speak("terminal two"),
                           speak("na i-run niya yung", "em_alex", "es"), speak("tests,"),
                           speak("tapos sabihin mo sa akin. Salamat po.", "em_alex", "es")])
 said = text_of(hear(taglish))
@@ -214,10 +235,15 @@ try:
     if not boss_up():
         print("      starting the boss...", flush=True)
         old = set(windows())
-        subprocess.run(PS + ["-File", str(HERE / "start.ps1")], check=True, capture_output=True)
+        out = subprocess.run(PS + ["-File", str(HERE / "start.ps1")], check=True, capture_output=True, text=True).stdout
+        print("      " + out.strip().replace("\n", "\n      "), flush=True)
         boss = wait(lambda: next(iter(set(windows()) - old), None), 30, 0.5)
         assert boss, "the boss window did not open"
         opened.append(boss)
+        if not trusted():  # Enter now would answer the folder trust question; that one is the user's
+            print("      waiting up to 5 minutes for \"Yes, I trust this folder\" in the boss window...", flush=True)
+            assert wait(trusted, 300, 1), "the boss folder was not trusted; pick \"Yes, I trust this folder\" once"
+            time.sleep(3)
         # "I am using this for local development". Enter again is harmless: the prompt is still empty.
         for _ in range(4):
             time.sleep(4)

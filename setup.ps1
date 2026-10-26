@@ -26,11 +26,16 @@ $ErrorActionPreference = 'Stop'
 if (-not (Test-Path .venv)) { & $py[0] $py[1] -m venv .venv }
 .\.venv\Scripts\python -m pip install --quiet --upgrade pip
 .\.venv\Scripts\python -m pip install --quiet -r requirements.txt
+# An NVIDIA GPU speaks about 3x faster (with the CUDA toolkit and cuDNN installed; without them it runs on the CPU).
+if ((Get-Command nvidia-smi -ErrorAction SilentlyContinue) -and -not (.\.venv\Scripts\python -m pip show onnxruntime-gpu 2>$null)) {
+    .\.venv\Scripts\python -m pip uninstall --quiet -y onnxruntime
+    .\.venv\Scripts\python -m pip install --quiet onnxruntime-gpu
+}
 npm install --silent
 .\.venv\Scripts\python listener.py fetch
 
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-if ((Get-Content .env -Raw) -notmatch 'GROQ_API_KEY=\S') {
+if ((Get-Content .env -Raw) -notmatch '(GROQ|ELEVENLABS)_API_KEY=\S') {
     'Almost done: put your free Groq key (https://console.groq.com/keys) in .env as GROQ_API_KEY=..., then'
     'run setup.ps1 again.'
     exit 1
