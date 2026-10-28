@@ -15,3 +15,5 @@ tmp/
 .stversions/
 .DS_Store
 Thumbs.db
+# Earcons you add for yourself (sounds/local/listen.wav, heard.wav) win over the shipped ones; keep them out of git.
+sounds/local/

@@ -79,7 +79,7 @@ SPEECH = 0.5  # Silero VAD score that counts as speech
 PRE_ROLL = 3  # chunks from just before the wake fired, so "Hey Claude, tell..." said in one breath keeps its start
 GRACE = 5  # speech within this many chunks of the wake is one breath ("Hey Jarvis, status"): no "Jarvis here"
 MIN_VOICED = 3  # less speech than this is a click or a cough, not a request
-END_QUIET = 18  # about 1.4s of quiet ends a request (1s cut people off mid-sentence)
+END_QUIET = 62  # about 5s of quiet ends a request (1s cut people off mid-sentence, 2s still cut thinking pauses)
 REPLY_WAIT = 45  # seconds a heard request may wait for its spoken reply; no new wake meanwhile
 ECHO = 1.0  # seconds the mic stays deaf after a reply: the room's echo, and a moment before the next "Hey Jarvis"
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
@@ -90,7 +90,7 @@ MIN_LOGPROB = -1.0
 # What Whisper says for noise or silence. Dropping a real "thank you" costs nothing: there is nothing to do.
 HALLUCINATIONS = {"thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye"}
 GIVE_UP = 62  # about 5s without speech after waking: nobody is talking
-MAX_CLIP = 375  # 30s cap on one request
+MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV tops Groq's free 25 MB at 13 min)
 
 WAKE_TAKES = 5  # then these sentences
 SENTENCES = [
@@ -98,6 +98,37 @@ SENTENCES = [
     "And this: “Pakibuksan mo yung notepad tapos i-type mo hello.”",
     "Last one: “The quick brown fox jumps over the lazy dog by the river.”",
 ]
+
+
+def chime(*freqs: float, note: float = 0.07, rate: int = 24000, level: float = 0.16) -> tuple[np.ndarray, int]:
+    """A short soft sine chime, one note per frequency, with fades so it never clicks."""
+    t = np.arange(int(note * rate)) / rate
+    env = np.minimum(1, np.minimum(t, note - t) / 0.012)  # 12 ms fade in and out
+    return np.concatenate([np.sin(2 * np.pi * f * t) * env * level for f in freqs]).astype(np.float32), rate
+
+
+def earcon(name: str, fallback: tuple[np.ndarray, int]) -> tuple[np.ndarray, int]:
+    """sounds/<name>.wav (Kenney Interface Sounds, CC0, see sounds/LICENSE.txt), or the synthesized chime, at the
+    voices' 24 kHz so it can ride on the end of a reply. A tenth of a second of silence leads it: a speaker that
+    wakes up for a new stream swallows the start, and a 0.15 s blip went missing whole (2026-10-28)."""
+    rate = 24000
+    try:
+        import soundfile as sf
+
+        own = HERE / "sounds" / "local" / f"{name}.wav"  # your own pick, gitignored, wins over the shipped one
+        samples, src = sf.read(own if own.is_file() else HERE / "sounds" / f"{name}.wav", dtype="float32")
+        samples = samples.mean(axis=1) if samples.ndim > 1 else samples  # full volume: the pack peaks at 0.9
+        n = round(len(samples) * rate / src)
+        samples = np.interp(np.linspace(0, len(samples) - 1, n), np.arange(len(samples)), samples)
+    except Exception:
+        samples, rate = fallback
+    return np.concatenate([np.zeros(rate // 10), samples]).astype(np.float32), rate
+
+
+# Earcons instead of words: listen = I'm listening (the wake word, or after a reply), heard = got it, working on it.
+CHIME_UP = earcon("listen", chime(660, 990))
+CHIME_DOWN = earcon("heard", chime(990, 660))
+CHIME_CLOSE = earcon("close", chime(660, 440))  # done listening, nothing heard (Kenney switch_002 at the pop's level)
 
 
 def emit(event: str, **data) -> None:
@@ -147,7 +178,7 @@ def fetch() -> None:
         path = MODELS / name
         if not path.is_file():
             emit("status", text=f"Downloading {name}...")
-            r = requests.get(url, timeout=600)
+            r = requests.get(url, timeout=60)
             r.raise_for_status()
             path.with_suffix(".partial").write_bytes(r.content)
             os.replace(path.with_suffix(".partial"), path)
@@ -175,6 +206,17 @@ def wav_bytes(clip: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+def audio_file(clip: np.ndarray) -> tuple[str, bytes, str]:
+    """The clip to upload: WAV, or Opus (about 6 MB for 30 min) once it runs past 10 min."""
+    if len(clip) <= RATE * 600:
+        return "request.wav", wav_bytes(clip), "audio/wav"
+    import soundfile as sf
+
+    buf = io.BytesIO()
+    sf.write(buf, clip.astype(np.int16), RATE, format="OGG", subtype="OPUS")
+    return "request.ogg", buf.getvalue(), "audio/ogg"
+
+
 def el_key() -> str:
     """The ElevenLabs key when VOICE_ENGINE=elevenlabs: ELEVENLABS_API_KEY, or the file ELEVENLABS_API_KEY_FILE names."""
     if os.environ.get("VOICE_ENGINE", "").lower() != "elevenlabs":
@@ -200,11 +242,11 @@ def transcribe(clip: np.ndarray) -> str:
     if key := el_key():
         try:
             r = requests.post(f"{EL_URL}/speech-to-text", headers={"xi-api-key": key},
-                              files={"file": ("request.wav", wav_bytes(clip), "audio/wav")},
+                              files={"file": audio_file(clip)},
                               # The clip starts mid "Claude"; without the keyterm Scribe hears "Odd" or "God".
                               data={"model_id": "scribe_v2", "tag_audio_events": "false",
                                     "keyterms": [w.replace("_", " ").title() for w in wake_words()]},
-                              timeout=60)
+                              timeout=600)
             r.raise_for_status()
             return r.json()["text"].strip()
         except Exception as e:
@@ -213,9 +255,9 @@ def transcribe(clip: np.ndarray) -> str:
     if not key:
         raise RuntimeError("GROQ_API_KEY is missing: put it in .env (free at https://console.groq.com/keys)")
     r = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"},
-                      files={"file": ("request.wav", wav_bytes(clip), "audio/wav")},
+                      files={"file": audio_file(clip)},
                       data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "prompt": VOCAB},
-                      timeout=60)
+                      timeout=600)
     r.raise_for_status()
     return " ".join(s["text"].strip() for s in r.json().get("segments", []) if s["avg_logprob"] > MIN_LOGPROB).strip()
 
@@ -259,6 +301,7 @@ class Ears:
         fired = max(scores, key=scores.get)
         if scores[fired] >= self.threshold:
             emit("wake")
+            self.play(*CHIME_UP, tail=0.05)  # heard the wake word: short, so little of a one-breath request is lost
             self.record(self.request_done, list(self.recent))
             self.ack, self.grace, self.on_chunk = self.acks[fired], GRACE, self.after_wake
 
@@ -270,8 +313,7 @@ class Ears:
         if self.voiced:
             self.on_chunk = self.record_chunk
         elif not self.grace:
-            self.play(*self.ack, tail=0.3)
-            self.record(self.request_done)
+            self.record(self.request_done)  # the wake chime already played (it replaced the spoken "Jarvis here")
 
     def record(self, on_done, start=(), give_up: int = GIVE_UP) -> None:
         """Collects chunks until the speaker stops, then calls on_done with the clip, or with None if nobody spoke
@@ -291,6 +333,7 @@ class Ears:
             self.on_done(np.concatenate(self.clip) if spoke else None)
 
     def request_done(self, clip: np.ndarray | None) -> None:
+        self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
         self.wait_for_wake()  # first, so a failed transcription still leaves the ears listening
         text = strip_wake(transcribe(clip)) if clip is not None else ""
         words = re.findall(r"\w+", text.lower())
@@ -302,6 +345,11 @@ class Ears:
         else:
             emit("nothing")
 
+    def close(self) -> None:
+        """The follow-up window ran out with nothing said: the done sound, then back to the wake word."""
+        self.play(*CHIME_CLOSE, tail=0.1)
+        self.wait_for_wake()
+
     def say(self, text: str) -> None:
         """Speaks a reply with Kokoro and keeps a copy in tmp/reply.wav. The caller mutes the mic meanwhile."""
         import soundfile as sf
@@ -311,10 +359,14 @@ class Ears:
         sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
         os.replace(REPLY_WAV.with_suffix(".partial.wav"), REPLY_WAV)
         emit("said", wav=str(REPLY_WAV), text=text)
+        if self.followup and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
+            samples = np.concatenate([samples.astype(np.float32), np.zeros(rate * 6 // 10, np.float32), CHIME_UP[0]])  # 0.7 s after the last word
         self.play(samples, rate)
         self.busy_until = 0.0  # replied: the next "Hey Jarvis" works once the echo is gone
         if self.followup:  # the user may answer without the wake word for a few seconds, then it waits for it again
-            self.record(lambda clip: self.request_done(clip) if clip is not None else self.wait_for_wake(),
+            if rate != CHIME_UP[1]:
+                self.play(*CHIME_UP, tail=0.15)  # the mic is open again
+            self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
                         give_up=self.followup)
         else:
             self.wait_for_wake()

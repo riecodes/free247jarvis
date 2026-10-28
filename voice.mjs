@@ -27,7 +27,12 @@ const env = { ...process.env }
 const dotenv = existsSync(join(HERE, '.env')) ? readFileSync(join(HERE, '.env'), 'utf8') : ''
 for (const [, k, v] of dotenv.matchAll(/^([A-Z][A-Z0-9_]*)=(.*)$/gm)) env[k] ??= v.trim().replace(/^"(.*)"$/, '$1')
 const pro = /^elevenlabs$/i.test(env.VOICE_ENGINE ?? '')
-const SPEAK =
+// VOICE_TITLE=Sir: every spoken line opens with it ("Sir, the course session needs you.").
+const TITLE = env.VOICE_TITLE?.trim() ?? ''
+// The listener's rising chime after each reply says the mic is open again (FOLLOWUP_SECONDS), so no spoken cue here.
+const titled = text => !TITLE || !text || text.toLowerCase().startsWith(TITLE.toLowerCase()) ? text
+  : `${TITLE}, ${text[0].toLowerCase()}${text.slice(1)}`
+const SPEAK = (TITLE ? `Start every spoken reply with "${TITLE},". ` : '') +
   'Write times, numbers and dates as English words, the way they are said ("nine seventeen PM", "October ' +
   'twenty-six"), never in Spanish or Tagalog numbers.' +
   (pro ? ' Whatever language the request is in, answer in everyday Taglish: an English sentence with common ' +
@@ -68,7 +73,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   if (req.params.name !== 'reply') throw new Error(`unknown tool: ${req.params.name}`)
-  const text = String(req.params.arguments?.text ?? '').replace(/\s+/g, ' ').trim()
+  const text = titled(String(req.params.arguments?.text ?? '').replace(/\s+/g, ' ').trim())
   log(`reply: ${text}`)
   if (text) ears.stdin.write(`say ${text}\n`)
   return { content: [{ type: 'text', text: 'Speaking.' }] }
@@ -140,6 +145,7 @@ async function route(text) {
 
 // Says it without the boss; `listen` then records the next sentence without the wake word.
 function answer(text, listen = false) {
+  text = titled(text)
   log(`reply (router): ${text}`)
   ears.stdin.write(`say ${text}\n${listen ? 'listen\n' : ''}`)
 }
