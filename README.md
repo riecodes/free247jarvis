@@ -136,9 +136,11 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   `bm_fable`, `bm_lewis`, or the old American `af_heart`, then restart the boss.
 - Rather say "Hey Claude"? Set `WAKE_WORDS=hey_claude` in `.env` (it answers "Claude here"), or
   `WAKE_WORDS=hey_jarvis,hey_claude` for both. "Hey Claude" can't tell "hey Clyde" apart.
-- If the wake word misses you, set `WAKE_THRESHOLD=0.3` in `.env`, or train it on your voice. A faint
-  high tick means it almost heard you (a score of 0.25 up to the threshold): say it again. Every try's
-  score is in `tmp\voice.log` as `wake peak:`, to tune the threshold by.
+- If the wake word misses you, set `WAKE_THRESHOLD=0.25` in `.env`, or train it on your voice. A faint
+  high tick means it almost heard you (a score of 0.12 up to the threshold): say it again. Every try's
+  score and level are in `tmp\voice.log` as `wake peak:`, to tune the threshold by. Say the whole "Hey
+  Jarvis": "Jarvis" alone scores anywhere from 0.03 to 1. A noise gate on the mic (Voicemod's noise
+  reduction) can cut the start of it.
 - After it hears a request, it waits for the answer before the wake word works again, so saying
   "Hey Jarvis" twice doesn't start over. Three low pulses answer that second "Hey Jarvis": it heard you
   and is still working. Neither sound plays in a call.

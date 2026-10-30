@@ -30,7 +30,7 @@ def ears() -> listener.Ears:
     e.followup, e.busy_until, e.deaf_until, e.next_heads_up, e.paused = 100, 50.0**9, 0.0, 0.0, []
     e.oww, e.vad, e.recent = mock.Mock(), mock.Mock(), []
     e.on_chunk, e.voiced = e.wake_chunk, 0
-    e.threshold, e.peak, e.peak_word, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0.0, {"jarvis": "ack"}, ["jarvis"]
+    e.threshold, e.peak, e.peak_word, e.peak_level, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0, 0.0, {"jarvis": "ack"}, ["jarvis"]
     e.spoken, e.played, e.queue, e.queue_since, e.last_speech, e.tries = [], [], [], 0.0, 0.0, []
     e.vad.predict = lambda *a, **k: 0.0
     e.speech = lambda text: (e.spoken.append(text), np.zeros(10, np.float32), RATE, "test")[1:]
@@ -81,11 +81,11 @@ def run(call: bool, playing: list, **say) -> tuple[listener.Ears, list, list]:
 
 def looking() -> None:
     """The on-screen caption: repeated tries that got nowhere, a stray near miss, and each failure the user can't hear."""
-    near_twice = [0.3, 0.05, 0.3, 0.05]
+    near_twice = [0.3, 0.0, 0.3, 0.0]
     with mock.patch.object(listener, "media_playing", lambda: False):
         captions = lambda r: [d for ev, d in r[1] if ev == "caption"]
         # Once is not looking; twice is, with the generic hint since nothing is detectably wrong.
-        assert not captions(tries([0.3, 0.05]))
+        assert not captions(tries([0.3, 0.0]))
         shown = captions(tries(near_twice))
         assert len(shown) == 1 and shown[0]["looking"] and listener.CANT_HEAR in shown[0]["text"]
         # A wake word while busy counts too, and is no stray.
@@ -239,16 +239,16 @@ def main() -> None:
     assert e.spoken[0].endswith("I have an update.") and e.on_chunk == e.wake_chunk and events[0][0] == "held"
 
     # A near miss: its peak is logged and it ticks once the try is over, not while the score still climbs.
-    e, events, played = tries([0.05, 0.3, 0.35])
+    e, events, played = tries([0.0, 0.3, 0.35])
     assert played == [] and not [ev for ev in events if ev[0] == "peak"]
-    e, events, played = tries([0.05, 0.3, 0.35, 0.05])
-    assert ("peak", {"word": "jarvis", "score": 0.35, "busy": False}) in events and is_sound(played, listener.CHIME_NEAR)
+    e, events, played = tries([0.0, 0.3, 0.35, 0.0])
+    assert ("peak", {"word": "jarvis", "score": 0.35, "level": 0, "busy": False}) in events and is_sound(played, listener.CHIME_NEAR)
     # Too low for a tick, but in the log. Noise stays out of it.
-    e, events, played = tries([0.2, 0.05])
-    assert events == [("peak", {"word": "jarvis", "score": 0.2, "busy": False})] and played == []
-    assert tries([0.05, 0.09, 0.0])[1] == []
+    e, events, played = tries([0.1, 0.0])
+    assert events == [("peak", {"word": "jarvis", "score": 0.1, "level": 0, "busy": False})] and played == []
+    assert tries([0.0, 0.02, 0.0])[1] == []
     # Two near misses in a row: one tick.
-    assert is_sound(tries([0.3, 0.05, 0.3, 0.05])[2], listener.CHIME_NEAR)
+    assert is_sound(tries([0.3, 0.0, 0.3, 0.0])[2], listener.CHIME_NEAR)
     # The wake word: the pop and recording, as before, with its score in the log.
     e, events, played = tries([0.5])
     assert [ev[0] for ev in events] == ["peak", "wake"] and is_sound(played, listener.CHIME_UP)
@@ -256,11 +256,11 @@ def main() -> None:
     # While a request waits for its reply: the still-working sound, no wake, and no tick for a near miss.
     e, events, played = tries([0.5], busy=True)
     assert is_sound(played, listener.CHIME_BUSY) and e.on_chunk == e.wake_chunk and "wake" not in [ev[0] for ev in events]
-    assert events[0] == ("peak", {"word": "jarvis", "score": 0.5, "busy": True})
-    assert tries([0.3, 0.05], busy=True)[2] == []
+    assert events[0] == ("peak", {"word": "jarvis", "score": 0.5, "level": 0, "busy": True})
+    assert tries([0.3, 0.0], busy=True)[2] == []
     # In a call both stay silent, and the score still reaches the log.
-    assert tries([0.3, 0.05], call=True)[2] == [] and tries([0.5], busy=True, call=True)[2] == []
-    assert tries([0.3, 0.05], call=True)[1][0][0] == "peak"
+    assert tries([0.3, 0.0], call=True)[2] == [] and tries([0.5], busy=True, call=True)[2] == []
+    assert tries([0.3, 0.0], call=True)[1][0][0] == "peak"
 
     # The two new sounds against the three the user knows: pitch for the tick and for the pulses, then the pulse count.
     known = [pitch(s) for s in (listener.CHIME_UP, listener.CHIME_DOWN, listener.CHIME_CLOSE)]
