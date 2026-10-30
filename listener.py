@@ -7,8 +7,8 @@ and writes one JSON event per stdout line:
   commands  on | off | enroll | cancel | listen (record without the wake word) | quit
             say <text>                          answers a request just heard: said in full, then the follow-up window
             end <text>                          as say, but it closes the exchange: no follow-up window
-            late <text>                         answers an older request: a heads-up in a call, else as say
-            tell <text>                         nobody asked: a heads-up in a call, else in full; never a follow-up window
+            late <text>                         an older reply, or a question nobody prompted: a heads-up in a call, else as say
+            tell <text>                         news nobody asked for: a heads-up in a call, else in full; no follow-up window
   events    status {text}                       a model is loading or downloading
             state {on, trained}                 after on, off, enroll and cancel
             wake                                heard the wake word, now recording the request
@@ -355,6 +355,7 @@ class Ears:
         self.recent: deque[np.ndarray] = deque(maxlen=PRE_ROLL)
         self.paused: list = []  # media sessions paused for a line, resumed when the listening after it is over
         self.next_heads_up = 0.0  # no heads-up before this moment
+        self.voiced = 0  # chunks of speech in the clip being recorded
         self.wait_for_wake()
 
     def feed(self, chunk: np.ndarray) -> None:
@@ -427,9 +428,9 @@ class Ears:
 
     def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True) -> None:
         """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
-        meanwhile. Only a line that answers a request (asked) and wants an answer (window) opens the follow-up window,
-        and never in a call, so call audio is not sent to speech to text. With hold, a call gets a short heads-up and
-        the line goes back as `held`."""
+        meanwhile. Only a line that wants an answer (asked and window) opens the follow-up window, and never in a call,
+        so call audio is not sent to speech to text, nor while the user is mid-request, which would cut them off. With
+        hold, a call gets a short heads-up and the line goes back as `held`."""
         import soundfile as sf
 
         if asked:
@@ -442,7 +443,8 @@ class Ears:
             self.next_heads_up = time.monotonic() + HEADS_UP_GAP
             title = (os.environ.get("VOICE_TITLE") or "").strip()
             text = f"{title}, I have an update." if title else "I have an update."
-        listen = bool(self.followup) and asked and window and not call
+        talking = self.on_chunk != self.wake_chunk and self.voiced
+        listen = bool(self.followup) and asked and window and not call and not talking
         samples, rate, _ = self.speech(text)
         REPLY_WAV.parent.mkdir(exist_ok=True)
         sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
@@ -457,7 +459,7 @@ class Ears:
                 self.play(*CHIME_UP, tail=0.15)  # the mic is open again
             self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
                         give_up=self.followup)
-        elif asked or self.on_chunk == self.wake_chunk:  # nobody asked: a request being recorded goes on
+        elif not talking and (asked or self.on_chunk == self.wake_chunk):  # else a request being recorded goes on
             self.wait_for_wake()
 
     def play(self, samples: np.ndarray, rate: int, tail: float = ECHO) -> None:

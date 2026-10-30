@@ -1,13 +1,12 @@
 // When the voice may interrupt: which listener command a boss reply goes out as, and what asks for a held line.
 const FRESH = 90_000 // a reply this soon after the request: the user is waiting for it, even in a call
-const ASKED = 15 * 60_000 // later than this it is no longer the answer to that request
 
-// listen: the line opens the follow-up window. `end` is say without it; a late line without it is simply a tell,
-// since the wake word's wait for a reply (REPLY_WAIT) has run out by then.
+// listen: the line opens the follow-up window. `end` is say without it; an older line without it is simply a tell,
+// since the wake word's wait for a reply (REPLY_WAIT) has run out by then. A question nobody prompted is a late too:
+// the user can answer it without the wake word, unless a call is on.
 export function verbFor(askedAt, listen = true, now = Date.now()) {
-  if (!askedAt || now - askedAt > ASKED) return 'tell'
-  if (now - askedAt > FRESH) return listen ? 'late' : 'tell'
-  return listen ? 'say' : 'end'
+  if (askedAt && now - askedAt <= FRESH) return listen ? 'say' : 'end'
+  return listen ? 'late' : 'tell'
 }
 
 // By default only a line that asks something opens the window: an acknowledgment ends the exchange.

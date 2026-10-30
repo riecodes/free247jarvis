@@ -1,6 +1,6 @@
 """Checks the interruption rules without a mic or a speaker. Run: .venv\\Scripts\\python check_voice.py
 
-  say    a reply that wants an answer opens the follow-up window; an acknowledgment or a line nobody asked for does not
+  say    a line that wants an answer opens the follow-up window, prompted or not; an acknowledgment or plain news does not
   call   in a call: a heads-up at most every HEADS_UP_GAP seconds, the line held; never a window
   media  what was playing resumes after the line, or after the window when one opens
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
@@ -24,7 +24,7 @@ def ears() -> listener.Ears:
     e = listener.Ears.__new__(listener.Ears)
     e.followup, e.busy_until, e.deaf_until, e.next_heads_up, e.paused = 100, 50.0**9, 0.0, 0.0, []
     e.oww, e.vad, e.recent = mock.Mock(), mock.Mock(), []
-    e.on_chunk = e.wake_chunk
+    e.on_chunk, e.voiced = e.wake_chunk, 0
     e.spoken = []
     e.speech = lambda text: (e.spoken.append(text), np.zeros(10, np.float32), RATE, "test")[1:]
     e.play = lambda *a, **k: None
@@ -83,17 +83,26 @@ def main() -> None:
         e = ears()
         e.on_chunk = e.record_chunk
         e.say("The news.", asked=False, hold=True)
-    assert e.on_chunk == e.record_chunk
+        assert e.on_chunk == e.record_chunk
+        # So does a question nobody prompted (late): the user is mid-sentence, the clip stays.
+        e.clip, e.voiced = ["their words"], 5
+        e.say("Restart now?", hold=True)
+        assert e.on_chunk == e.record_chunk and e.clip == ["their words"]
+    # That question with nobody talking and no call: in full, with the window. In a call: the heads-up, no window.
+    e, _, _ = run(False, [], hold=True)
+    assert e.spoken == ["The news."] and e.on_chunk == e.record_chunk
+    e, events, _ = run(True, [], hold=True)
+    assert e.spoken[0].endswith("I have an update.") and e.on_chunk == e.wake_chunk and events[0][0] == "held"
 
     subprocess.run(["node", "--input-type=module", "-e", """
         import assert from 'node:assert'
         import { asksForHeld as a, asksSomething as q, verbFor as v } from './rules.mjs'
-        assert.equal(v(0, true, 1e9), 'tell')
+        assert.equal(v(0, true, 1e9), 'late')
+        assert.equal(v(0, false, 1e9), 'tell')
         assert.equal(v(1e9 - 10_000, true, 1e9), 'say')
         assert.equal(v(1e9 - 10_000, false, 1e9), 'end')
         assert.equal(v(1e9 - 300_000, true, 1e9), 'late')
         assert.equal(v(1e9 - 300_000, false, 1e9), 'tell')
-        assert.equal(v(1e9 - 3_600_000, true, 1e9), 'tell')
         for (const t of ['Sir, restart now?', 'Sir, say A for on, or B to keep it off.', 'Pick one in the terminal.'])
           assert(q(t), t)
         for (const t of ['Sir, understood.', 'Sir, okay, no restart.', 'Sir, turning email on now.'])
