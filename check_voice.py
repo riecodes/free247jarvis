@@ -5,6 +5,7 @@
   say    a line that wants an answer opens the follow-up window, prompted or not; an acknowledgment or plain news does not
   call   in a call: a heads-up at most every HEADS_UP_GAP seconds, the line held; never a window
   media  what was playing resumes after the line, or after the window when one opens
+  hush   the wake word pauses the video and shows the orch's window until the reply; a false wake puts both back at once
   tries  wake word peaks are logged; a near miss ticks, except in a call; the wake word also works mid-task
   look   repeated tries, and each failure the user can't hear, go on screen; nothing else does
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
@@ -27,7 +28,7 @@ REAL_OUTPUT_PROBLEM = listener.output_problem
 def ears() -> listener.Ears:
     """Ears without its models, with a silent speaker that records what it was told to play."""
     e = listener.Ears.__new__(listener.Ears)
-    e.followup, e.deaf_until, e.next_heads_up, e.paused = 100, 0.0, 0.0, []
+    e.followup, e.deaf_until, e.next_heads_up, e.paused, e.raised, e.reply_by = 100, 0.0, 0.0, [], None, 0.0
     e.oww, e.vad, e.recent = mock.Mock(), mock.Mock(), []
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.threshold, e.peak, e.peak_word, e.peak_level, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0, 0.0, {"jarvis": "ack"}, ["jarvis"]
@@ -69,6 +70,71 @@ def run(call: bool, playing: list, **say) -> tuple[listener.Ears, list, list]:
         e = ears()
         e.say("The news.", **say)
     return e, events, resumed
+
+
+def hush() -> None:
+    """From the wake word to the end of the exchange: the video paused, the window up, and both put back once."""
+    video = object()
+    def wake(playing: list) -> tuple[listener.Ears, list, list]:
+        lowered, resumed, left = [], [], list(playing)
+        e = ears()
+        e.oww.predict = lambda _: {"jarvis": 0.9}
+        with mock.patch.object(listener, "pause_media", lambda: [left.pop() for _ in list(left)]), \
+                mock.patch.object(listener, "raise_orch", lambda: ("window", True)), \
+                mock.patch.object(listener, "lower_orch", lowered.append), \
+                mock.patch.object(listener, "resume_media", resumed.extend), \
+                mock.patch.object(listener, "REPLY_WAV", HERE / "tmp" / "check_voice.wav"):
+            e.on_chunk(np.zeros(1280, np.int16))
+            assert e.paused == playing and e.raised == (("window", True) if playing else None)
+            yield e, lowered, resumed
+
+    both = [("window", True)], [video]
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"):
+        # A false wake, nobody spoke: back at once.
+        for e, lowered, resumed in wake([video]):
+            e.request_done(None)
+            assert (lowered, resumed) == both and not e.paused and not e.raised and not e.reply_by
+        # Only the wake word was said, or noise: the same.
+        for e, lowered, resumed in wake([video]):
+            with mock.patch.object(listener, "transcribe", lambda clip: "Jarvis"):
+                e.request_done(np.zeros(1, np.int16))
+            assert (lowered, resumed) == both
+        # A request: paused through the wait, and through news that isn't the reply; put back once when the reply ends.
+        for e, lowered, resumed in wake([video]):
+            with mock.patch.object(listener, "transcribe", lambda clip: "open notepad"):
+                e.request_done(np.zeros(1, np.int16))
+            assert not lowered and not resumed and e.reply_by
+            e.flush()
+            assert not lowered and not resumed
+            e.say("Other news.", asked=False, hold=True)
+            assert not lowered and not resumed
+            e.say("Done.", window=False)
+            assert (lowered, resumed) == both
+            e.flush()
+            assert (lowered, resumed) == both
+        # A reply with a question: still paused in the window; put back when it closes.
+        for e, lowered, resumed in wake([video]):
+            with mock.patch.object(listener, "transcribe", lambda clip: "open notepad"):
+                e.request_done(np.zeros(1, np.int16))
+            e.say("Which one?")
+            assert e.on_chunk == e.record_chunk and not lowered and not resumed
+            e.close()
+            assert (lowered, resumed) == both
+        # No reply at all: not paused forever. Not while the user is talking, though.
+        for e, lowered, resumed in wake([video]):
+            with mock.patch.object(listener, "transcribe", lambda clip: "open notepad"):
+                e.request_done(np.zeros(1, np.int16))
+            e.reply_by = listener.time.monotonic() - 1
+            e.record(e.request_done)
+            e.flush()
+            assert not lowered and not resumed
+            e.on_chunk = e.wake_chunk
+            e.flush()
+            assert (lowered, resumed) == both and not e.reply_by
+        # Nothing was playing (or the user paused it): no window, and nothing to put back.
+        for e, lowered, resumed in wake([]):
+            e.request_done(None)
+            assert not lowered and not resumed
 
 
 def looking() -> None:
@@ -134,7 +200,11 @@ def looking() -> None:
 def main() -> None:
     video = object()
     listener.output_problem = lambda: ""  # this machine's real speaker must not decide the checks
+    # Nor may the checks touch this machine's real video or orch window.
+    listener.pause_media, listener.resume_media = lambda: [], lambda sessions: None
+    listener.raise_orch, listener.lower_orch = lambda: None, lambda raised: None
     looking()
+    hush()
 
     # A reply: in full, then the window, with the video still paused until the window ends.
     e, events, resumed = run(False, [video])

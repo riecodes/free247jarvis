@@ -156,7 +156,8 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   is muted or fails, the line itself goes on screen; the caption appears when the orch closes or the
   voice restarts too. It never takes focus and stays out of screen shares and recordings
   (`CAPTION_VISIBLE=1` in `.env` shows it there). Spoken lines get no caption when all is well.
-- Whatever is playing (a video, Spotify) pauses while it speaks and resumes after, if it was playing.
+- Whatever is playing (a video, Spotify) pauses at the wake word or when it speaks, and resumes when the exchange ends, if it was playing. A false wake resumes it at once, and a request with no reply within a minute too.
+- Pausing something also shows the orch's terminal (titled "PC Orchestrator" or "LP Orchestrator") without taking the keyboard. It goes back when the exchange ends: minimized if it was, and left up if you clicked into it.
 - In a call (another app is on the mic), it only says "I have an update", at most every 5 minutes, and
   never keeps listening. Say "Hey Jarvis, what's the update?" for the full lines. Apps that hold the mic
   all day, such as Voicemod, go in `CALL_IGNORE=` in `.env`. A meeting that lets go of a muted mic looks

@@ -100,6 +100,9 @@ LOOK_TRIES, LOOK_WINDOW = 2, 20  # this many tries that got nowhere within this 
 CANT_HEAR = "Can't hear me? Check your speaker's power and knob, your headphones, and your PC's sound."
 SPOKE_WAIT = 3  # a line waits until the user has been quiet this many seconds, even outside a recording
 HOLD_MAX = 30  # but no longer than this outside a recording: speech that long is a TV or someone else
+REPLY_HOLD = 60  # seconds a request keeps the video paused while no reply comes, under rules.mjs's FRESH
+ORCH_WINDOW = r"\b(PC|LP) Orchestrator$"  # the orch's terminal title, from ccorchname in the cc profile
+SWP_KEEP = 0x13  # SetWindowPos: SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
 # Silence after each sound. sd.wait() closes the stream when the last buffer is queued, and on this MME speaker
 # that is about 0.28 s before it has played: measured on the endpoint's peak meter, the 0.28 s "heard" tone lost
 # its last 0.12 s and more. Without this the end of every sound and reply is cut.
@@ -259,6 +262,66 @@ def resume_media(sessions: list) -> None:
         emit("error", message=f"Can't resume media: {e}")
 
 
+def orch_window() -> int:
+    """The orch's terminal, 0 when there is none. Terminal windows only: a browser tab can carry that title too."""
+    from ctypes import WINFUNCTYPE, create_unicode_buffer, windll, wintypes
+
+    found = []
+
+    def each(h, _):
+        name = create_unicode_buffer(300)
+        windll.user32.GetClassNameW(h, name, 300)
+        if name.value == "CASCADIA_HOSTING_WINDOW_CLASS":
+            windll.user32.GetWindowTextW(h, name, 300)
+            if re.search(ORCH_WINDOW, name.value):
+                found.append(h)
+        return True
+
+    windll.user32.EnumWindows(WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(each), 0)
+    return found[0] if found else 0
+
+
+def raise_orch() -> tuple[int, bool] | None:
+    """Shows the orch's terminal above the other windows and leaves the keyboard where it is, so typing elsewhere never
+    lands in the orch. Returns what lower_orch needs; None when there is no such window, or it is already in front."""
+    try:
+        from ctypes import windll
+        from ctypes.wintypes import HWND
+
+        user32 = windll.user32
+        h = orch_window()
+        if not h or user32.GetForegroundWindow() == h:
+            return None
+        minimized = bool(user32.IsIconic(h))
+        if minimized:
+            user32.ShowWindow(h, 4)  # SW_SHOWNOACTIVATE
+        user32.SetWindowPos(h, HWND(-1), 0, 0, 0, 0, SWP_KEEP)  # topmost and back: the top of the normal windows
+        user32.SetWindowPos(h, HWND(-2), 0, 0, 0, 0, SWP_KEEP)
+        return h, minimized
+    except Exception as e:
+        emit("error", message=f"Can't show the orch's window: {e}")
+        return None
+
+
+def lower_orch(raised: tuple[int, bool]) -> None:
+    """Puts it back: minimized if it was, else behind the window in front. Stays up if the user has clicked into it."""
+    try:
+        from ctypes import windll
+        from ctypes.wintypes import HWND
+
+        user32 = windll.user32
+        h, minimized = raised
+        front = user32.GetForegroundWindow()
+        if front == h:
+            return
+        if minimized:
+            user32.ShowWindow(h, 7)  # SW_SHOWMINNOACTIVE
+        else:
+            user32.SetWindowPos(h, HWND(front), 0, 0, 0, 0, SWP_KEEP)
+    except Exception as e:
+        emit("error", message=f"Can't put the orch's window back: {e}")
+
+
 def load_env() -> None:
     """KEY=value lines from .env next to this file; real environment variables win."""
     env = HERE / ".env"
@@ -405,7 +468,9 @@ class Ears:
         self.acks = {WAKES[w][0]: self.load_ack(WAKES[w][1]) for w in self.words}  # by model name, as scores are
         self.deaf_until = 0.0  # audio recorded before this moment was our own voice coming out of the speaker
         self.recent: deque[np.ndarray] = deque(maxlen=PRE_ROLL)
-        self.paused: list = []  # media sessions paused for a line, resumed when the listening after it is over
+        self.paused: list = []  # media sessions paused for an exchange, resumed when it is over
+        self.raised: tuple[int, bool] | None = None  # the orch's window, shown because that paused something
+        self.reply_by = 0.0  # a request was heard: the video stays paused for its reply until this moment
         self.next_heads_up = 0.0  # no heads-up before this moment
         self.voiced = 0  # chunks of speech in the clip being recorded
         self.peak, self.peak_word, self.peak_level = 0.0, "", 0  # the highest wake word score of the try going on
@@ -419,10 +484,27 @@ class Ears:
     def feed(self, chunk: np.ndarray) -> None:
         self.on_chunk(chunk)
 
-    def wait_for_wake(self) -> None:
-        if self.paused:  # not earlier: a video's sound in the follow-up window would be recorded as a request
+    def hush(self) -> None:
+        """Pauses what is playing, and if that stopped something, shows the orch's window. See release."""
+        playing = pause_media()
+        self.paused += playing
+        if playing and not self.raised:
+            self.raised = raise_orch()
+
+    def release(self) -> None:
+        """The exchange is over: the window back, then the video. Only what hush paused resumes, so a video the user
+        paused stays paused."""
+        self.reply_by = 0.0
+        if self.raised:
+            lower_orch(self.raised)
+            self.raised = None
+        if self.paused:
             resume_media(self.paused)
             self.paused = []
+
+    def wait_for_wake(self, keep: bool = False) -> None:
+        if not keep:  # not earlier: a video's sound in the follow-up window would be recorded as a request
+            self.release()
         self.oww.reset()
         self.recent.clear()
         self.peak = 0.0
@@ -441,7 +523,7 @@ class Ears:
             emit("peak", word=fired, score=round(score, 2), level=self.peak_level)
             self.peak_level = 0
             emit("wake")  # also while the boss works on the last request: this one reaches it as a new message
-            # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
+            self.hush()  # first, so the video's sound stays out of the request            # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
             # start of a longer file, so the stream closing early doesn't reach it.
             self.play(*CHIME_UP, tail=0.05, drain=False)
             self.record(self.request_done, list(self.recent))
@@ -506,15 +588,17 @@ class Ears:
 
     def request_done(self, clip: np.ndarray | None) -> None:
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
-        self.wait_for_wake()  # first, so a failed transcription still leaves the ears listening
+        self.wait_for_wake(keep=clip is not None)  # first, so a failed transcription still leaves the ears listening
         text = strip_wake(transcribe(clip)) if clip is not None else ""
         words = re.findall(r"\w+", text.lower())
         if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS:
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
         if text:
             self.tries = []
+            self.reply_by = time.monotonic() + REPLY_HOLD
             emit("heard", text=text)
         else:
+            self.release()  # a false wake: the video is back at once
             emit("nothing")
             self.tried()  # such as "Jarvis, Jarvis", which leaves no words once the wake word is taken out
 
@@ -547,6 +631,8 @@ class Ears:
             except Exception as e:
                 emit("error", message=f"Can't speak: {e}")
                 emit("caption", text=f"My voice failed, so in words: {text}")
+        elif self.reply_by and not self.queue and time.monotonic() >= self.reply_by and self.on_chunk == self.wake_chunk:
+            self.release()  # no reply came: the boss is on something long, and its reply pauses the video again
 
     def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True) -> None:
         """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
@@ -571,7 +657,7 @@ class Ears:
         emit("said", wav=str(REPLY_WAV), text=text)
         if listen and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
             samples = np.concatenate([samples.astype(np.float32), np.zeros(rate * 6 // 10, np.float32), CHIME_UP[0]])  # 0.7 s after the last word
-        self.paused += pause_media()
+        self.hush()
         problem = output_problem()  # not caught by the sound failing: a muted speaker plays along silently
         if problem:
             emit("caption", text=f"{problem} I said: {text}")
@@ -583,7 +669,7 @@ class Ears:
             self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
                         give_up=self.followup)
         else:
-            self.wait_for_wake()
+            self.wait_for_wake(keep=not asked and bool(self.reply_by))  # news meanwhile: the reply is still to come
 
     def play(self, samples: np.ndarray, rate: int, tail: float = ECHO, drain: bool = True) -> bool:
         """Plays it with the mic deaf until `tail` seconds after the end. False if it could not play."""
