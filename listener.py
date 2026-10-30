@@ -456,6 +456,7 @@ class Ears:
         self.threshold = float(os.environ.get("WAKE_THRESHOLD") or 0.5)  # here, not at import: .env loads later
         self.followup = round(float(os.environ.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
+        self.vad_boost = float(os.environ.get("VAD_BOOST") or 1)  # the wake word and speech to text cope without it
         self.tts = Kokoro.from_session(kokoro_session(), str(MODELS / KOKORO[1]))  # also the fallback for ElevenLabs
         emit("status", text="Voice: ElevenLabs" if el_key() else "Voice: Groq and Kokoro")
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
@@ -504,8 +505,14 @@ class Ears:
         self.peak = 0.0
         self.on_chunk = self.wake_chunk
 
+    def is_speech(self, chunk: np.ndarray) -> bool:
+        """Silero stops hearing a quiet mic long before the wake word or Whisper do, so far-away speech ended as "nobody
+        spoke". Only its copy of the chunk is boosted."""
+        louder = np.clip(chunk.astype(np.float64) * self.vad_boost, -32768, 32767).astype(np.int16)
+        return self.vad.predict(louder, frame_size=640) >= SPEECH  # about 0.6 ms per chunk
+
     def wake_chunk(self, chunk: np.ndarray) -> None:
-        if self.vad.predict(chunk, frame_size=640) >= SPEECH:  # about 0.6 ms per chunk
+        if self.is_speech(chunk):
             self.last_speech = time.monotonic()
         self.recent.append(chunk)
         scores = self.oww.predict(chunk)
@@ -571,7 +578,7 @@ class Ears:
 
     def record_chunk(self, chunk: np.ndarray) -> None:
         self.clip.append(chunk)
-        if self.vad.predict(chunk, frame_size=640) >= SPEECH:
+        if self.is_speech(chunk):
             self.voiced, self.quiet = self.voiced + 1, 0
             self.last_speech = time.monotonic()
         else:

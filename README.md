@@ -165,6 +165,8 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - Not hearing you at all? Windows may be listening to another mic. Set `MIC_DEVICE=` in `.env` to
   part of your mic's name as Windows Sound settings shows it (such as `MIC_DEVICE=WebCamera`, or
   `MIC_DEVICE=Voicemod` to hear you through Voicemod), then restart the boss.
+- It wakes from across the room, then hears nothing or cuts you off? Set `VAD_BOOST=16` in `.env` and restart
+  the boss. That boosts only what end-of-speech detection hears; lower it if recordings run on after you stop.
 - Nothing arrives in the boss? Run `/mcp` there and check that `voice` is connected, and read
   `tmp\voice.log`.
 

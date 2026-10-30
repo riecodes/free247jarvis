@@ -29,7 +29,7 @@ def ears() -> listener.Ears:
     """Ears without its models, with a silent speaker that records what it was told to play."""
     e = listener.Ears.__new__(listener.Ears)
     e.followup, e.deaf_until, e.next_heads_up, e.paused, e.raised, e.reply_by = 100, 0.0, 0.0, [], None, 0.0
-    e.oww, e.vad, e.recent = mock.Mock(), mock.Mock(), []
+    e.oww, e.vad, e.vad_boost, e.recent = mock.Mock(), mock.Mock(), 1, []
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.threshold, e.peak, e.peak_word, e.peak_level, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0, 0.0, {"jarvis": "ack"}, ["jarvis"]
     e.spoken, e.played, e.queue, e.queue_since, e.last_speech, e.tries = [], [], [], 0.0, 0.0, []
@@ -376,6 +376,12 @@ def main() -> None:
     with mock.patch.object(listener, "emit", lambda event, **d: errors.append(d)):
         listener.in_call()
     assert not errors, errors
+
+    e = ears()
+    e.vad_boost, seen = 16, []
+    e.vad.predict = lambda chunk, **k: seen.append(chunk) or 0.9
+    chunk = np.array([100, -3000], dtype=np.int16)
+    assert e.is_speech(chunk) and seen[0].tolist() == [1600, -32768] and chunk.tolist() == [100, -3000]
     print("ok")
 
 
