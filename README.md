@@ -136,9 +136,12 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   `bm_fable`, `bm_lewis`, or the old American `af_heart`, then restart the boss.
 - Rather say "Hey Claude"? Set `WAKE_WORDS=hey_claude` in `.env` (it answers "Claude here"), or
   `WAKE_WORDS=hey_jarvis,hey_claude` for both. "Hey Claude" can't tell "hey Clyde" apart.
-- If the wake word misses you, set `WAKE_THRESHOLD=0.3` in `.env`, or train it on your voice.
+- If the wake word misses you, set `WAKE_THRESHOLD=0.3` in `.env`, or train it on your voice. A faint
+  high tick means it almost heard you (a score of 0.25 up to the threshold): say it again. Every try's
+  score is in `tmp\voice.log` as `wake peak:`, to tune the threshold by.
 - After it hears a request, it waits for the answer before the wake word works again, so saying
-  "Hey Jarvis" twice doesn't start over.
+  "Hey Jarvis" twice doesn't start over. Three low pulses answer that second "Hey Jarvis": it heard you
+  and is still working. Neither sound plays in a call.
 - After a line that asks you something, even one you didn't prompt, it keeps listening for 8 seconds,
   so you can reply ("yes", "A", "tell it to go on") without the wake word. `FOLLOWUP_SECONDS=` in `.env`
   changes that; 0 turns it off. An acknowledgment ("Understood") or plain news (a worker finished) ends

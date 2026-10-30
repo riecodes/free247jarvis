@@ -234,6 +234,7 @@ function startEars() {
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
     if (e.event === 'heard') route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
     else if (e.event === 'held') (held.push(e.text), log(`held for after the call: ${e.text}`))
+    else if (e.event === 'peak') log(`wake peak: ${e.word} ${e.score}${e.busy ? ' (busy)' : ''}`)
     else log(`listener ${e.event}${e.text || e.message ? `: ${e.text || e.message}` : ''}`)
   })
   ears.on('exit', code => {

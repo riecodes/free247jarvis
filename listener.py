@@ -11,6 +11,7 @@ and writes one JSON event per stdout line:
             tell <text>                         news nobody asked for: a heads-up in a call, else in full; no follow-up window
   events    status {text}                       a model is loading or downloading
             state {on, trained}                 after on, off, enroll and cancel
+            peak {word, score, busy}            how high a try at the wake word scored, fired or not
             wake                                heard the wake word, now recording the request
             heard {text}                        the request as text; no new wake until a reply is said
             nothing                             woke up, but no request followed
@@ -90,6 +91,9 @@ REPLY_WAIT = 45  # seconds a heard request may wait for its spoken reply; no new
 ECHO = 1.0  # seconds the mic stays deaf after a reply: the room's echo, and a moment before the next "Hey Jarvis"
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
 HEADS_UP_GAP = 300  # seconds between heads-ups in one call; lines in between are only held
+PEAK_FLOOR = 0.1  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
+NEAR_MISS = 0.25  # a peak from here up to the threshold gets the near-miss tick
+CUE_GAP = 2  # seconds between near-miss and still-working sounds
 # Whisper's confidence per stretch of speech; below it, the stretch is dropped. Groq leaves no_speech_prob at 0, and
 # its "Thank you." for pure noise scores like real speech (avg_logprob about -0.5, clean speech -0.1 to -0.5), so
 # this only drops what Whisper is very unsure of; HALLUCINATIONS catches the rest.
@@ -136,6 +140,11 @@ def earcon(name: str, fallback: tuple[np.ndarray, int]) -> tuple[np.ndarray, int
 CHIME_UP = earcon("listen", chime(660, 990))
 CHIME_DOWN = earcon("heard", chime(990, 660))
 CHIME_CLOSE = earcon("close", chime(660, 440))  # done listening, nothing heard (Kenney switch_002 at the pop's level)
+# A try at the wake word that got no pop. Both are synthesized, pitched away from the three above (all 390 Hz or higher,
+# 0.2 s or longer in their files): near = almost heard you, say it again, one faint high tick; busy = heard you, still
+# working on your last request, three low pulses. sounds/local/near.wav and busy.wav override them.
+CHIME_NEAR = earcon("near", chime(2200, note=0.045, level=0.1))
+CHIME_BUSY = earcon("busy", chime(330, 0, 330, 0, 330, note=0.055, level=0.3))
 
 
 def emit(event: str, **data) -> None:
@@ -356,6 +365,8 @@ class Ears:
         self.paused: list = []  # media sessions paused for a line, resumed when the listening after it is over
         self.next_heads_up = 0.0  # no heads-up before this moment
         self.voiced = 0  # chunks of speech in the clip being recorded
+        self.peak, self.peak_word = 0.0, ""  # the highest wake word score of the try going on
+        self.next_cue = 0.0  # no near-miss or still-working sound before this moment
         self.wait_for_wake()
 
     def feed(self, chunk: np.ndarray) -> None:
@@ -367,19 +378,38 @@ class Ears:
             self.paused = []
         self.oww.reset()
         self.recent.clear()
+        self.peak = 0.0
         self.on_chunk = self.wake_chunk
 
     def wake_chunk(self, chunk: np.ndarray) -> None:
-        if time.monotonic() < self.busy_until:  # saying "Hey Jarvis" again before the reply must not reopen it
-            return
         self.recent.append(chunk)
         scores = self.oww.predict(chunk)
         fired = max(scores, key=scores.get)
-        if scores[fired] >= self.threshold:
+        score, busy = float(scores[fired]), time.monotonic() < self.busy_until
+        if score >= self.threshold:
+            emit("peak", word=fired, score=round(score, 2), busy=busy)
+            if busy:  # saying "Hey Jarvis" again before the reply must not reopen it, but it is answered
+                self.cue(CHIME_BUSY)
+                self.wait_for_wake()
+                return
             emit("wake")
             self.play(*CHIME_UP, tail=0.05)  # heard the wake word: short, so little of a one-breath request is lost
             self.record(self.request_done, list(self.recent))
             self.ack, self.grace, self.on_chunk = self.acks[fired], GRACE, self.after_wake
+        elif score >= PEAK_FLOOR:
+            if score > self.peak:
+                self.peak, self.peak_word = score, fired
+        elif self.peak:  # the try is over: only now is its peak known
+            peak, self.peak = self.peak, 0.0
+            emit("peak", word=self.peak_word, score=round(peak, 2), busy=busy)
+            if peak >= NEAR_MISS and not busy:
+                self.cue(CHIME_NEAR)
+
+    def cue(self, sound: tuple[np.ndarray, int]) -> None:
+        """A sound that answers a try at the wake word: at most one per CUE_GAP, and none in a call."""
+        if time.monotonic() >= self.next_cue and not in_call():
+            self.next_cue = time.monotonic() + CUE_GAP
+            self.play(*sound, tail=0.05)
 
     def after_wake(self, chunk: np.ndarray) -> None:
         """Still talking right after the wake word: keep recording. A pause: say "Jarvis here" (the mic is deaf
