@@ -5,7 +5,7 @@
   say    a line that wants an answer opens the follow-up window, prompted or not; an acknowledgment or plain news does not
   call   in a call: a heads-up at most every HEADS_UP_GAP seconds, the line held; never a window
   media  what was playing resumes after the line, or after the window when one opens
-  tries  wake word peaks are logged; a near miss ticks, a wake while busy gets the still-working sound, neither in a call
+  tries  wake word peaks are logged; a near miss ticks, except in a call; the wake word also works mid-task
   look   repeated tries, and each failure the user can't hear, go on screen; nothing else does
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
   scan   the real WASAPI and media session calls run on this machine (nothing is paused)
@@ -27,7 +27,7 @@ REAL_OUTPUT_PROBLEM = listener.output_problem
 def ears() -> listener.Ears:
     """Ears without its models, with a silent speaker that records what it was told to play."""
     e = listener.Ears.__new__(listener.Ears)
-    e.followup, e.busy_until, e.deaf_until, e.next_heads_up, e.paused = 100, 50.0**9, 0.0, 0.0, []
+    e.followup, e.deaf_until, e.next_heads_up, e.paused = 100, 0.0, 0.0, []
     e.oww, e.vad, e.recent = mock.Mock(), mock.Mock(), []
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.threshold, e.peak, e.peak_word, e.peak_level, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0, 0.0, {"jarvis": "ack"}, ["jarvis"]
@@ -38,13 +38,12 @@ def ears() -> listener.Ears:
     return e
 
 
-def tries(scores: list[float], busy: bool = False, call: bool = False) -> tuple[listener.Ears, list, list]:
+def tries(scores: list[float], call: bool = False) -> tuple[listener.Ears, list, list]:
     """Feeds these wake word scores in, one per chunk; returns the ears, the events, and the sounds played."""
     events = []
     with mock.patch.object(listener, "in_call", lambda: call), \
             mock.patch.object(listener, "emit", lambda event, **d: events.append((event, d))):
         e = ears()
-        e.busy_until = 1e12 if busy else 0.0
         for score in scores:
             e.oww.predict = lambda _, s=score: {"jarvis": s}
             e.on_chunk(np.zeros(1280, np.int16))
@@ -58,13 +57,6 @@ def is_sound(played: list, *sounds: tuple) -> bool:
 def pitch(sound: tuple[np.ndarray, int]) -> float:
     spectrum = np.abs(np.fft.rfft(sound[0]))
     return float(np.fft.rfftfreq(len(sound[0]), 1 / sound[1])[spectrum.argmax()])
-
-
-def pulses(sound: tuple[np.ndarray, int]) -> int:
-    loud = np.abs(sound[0]) > 0.5 * np.abs(sound[0]).max()
-    hops = max(1, sound[1] // 200)  # 5 ms: one cycle of a low note never counts as a gap
-    frames = [loud[i:i + hops].any() for i in range(0, len(loud), hops)]
-    return sum(1 for a, b in zip([False] + frames, frames) if b and not a)
 
 
 def run(call: bool, playing: list, **say) -> tuple[listener.Ears, list, list]:
@@ -88,8 +80,6 @@ def looking() -> None:
         assert not captions(tries([0.3, 0.0]))
         shown = captions(tries(near_twice))
         assert len(shown) == 1 and shown[0]["looking"] and listener.CANT_HEAR in shown[0]["text"]
-        # A wake word while busy counts too, and is no stray.
-        assert len(captions(tries([0.5, 0.0, 0.5], busy=True))) == 1
         # A near miss in a call stays quiet, as does one with a video playing.
         assert not captions(tries(near_twice, call=True))
     with mock.patch.object(listener, "media_playing", lambda: True):
@@ -148,14 +138,14 @@ def main() -> None:
 
     # A reply: in full, then the window, with the video still paused until the window ends.
     e, events, resumed = run(False, [video])
-    assert e.on_chunk == e.record_chunk and e.spoken == ["The news."] and e.busy_until == 0
+    assert e.on_chunk == e.record_chunk and e.spoken == ["The news."]
     assert not resumed and e.paused == [video]
-    # Nobody asked: in full, no window, the video back at once, and a pending request still counts as pending.
+    # Nobody asked: in full, no window, the video back at once.
     e, events, resumed = run(False, [video], asked=False, hold=True)
-    assert e.on_chunk == e.wake_chunk and e.spoken == ["The news."] and resumed == [video] and e.busy_until > 0
-    # A reply that ends the exchange: in full, no window, the video back at once, the wake word free again.
+    assert e.on_chunk == e.wake_chunk and e.spoken == ["The news."] and resumed == [video]
+    # A reply that ends the exchange: in full, no window, the video back at once.
     e, events, resumed = run(False, [video], window=False)
-    assert e.on_chunk == e.wake_chunk and e.spoken == ["The news."] and resumed == [video] and e.busy_until == 0
+    assert e.on_chunk == e.wake_chunk and e.spoken == ["The news."] and resumed == [video]
     # Nothing was playing: nothing resumes.
     assert run(False, [], asked=False)[2] == []
 
@@ -242,10 +232,10 @@ def main() -> None:
     e, events, played = tries([0.0, 0.3, 0.35])
     assert played == [] and not [ev for ev in events if ev[0] == "peak"]
     e, events, played = tries([0.0, 0.3, 0.35, 0.0])
-    assert ("peak", {"word": "jarvis", "score": 0.35, "level": 0, "busy": False}) in events and is_sound(played, listener.CHIME_NEAR)
+    assert ("peak", {"word": "jarvis", "score": 0.35, "level": 0}) in events and is_sound(played, listener.CHIME_NEAR)
     # Too low for a tick, but in the log. Noise stays out of it.
     e, events, played = tries([0.1, 0.0])
-    assert events == [("peak", {"word": "jarvis", "score": 0.1, "level": 0, "busy": False})] and played == []
+    assert events == [("peak", {"word": "jarvis", "score": 0.1, "level": 0})] and played == []
     assert tries([0.0, 0.02, 0.0])[1] == []
     # Two near misses in a row: one tick.
     assert is_sound(tries([0.3, 0.0, 0.3, 0.0])[2], listener.CHIME_NEAR)
@@ -253,20 +243,25 @@ def main() -> None:
     e, events, played = tries([0.5])
     assert [ev[0] for ev in events] == ["peak", "wake"] and is_sound(played, listener.CHIME_UP)
     assert e.on_chunk == e.after_wake
-    # While a request waits for its reply: the still-working sound, no wake, and no tick for a near miss.
-    e, events, played = tries([0.5], busy=True)
-    assert is_sound(played, listener.CHIME_BUSY) and e.on_chunk == e.wake_chunk and "wake" not in [ev[0] for ev in events]
-    assert events[0] == ("peak", {"word": "jarvis", "score": 0.5, "level": 0, "busy": True})
-    assert tries([0.3, 0.0], busy=True)[2] == []
-    # In a call both stay silent, and the score still reaches the log.
-    assert tries([0.3, 0.0], call=True)[2] == [] and tries([0.5], busy=True, call=True)[2] == []
+    # Right after a request, while the boss works on it: the same pop and recording, and its reply waits in the queue.
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), \
+            mock.patch.object(listener, "transcribe", lambda clip: "open notepad"):
+        e = ears()
+        e.request_done(np.zeros(1, np.int16))
+        e.played.clear()
+        e.oww.predict = lambda _: {"jarvis": 0.9}
+        e.on_chunk(np.zeros(1280, np.int16))
+        assert is_sound(e.played, listener.CHIME_UP) and e.on_chunk == e.after_wake
+        e.line("The answer.")
+        e.flush()
+        assert e.spoken == [] and e.queue
+    # In a call the tick stays silent, and the score still reaches the log.
+    assert tries([0.3, 0.0], call=True)[2] == []
     assert tries([0.3, 0.0], call=True)[1][0][0] == "peak"
 
-    # The two new sounds against the three the user knows: pitch for the tick and for the pulses, then the pulse count.
+    # The tick against the three sounds the user knows.
     known = [pitch(s) for s in (listener.CHIME_UP, listener.CHIME_DOWN, listener.CHIME_CLOSE)]
     assert pitch(listener.CHIME_NEAR) > 1.5 * max(known), known
-    assert pitch(listener.CHIME_BUSY) < 0.9 * min(known), known
-    assert pulses(listener.CHIME_BUSY) == 3 and pulses(listener.CHIME_NEAR) == 1
 
     subprocess.run(["node", "--input-type=module", "-e", """
         import assert from 'node:assert'

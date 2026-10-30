@@ -267,7 +267,7 @@ function startEars() {
         .catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
     } else if (e.event === 'caption') showCaption(`${e.text}${e.looking && waitingOn() ? ` ${waitingOn()}` : ''}`)
     else if (e.event === 'held') (held.push(e.text), log(`held for after the call: ${e.text}`))
-    else if (e.event === 'peak') log(`wake peak: ${e.word} ${e.score} level ${e.level}${e.busy ? ' (busy)' : ''}`)
+    else if (e.event === 'peak') log(`wake peak: ${e.word} ${e.score} level ${e.level}`)
     else log(`listener ${e.event}${e.text || e.message ? `: ${e.text || e.message}` : ''}`)
   })
   ears.on('exit', code => {

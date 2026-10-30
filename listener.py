@@ -14,9 +14,9 @@ and writes one JSON event per stdout line:
             state {on, trained}                 after on, off, enroll and cancel
             caption {text, looking}             show this on screen; looking: voice.mjs adds what the user is waiting on
             queued {text}                       the user has the floor: said once they are done
-            peak {word, score, level, busy}     how high a try at the wake word scored, fired or not, and how loud (RMS)
+            peak {word, score, level}           how high a try at the wake word scored, fired or not, and how loud (RMS)
             wake                                heard the wake word, now recording the request
-            heard {text}                        the request as text; no new wake until a reply is said
+            heard {text}                        the request as text
             nothing                             woke up, but no request followed
             said {wav}                          a reply was spoken (and saved to wav)
             held {text}                         a call is on: not said, kept by voice.mjs until the user asks for it
@@ -90,13 +90,12 @@ PRE_ROLL = 3  # chunks from just before the wake fired, so "Hey Claude, tell..."
 GRACE = 5  # speech within this many chunks of the wake is one breath ("Hey Jarvis, status"): no "Jarvis here"
 MIN_VOICED = 3  # less speech than this is a click or a cough, not a request
 END_QUIET = 62  # about 5s of quiet ends a request (1s cut people off mid-sentence, 2s still cut thinking pauses)
-REPLY_WAIT = 45  # seconds a heard request may wait for its spoken reply; no new wake meanwhile
 ECHO = 1.0  # seconds the mic stays deaf after a reply: the room's echo, and a moment before the next "Hey Jarvis"
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
 HEADS_UP_GAP = 300  # seconds between heads-ups in one call; lines in between are only held
 PEAK_FLOOR = 0.03  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
 NEAR_MISS = 0.12  # a peak from here up to the threshold gets the near-miss tick
-CUE_GAP = 2  # seconds between near-miss and still-working sounds
+CUE_GAP = 2  # seconds between near-miss ticks
 LOOK_TRIES, LOOK_WINDOW = 2, 20  # this many tries that got nowhere within this many seconds: they are looking for it
 CANT_HEAR = "Can't hear me? Check your speaker's power and knob, your headphones, and your PC's sound."
 SPOKE_WAIT = 3  # a line waits until the user has been quiet this many seconds, even outside a recording
@@ -151,11 +150,9 @@ def earcon(name: str, fallback: tuple[np.ndarray, int]) -> tuple[np.ndarray, int
 CHIME_UP = earcon("listen", chime(660, 990))
 CHIME_DOWN = earcon("heard", chime(990, 660))
 CHIME_CLOSE = earcon("close", chime(660, 440))  # done listening, nothing heard (Kenney switch_002 at the pop's level)
-# A try at the wake word that got no pop. Both are synthesized, pitched away from the three above (all 390 Hz or higher,
-# 0.2 s or longer in their files): near = almost heard you, say it again, one faint high tick; busy = heard you, still
-# working on your last request, three low pulses. sounds/local/near.wav and busy.wav override them.
+# A try at the wake word that got no pop: almost heard you, say it again. One faint high tick, synthesized, pitched
+# above the three above (all 1030 Hz or lower). sounds/local/near.wav overrides it.
 CHIME_NEAR = earcon("near", chime(2200, note=0.045, level=0.1))
-CHIME_BUSY = earcon("busy", chime(330, 0, 330, 0, 330, note=0.055, level=0.3))
 
 
 def emit(event: str, **data) -> None:
@@ -407,13 +404,12 @@ class Ears:
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
         self.acks = {WAKES[w][0]: self.load_ack(WAKES[w][1]) for w in self.words}  # by model name, as scores are
         self.deaf_until = 0.0  # audio recorded before this moment was our own voice coming out of the speaker
-        self.busy_until = 0.0  # a heard request waits for its reply until then: no new wake
         self.recent: deque[np.ndarray] = deque(maxlen=PRE_ROLL)
         self.paused: list = []  # media sessions paused for a line, resumed when the listening after it is over
         self.next_heads_up = 0.0  # no heads-up before this moment
         self.voiced = 0  # chunks of speech in the clip being recorded
         self.peak, self.peak_word, self.peak_level = 0.0, "", 0  # the highest wake word score of the try going on
-        self.next_cue = 0.0  # no near-miss or still-working sound before this moment
+        self.next_cue = 0.0  # no near-miss tick before this moment
         self.queue: list[tuple[str, dict]] = []  # lines waiting for the user to finish, oldest first
         self.queue_since = 0.0  # when the oldest of them started waiting
         self.last_speech = 0.0  # when the VAD last heard speech
@@ -438,18 +434,13 @@ class Ears:
         self.recent.append(chunk)
         scores = self.oww.predict(chunk)
         fired = max(scores, key=scores.get)
-        score, busy = float(scores[fired]), time.monotonic() < self.busy_until
+        score = float(scores[fired])
         if score >= PEAK_FLOOR:
             self.peak_level = max(self.peak_level, int(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))))
         if score >= self.threshold:
-            emit("peak", word=fired, score=round(score, 2), level=self.peak_level, busy=busy)
+            emit("peak", word=fired, score=round(score, 2), level=self.peak_level)
             self.peak_level = 0
-            if busy:  # saying "Hey Jarvis" again before the reply must not reopen it, but it is answered
-                self.cue(CHIME_BUSY)
-                self.tried()
-                self.wait_for_wake()
-                return
-            emit("wake")
+            emit("wake")  # also while the boss works on the last request: this one reaches it as a new message
             # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
             # start of a longer file, so the stream closing early doesn't reach it.
             self.play(*CHIME_UP, tail=0.05, drain=False)
@@ -460,9 +451,9 @@ class Ears:
                 self.peak, self.peak_word = score, fired
         elif self.peak:  # the try is over: only now is its peak known
             peak, self.peak = self.peak, 0.0
-            emit("peak", word=self.peak_word, score=round(peak, 2), level=self.peak_level, busy=busy)
+            emit("peak", word=self.peak_word, score=round(peak, 2), level=self.peak_level)
             self.peak_level = 0
-            if peak >= NEAR_MISS and not busy:
+            if peak >= NEAR_MISS:
                 self.cue(CHIME_NEAR)
                 self.tried(stray=True)
 
@@ -523,7 +514,6 @@ class Ears:
         if text:
             self.tries = []
             emit("heard", text=text)
-            self.busy_until = time.monotonic() + REPLY_WAIT
         else:
             emit("nothing")
             self.tried()  # such as "Jarvis, Jarvis", which leaves no words once the wake word is taken out
@@ -565,8 +555,6 @@ class Ears:
         as `held`."""
         import soundfile as sf
 
-        if asked:
-            self.busy_until = 0.0  # replied: the next "Hey Jarvis" works once the echo is gone
         call = in_call()
         if call and hold:
             emit("held", text=text)

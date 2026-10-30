@@ -191,7 +191,6 @@ def speak(text: str, voice: str = "am_michael", lang: str = "en-us") -> np.ndarr
 def hear(*parts: np.ndarray) -> list[dict]:
     """Feeds the parts plus 7s of quiet (enough for any timeout) and returns the events they caused."""
     heard.clear()
-    ears.busy_until = 0  # no reply comes here, so don't wait for one
     audio = np.concatenate([np.zeros(listener.RATE, np.int16), *parts, np.zeros(7 * listener.RATE, np.int16)])
     for i in range(0, len(audio) - listener.CHUNK + 1, listener.CHUNK):
         ears.feed(audio[i:i + listener.CHUNK])

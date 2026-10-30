@@ -141,9 +141,8 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   score and level are in `tmp\voice.log` as `wake peak:`, to tune the threshold by. Say the whole "Hey
   Jarvis": "Jarvis" alone scores anywhere from 0.03 to 1. A noise gate on the mic (Voicemod's noise
   reduction) can cut the start of it.
-- After it hears a request, it waits for the answer before the wake word works again, so saying
-  "Hey Jarvis" twice doesn't start over. Three low pulses answer that second "Hey Jarvis": it heard you
-  and is still working. Neither sound plays in a call.
+- You can say "Hey Jarvis" again while it works on your last request: the pop plays, and what you say next
+  reaches the boss as a new message. Anything it was about to say waits until you finish.
 - After a line that asks you something, even one you didn't prompt, it keeps listening for 8 seconds,
   so you can reply ("yes", "A", "tell it to go on") without the wake word. `FOLLOWUP_SECONDS=` in `.env`
   changes that; 0 turns it off. An acknowledgment ("Understood") or plain news (a worker finished) ends
