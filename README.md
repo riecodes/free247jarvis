@@ -141,6 +141,12 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   "Hey Jarvis" twice doesn't start over.
 - After each spoken answer it keeps listening for 8 seconds, so you can reply ("yes", "A", "tell it
   to go on") without the wake word. `FOLLOWUP_SECONDS=` in `.env` changes that; 0 turns it off.
+  Lines you didn't ask for (a worker finished) never open this window.
+- Whatever is playing (a video, Spotify) pauses while it speaks and resumes after, if it was playing.
+- In a call (another app is on the mic), it only says "I have an update", at most every 5 minutes, and
+  never keeps listening. Say "Hey Jarvis, what's the update?" for the full lines. Apps that hold the mic
+  all day, such as Voicemod, go in `CALL_IGNORE=` in `.env`. A meeting that lets go of a muted mic looks
+  like no call.
 - If the mic sends nothing but silence for 30 seconds (a virtual mic such as Voicemod whose app is
   closed), it says so once.
 - Not hearing you at all? Windows may be listening to another mic. Set `MIC_DEVICE=` in `.env` to

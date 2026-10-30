@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { asksForHeld, verbFor } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -75,7 +76,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   if (req.params.name !== 'reply') throw new Error(`unknown tool: ${req.params.name}`)
   const text = titled(String(req.params.arguments?.text ?? '').replace(/\s+/g, ' ').trim())
   log(`reply: ${text}`)
-  if (text) ears.stdin.write(`say ${text}\n`)
+  if (text) {
+    ears.stdin.write(`${verbFor(askedAt)} ${text}\n`)
+    askedAt = 0 // one reply answers the request; later lines are the boss's own news
+  }
   return { content: [{ type: 'text', text: 'Speaking.' }] }
 })
 
@@ -84,7 +88,12 @@ async function push(text, via) {
   await send(text, via)
 }
 
-const send = (text, via) => mcp.notification({ method: 'notifications/claude/channel', params: { content: text, meta: { via } } })
+let askedAt = 0 // when the boss last got a spoken request it has not answered yet
+const held = [] // lines not said because of a call, until the user asks for them
+const send = (text, via) => {
+  if (via === 'mic') askedAt = Date.now()
+  return mcp.notification({ method: 'notifications/claude/channel', params: { content: text, meta: { via } } })
+}
 
 // The router, for spoken requests. With TYPESAFE_API_KEY in .env, Jev (TypeSafe's classifier) sorts each one, and
 // quick ones are answered here, about a second after they're heard, without a turn of the boss: the sessions'
@@ -106,6 +115,7 @@ const KINDS = {
 
 async function route(text) {
   log(`heard (mic): ${text}`)
+  if (held.length && asksForHeld(text)) return answer(held.splice(0).join(' '))
   const key = secret('TYPESAFE_API_KEY')
   let kind = 'work', p = 1
   if (key) {
@@ -214,6 +224,7 @@ function startEars() {
     let e
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
     if (e.event === 'heard') route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
+    else if (e.event === 'held') (held.push(e.text), log(`held for after the call: ${e.text}`))
     else log(`listener ${e.event}${e.text || e.message ? `: ${e.text || e.message}` : ''}`)
   })
   ears.on('exit', code => {

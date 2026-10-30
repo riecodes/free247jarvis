@@ -4,13 +4,17 @@
 voice.mjs (the channel server) starts this and talks to it over pipes. It reads one command per stdin line
 and writes one JSON event per stdout line:
 
-  commands  on | off | enroll | cancel | say <text> | listen (record without the wake word) | quit
+  commands  on | off | enroll | cancel | listen (record without the wake word) | quit
+            say <text>                          answers a request just heard: said in full, then the follow-up window
+            late <text>                         answers an older request: a heads-up in a call, else as say
+            tell <text>                         nobody asked: a heads-up in a call, else in full; never a follow-up window
   events    status {text}                       a model is loading or downloading
             state {on, trained}                 after on, off, enroll and cancel
             wake                                heard the wake word, now recording the request
             heard {text}                        the request as text; no new wake until a reply is said
             nothing                             woke up, but no request followed
             said {wav}                          a reply was spoken (and saved to wav)
+            held {text}                         a call is on: not said, kept by voice.mjs until the user asks for it
             enroll {prompt, done, total, retry} voice training: what to say next
             enrolled                            voice training finished
             error {message}
@@ -26,6 +30,7 @@ to Groq and Kokoro for that request.
 Run `python listener.py train` once to train the verifier on your voice, `python listener.py fetch` to
 download the models ahead of time.
 """
+import asyncio
 import io
 import json
 import os
@@ -83,6 +88,7 @@ END_QUIET = 62  # about 5s of quiet ends a request (1s cut people off mid-senten
 REPLY_WAIT = 45  # seconds a heard request may wait for its spoken reply; no new wake meanwhile
 ECHO = 1.0  # seconds the mic stays deaf after a reply: the room's echo, and a moment before the next "Hey Jarvis"
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
+HEADS_UP_GAP = 300  # seconds between heads-ups in one call; lines in between are only held
 # Whisper's confidence per stretch of speech; below it, the stretch is dropped. Groq leaves no_speech_prob at 0, and
 # its "Thank you." for pure noise scores like real speech (avg_logprob about -0.5, clean speech -0.1 to -0.5), so
 # this only drops what Whisper is very unsure of; HALLUCINATIONS catches the rest.
@@ -134,6 +140,69 @@ CHIME_CLOSE = earcon("close", chime(660, 440))  # done listening, nothing heard 
 def emit(event: str, **data) -> None:
     EVENTS.write(json.dumps({"event": event, **data}) + "\n")
     EVENTS.flush()
+
+
+def in_call() -> bool:
+    """Another app is capturing from a microphone: a call, a meeting, a stream. Asks WASAPI for its live capture
+    sessions, because Windows' privacy registry goes stale (here its last mic entry was 2026-09-17, with Voicemod and
+    this listener on the mic right then). CALL_IGNORE in .env names apps that hold the mic all day. A meeting with
+    the mic muted may release it, and then this can't tell."""
+    try:
+        import comtypes
+        import psutil
+        from pycaw.constants import CLSID_MMDeviceEnumerator, DEVICE_STATE, EDataFlow
+        from pycaw.pycaw import IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator
+
+        ignore = [w.strip().lower() for w in (os.environ.get("CALL_IGNORE") or "voicemod").split(",") if w.strip()]
+        enum = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER)
+        devices = enum.EnumAudioEndpoints(EDataFlow.eCapture.value, DEVICE_STATE.ACTIVE.value)
+        for d in range(devices.GetCount()):
+            manager = devices.Item(d).Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None)
+            sessions = manager.QueryInterface(IAudioSessionManager2).GetSessionEnumerator()
+            for s in range(sessions.GetCount()):
+                session = sessions.GetSession(s).QueryInterface(IAudioSessionControl2)
+                pid = session.GetProcessId()
+                if session.GetState() != 1 or pid in (0, os.getpid()):  # 1: active
+                    continue
+                try:
+                    name = psutil.Process(pid).name().lower()
+                except psutil.Error:  # it just ended
+                    continue
+                if not any(w in name for w in ignore):
+                    return True
+    except Exception as e:  # can't tell: speak as if there is no call
+        emit("error", message=f"Can't check for a call: {e}")
+    return False
+
+
+def pause_media() -> list:
+    """Pauses whatever is playing in Windows' media sessions (browsers, Spotify) and returns just those, to resume."""
+    async def pause() -> list:
+        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as Manager
+        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
+
+        manager = await Manager.request_async()
+        playing = [s for s in manager.get_sessions() if s.get_playback_info().playback_status == Status.PLAYING]
+        for session in playing:
+            await session.try_pause_async()
+        return playing
+
+    try:
+        return asyncio.run(pause())
+    except Exception as e:
+        emit("error", message=f"Can't pause media: {e}")
+        return []
+
+
+def resume_media(sessions: list) -> None:
+    async def resume() -> None:
+        for session in sessions:
+            await session.try_play_async()
+
+    try:
+        asyncio.run(resume())
+    except Exception as e:  # such as a tab closed meanwhile
+        emit("error", message=f"Can't resume media: {e}")
 
 
 def load_env() -> None:
@@ -283,12 +352,17 @@ class Ears:
         self.deaf_until = 0.0  # audio recorded before this moment was our own voice coming out of the speaker
         self.busy_until = 0.0  # a heard request waits for its reply until then: no new wake
         self.recent: deque[np.ndarray] = deque(maxlen=PRE_ROLL)
+        self.paused: list = []  # media sessions paused for a line, resumed when the listening after it is over
+        self.next_heads_up = 0.0  # no heads-up before this moment
         self.wait_for_wake()
 
     def feed(self, chunk: np.ndarray) -> None:
         self.on_chunk(chunk)
 
     def wait_for_wake(self) -> None:
+        if self.paused:  # not earlier: a video's sound in the follow-up window would be recorded as a request
+            resume_media(self.paused)
+            self.paused = []
         self.oww.reset()
         self.recent.clear()
         self.on_chunk = self.wake_chunk
@@ -350,25 +424,38 @@ class Ears:
         self.play(*CHIME_CLOSE, tail=0.1)
         self.wait_for_wake()
 
-    def say(self, text: str) -> None:
-        """Speaks a reply with Kokoro and keeps a copy in tmp/reply.wav. The caller mutes the mic meanwhile."""
+    def say(self, text: str, asked: bool = True, hold: bool = False) -> None:
+        """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
+        meanwhile. Only a line that answers a request (asked) opens the follow-up window, and never in a call, so call
+        audio is not sent to speech to text. With hold, a call gets a short heads-up and the line goes back as `held`."""
         import soundfile as sf
 
+        if asked:
+            self.busy_until = 0.0  # replied: the next "Hey Jarvis" works once the echo is gone
+        call = in_call()
+        if call and hold:
+            emit("held", text=text)
+            if time.monotonic() < self.next_heads_up:
+                return
+            self.next_heads_up = time.monotonic() + HEADS_UP_GAP
+            title = (os.environ.get("VOICE_TITLE") or "").strip()
+            text = f"{title}, I have an update." if title else "I have an update."
+        listen = bool(self.followup) and asked and not call
         samples, rate, _ = self.speech(text)
         REPLY_WAV.parent.mkdir(exist_ok=True)
         sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
         os.replace(REPLY_WAV.with_suffix(".partial.wav"), REPLY_WAV)
         emit("said", wav=str(REPLY_WAV), text=text)
-        if self.followup and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
+        if listen and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
             samples = np.concatenate([samples.astype(np.float32), np.zeros(rate * 6 // 10, np.float32), CHIME_UP[0]])  # 0.7 s after the last word
+        self.paused += pause_media()
         self.play(samples, rate)
-        self.busy_until = 0.0  # replied: the next "Hey Jarvis" works once the echo is gone
-        if self.followup:  # the user may answer without the wake word for a few seconds, then it waits for it again
+        if listen:  # the user may answer without the wake word for a few seconds, then it waits for it again
             if rate != CHIME_UP[1]:
                 self.play(*CHIME_UP, tail=0.15)  # the mic is open again
             self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
                         give_up=self.followup)
-        else:
+        elif asked or self.on_chunk == self.wake_chunk:  # nobody asked: a request being recorded goes on
             self.wait_for_wake()
 
     def play(self, samples: np.ndarray, rate: int, tail: float = ECHO) -> None:
@@ -532,7 +619,8 @@ def main(commands: list[str]) -> None:
                 emit("error", message=f"The microphone ({name or 'Windows default'}) sends pure silence: is it on?")
                 try:
                     ears.say(f"The {name} microphone hears nothing at all. Check that {name} is running." if name
-                             else "The microphone hears nothing at all. Check that it's plugged in and not muted.")
+                             else "The microphone hears nothing at all. Check that it's plugged in and not muted.",
+                             asked=False, hold=True)
                 except Exception as e:
                     emit("error", message=f"Can't speak: {e}")
                 continue
@@ -546,11 +634,13 @@ def main(commands: list[str]) -> None:
         if value == "quit":
             break
         if value == "listen":  # after "Say that again?": record the next sentence without the wake word
-            ears.record(ears.request_done)
+            if not in_call():
+                ears.record(ears.request_done)
             continue
-        if value.startswith("say "):
-            try:
-                ears.say(value[4:])
+        if value.startswith(("say ", "late ", "tell ")):
+            verb, text = value.split(" ", 1)
+            try:  # with the mic closed no window can open or end, and paused media would never resume
+                ears.say(text, asked=verb != "tell" and mic is not None, hold=verb != "say")
             except Exception as e:
                 emit("error", message=f"Can't speak: {e}")
             continue
