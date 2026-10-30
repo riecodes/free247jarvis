@@ -11,6 +11,7 @@ and writes one JSON event per stdout line:
             tell <text>                         news nobody asked for: a heads-up in a call, else in full; no follow-up window
   events    status {text}                       a model is loading or downloading
             state {on, trained}                 after on, off, enroll and cancel
+            queued {text}                       the user has the floor: said once they are done
             peak {word, score, busy}            how high a try at the wake word scored, fired or not
             wake                                heard the wake word, now recording the request
             heard {text}                        the request as text; no new wake until a reply is said
@@ -94,6 +95,12 @@ HEADS_UP_GAP = 300  # seconds between heads-ups in one call; lines in between ar
 PEAK_FLOOR = 0.1  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
 NEAR_MISS = 0.25  # a peak from here up to the threshold gets the near-miss tick
 CUE_GAP = 2  # seconds between near-miss and still-working sounds
+SPOKE_WAIT = 3  # a line waits until the user has been quiet this many seconds, even outside a recording
+HOLD_MAX = 30  # but no longer than this outside a recording: speech that long is a TV or someone else
+# Silence after each sound. sd.wait() closes the stream when the last buffer is queued, and on this MME speaker
+# that is about 0.28 s before it has played: measured on the endpoint's peak meter, the 0.28 s "heard" tone lost
+# its last 0.12 s and more. Without this the end of every sound and reply is cut.
+DRAIN = 0.35
 # Whisper's confidence per stretch of speech; below it, the stretch is dropped. Groq leaves no_speech_prob at 0, and
 # its "Thank you." for pure noise scores like real speech (avg_logprob about -0.5, clean speech -0.1 to -0.5), so
 # this only drops what Whisper is very unsure of; HALLUCINATIONS catches the rest.
@@ -367,6 +374,9 @@ class Ears:
         self.voiced = 0  # chunks of speech in the clip being recorded
         self.peak, self.peak_word = 0.0, ""  # the highest wake word score of the try going on
         self.next_cue = 0.0  # no near-miss or still-working sound before this moment
+        self.queue: list[tuple[str, dict]] = []  # lines waiting for the user to finish, oldest first
+        self.queue_since = 0.0  # when the oldest of them started waiting
+        self.last_speech = 0.0  # when the VAD last heard speech
         self.wait_for_wake()
 
     def feed(self, chunk: np.ndarray) -> None:
@@ -382,6 +392,8 @@ class Ears:
         self.on_chunk = self.wake_chunk
 
     def wake_chunk(self, chunk: np.ndarray) -> None:
+        if self.vad.predict(chunk, frame_size=640) >= SPEECH:  # about 0.6 ms per chunk
+            self.last_speech = time.monotonic()
         self.recent.append(chunk)
         scores = self.oww.predict(chunk)
         fired = max(scores, key=scores.get)
@@ -393,7 +405,9 @@ class Ears:
                 self.wait_for_wake()
                 return
             emit("wake")
-            self.play(*CHIME_UP, tail=0.05)  # heard the wake word: short, so little of a one-breath request is lost
+            # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
+            # start of a longer file, so the stream closing early doesn't reach it.
+            self.play(*CHIME_UP, tail=0.05, drain=False)
             self.record(self.request_done, list(self.recent))
             self.ack, self.grace, self.on_chunk = self.acks[fired], GRACE, self.after_wake
         elif score >= PEAK_FLOOR:
@@ -432,6 +446,7 @@ class Ears:
         self.clip.append(chunk)
         if self.vad.predict(chunk, frame_size=640) >= SPEECH:
             self.voiced, self.quiet = self.voiced + 1, 0
+            self.last_speech = time.monotonic()
         else:
             self.quiet += 1
         spoke = self.voiced >= MIN_VOICED
@@ -456,11 +471,32 @@ class Ears:
         self.play(*CHIME_CLOSE, tail=0.1)
         self.wait_for_wake()
 
+    def user_turn(self) -> bool:
+        """The user has the floor: a recording or a follow-up window is on, or they spoke a moment ago."""
+        if self.on_chunk != self.wake_chunk:
+            return True
+        now = time.monotonic()
+        return now - self.last_speech < SPOKE_WAIT and now - self.queue_since < HOLD_MAX
+
+    def line(self, text: str, **how) -> None:
+        """Every spoken line comes through here, so it never talks over the user. See flush."""
+        if not self.queue:
+            self.queue_since = time.monotonic()
+        self.queue.append((text, how))
+        if self.user_turn():
+            emit("queued", text=text)
+
+    def flush(self) -> None:
+        """Says the oldest waiting line once the user is done. The main loop calls this after every event."""
+        if self.queue and not self.user_turn():
+            text, how = self.queue.pop(0)
+            self.say(text, **how)
+
     def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True) -> None:
         """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
         meanwhile. Only a line that wants an answer (asked and window) opens the follow-up window, and never in a call,
-        so call audio is not sent to speech to text, nor while the user is mid-request, which would cut them off. With
-        hold, a call gets a short heads-up and the line goes back as `held`."""
+        so call audio is not sent to speech to text. With hold, a call gets a short heads-up and the line goes back
+        as `held`."""
         import soundfile as sf
 
         if asked:
@@ -473,8 +509,7 @@ class Ears:
             self.next_heads_up = time.monotonic() + HEADS_UP_GAP
             title = (os.environ.get("VOICE_TITLE") or "").strip()
             text = f"{title}, I have an update." if title else "I have an update."
-        talking = self.on_chunk != self.wake_chunk and self.voiced
-        listen = bool(self.followup) and asked and window and not call and not talking
+        listen = bool(self.followup) and asked and window and not call
         samples, rate, _ = self.speech(text)
         REPLY_WAV.parent.mkdir(exist_ok=True)
         sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
@@ -489,15 +524,15 @@ class Ears:
                 self.play(*CHIME_UP, tail=0.15)  # the mic is open again
             self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
                         give_up=self.followup)
-        elif not talking and (asked or self.on_chunk == self.wake_chunk):  # else a request being recorded goes on
+        else:
             self.wait_for_wake()
 
-    def play(self, samples: np.ndarray, rate: int, tail: float = ECHO) -> None:
+    def play(self, samples: np.ndarray, rate: int, tail: float = ECHO, drain: bool = True) -> None:
         """Plays it with the mic deaf until `tail` seconds after the end."""
         try:
             import sounddevice as sd
 
-            sd.play(samples, rate)
+            sd.play(np.concatenate([samples, np.zeros(int(rate * DRAIN), samples.dtype)]) if drain else samples, rate)
             sd.wait()
         except Exception as e:  # no speaker: a reply's wav is still there
             emit("error", message=f"Can't play: {e}")
@@ -642,6 +677,10 @@ def main(commands: list[str]) -> None:
     # Nothing but exact zeros: a virtual mic whose app isn't running (Voicemod, which sends faint noise while it runs).
     zeros_since, warned = 0.0, False
     while True:
+        try:
+            ears.flush()
+        except Exception as e:
+            emit("error", message=f"Can't speak: {e}")
         kind, value, at = events.get()
         if kind == "audio":
             if value.any():
@@ -651,12 +690,9 @@ def main(commands: list[str]) -> None:
             elif not warned and at - zeros_since > SILENT_WARN:
                 warned, name = True, os.environ.get("MIC_DEVICE", "")
                 emit("error", message=f"The microphone ({name or 'Windows default'}) sends pure silence: is it on?")
-                try:
-                    ears.say(f"The {name} microphone hears nothing at all. Check that {name} is running." if name
-                             else "The microphone hears nothing at all. Check that it's plugged in and not muted.",
-                             asked=False, hold=True)
-                except Exception as e:
-                    emit("error", message=f"Can't speak: {e}")
+                ears.line(f"The {name} microphone hears nothing at all. Check that {name} is running." if name
+                          else "The microphone hears nothing at all. Check that it's plugged in and not muted.",
+                          asked=False, hold=True)
                 continue
             if mic is not None and at > ears.deaf_until:
                 try:
@@ -668,15 +704,13 @@ def main(commands: list[str]) -> None:
         if value == "quit":
             break
         if value == "listen":  # after "Say that again?": record the next sentence without the wake word
-            if not in_call():
+            if not ears.queue and not in_call():
                 ears.record(ears.request_done)
             continue
         if value.startswith(("say ", "end ", "late ", "tell ")):
             verb, text = value.split(" ", 1)
-            try:  # with the mic closed no window can open or end, and paused media would never resume
-                ears.say(text, asked=verb != "tell" and mic is not None, hold=verb in ("late", "tell"), window=verb != "end")
-            except Exception as e:
-                emit("error", message=f"Can't speak: {e}")
+            # With the mic closed no window can open or end, and paused media would never resume.
+            ears.line(text, asked=verb != "tell" and mic is not None, hold=verb in ("late", "tell"), window=verb != "end")
             continue
         if value in ("on", "off"):
             zeros_since, warned = 0.0, False  # time with the mic closed is not silence

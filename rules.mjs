@@ -9,6 +9,16 @@ export function verbFor(askedAt, listen = true, now = Date.now()) {
   return listen ? 'late' : 'tell'
 }
 
+// An answer to a question: "Q8 A", "p1 b", a bare letter or number, "B. Okay", or a recitation ("A, B, C, D").
+// These go straight to the boss. The router called such answers unclear and said "Say that again?" (2026-10-30).
+export function isAnswer(text) {
+  return /\b[a-z]\W*\d{1,2}\W*[a-z]\b/i.test(text) || /^\W*\d{1,2}\W*$/.test(text) ||
+    /^\W*[a-z]\s*([.,!?:;]|$)/i.test(text) || (text.match(/\b[a-z0-9]\b/gi) ?? []).length >= 4
+}
+
+// Too long to be a cut-off fragment: never "Say that again?", the boss decides.
+export const isLong = text => text.trim().split(/\s+/).length >= 6
+
 // By default only a line that asks something opens the window: an acknowledgment ends the exchange.
 export const asksSomething = text => /\?|\b(say|pick|choose|tell me)\b/i.test(text)
 

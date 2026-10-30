@@ -1,5 +1,7 @@
 """Checks the interruption rules without a mic or a speaker. Run: .venv\\Scripts\\python check_voice.py
 
+  queue  while the user has the floor every line waits, and goes out oldest first once they are done
+  play   each sound gets the silence that lets it play to its end
   say    a line that wants an answer opens the follow-up window, prompted or not; an acknowledgment or plain news does not
   call   in a call: a heads-up at most every HEADS_UP_GAP seconds, the line held; never a window
   media  what was playing resumes after the line, or after the window when one opens
@@ -27,7 +29,8 @@ def ears() -> listener.Ears:
     e.oww, e.vad, e.recent = mock.Mock(), mock.Mock(), []
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.threshold, e.peak, e.peak_word, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0.0, {"jarvis": "ack"}, ["jarvis"]
-    e.spoken, e.played = [], []
+    e.spoken, e.played, e.queue, e.queue_since, e.last_speech = [], [], [], 0.0, 0.0
+    e.vad.predict = lambda *a, **k: 0.0
     e.speech = lambda text: (e.spoken.append(text), np.zeros(10, np.float32), RATE, "test")[1:]
     e.play = lambda samples, *a, **k: e.played.append(samples)
     return e
@@ -107,19 +110,63 @@ def main() -> None:
     e, events, _ = run(True, [], asked=True, hold=True)
     assert e.spoken[0].endswith("I have an update.") and events[0][0] == "held"
 
-    # A line nobody asked for leaves a request being recorded alone.
-    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), \
+    # Never over the user: while a request or an answer is being recorded every line waits, oldest first.
+    events = []
+    with mock.patch.object(listener, "in_call", lambda: False), \
+            mock.patch.object(listener, "emit", lambda event, **d: events.append((event, d))), \
             mock.patch.object(listener, "pause_media", lambda: []), \
             mock.patch.object(listener, "REPLY_WAV", HERE / "tmp" / "check_voice.wav"):
         e = ears()
-        e.on_chunk = e.record_chunk
-        e.say("The news.", asked=False, hold=True)
-        assert e.on_chunk == e.record_chunk
-        # So does a question nobody prompted (late): the user is mid-sentence, the clip stays.
-        e.clip, e.voiced = ["their words"], 5
-        e.say("Restart now?", hold=True)
-        assert e.on_chunk == e.record_chunk and e.clip == ["their words"]
-    # That question with nobody talking and no call: in full, with the window. In a call: the heads-up, no window.
+        e.on_chunk, e.clip, e.voiced = e.record_chunk, ["their words"], 5
+        e.line("First.", asked=False, hold=True)
+        e.line("Second?", hold=True)
+        e.flush()
+        assert e.spoken == [] and e.on_chunk == e.record_chunk and e.clip == ["their words"]
+        assert [d["text"] for ev, d in events if ev == "queued"] == ["First.", "Second?"]
+        # Their words are handled: the oldest line goes out. The second opens the window.
+        e.wait_for_wake()
+        e.flush()
+        assert e.spoken == ["First."] and e.on_chunk == e.wake_chunk
+        e.flush()
+        assert e.spoken == ["First.", "Second?"] and e.on_chunk == e.record_chunk
+        # That open window holds the next line too, even before the user says a word, until it closes.
+        e.voiced = 0
+        e.line("Third.", asked=False, hold=True)
+        e.flush()
+        assert e.spoken == ["First.", "Second?"]
+        e.close()
+        e.flush()
+        assert e.spoken[-1] == "Third."
+        # Speech with no recording on: the line waits for 3 s of quiet, but not forever. Quiet: it goes at once.
+        e = ears()
+        e.line("News.", asked=False, hold=True)
+        e.flush()
+        assert e.spoken == ["News."]
+        e.last_speech = listener.time.monotonic()
+        e.line("News.", asked=False, hold=True)
+        e.flush()
+        assert e.spoken == ["News."]
+        e.queue_since -= listener.HOLD_MAX
+        e.flush()
+        assert e.spoken == ["News.", "News."]
+        # The VAD feeds that, while waiting for the wake word.
+        e = ears()
+        e.vad.predict = lambda *a, **k: 0.9
+        e.oww.predict = lambda _: {"jarvis": 0.0}
+        e.on_chunk(np.zeros(1280, np.int16))
+        assert e.last_speech > 0
+
+    # The whole sound plays: silence is added after it, since the stream closes before its last buffers have played.
+    tone = np.ones(100, np.float32)
+    with mock.patch("sounddevice.play") as played, mock.patch("sounddevice.wait"):
+        e = ears()
+        listener.Ears.play(e, tone, 1000)
+        assert len(played.call_args[0][0]) == 100 + int(1000 * listener.DRAIN)
+        assert listener.DRAIN >= 0.3  # measured on the speaker: about 0.28 s between wait() returning and the end
+        listener.Ears.play(e, tone, 1000, drain=False)
+        assert len(played.call_args[0][0]) == 100
+
+    # A question with nobody talking and no call: in full, with the window. In a call: the heads-up, no window.
     e, _, _ = run(False, [], hold=True)
     assert e.spoken == ["The news."] and e.on_chunk == e.record_chunk
     e, events, _ = run(True, [], hold=True)
@@ -157,7 +204,14 @@ def main() -> None:
 
     subprocess.run(["node", "--input-type=module", "-e", """
         import assert from 'node:assert'
-        import { asksForHeld as a, asksSomething as q, verbFor as v } from './rules.mjs'
+        import { asksForHeld as a, asksSomething as q, isAnswer as n, isLong as l, verbFor as v } from './rules.mjs'
+        for (const t of ['Q8 A', 'q8a', 'p1 b.', 'P 1, B', 'B.', 'b', '3', 'B. Okay. Hello?',
+          'Alright, A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, C, U, V, W, X, Y, and Z.', 'A, B, C, D.'])
+          assert(n(t), t)
+        for (const t of ['A joke please.', 'I think so.', "What's up?", 'Hey there', 'thank you very much'])
+          assert(!n(t), t)
+        assert(l('let us try first if you would recognize each and every letter'))
+        assert(!l('um the what') && !l('Hello?'))
         assert.equal(v(0, true, 1e9), 'late')
         assert.equal(v(0, false, 1e9), 'tell')
         assert.equal(v(1e9 - 10_000, true, 1e9), 'say')

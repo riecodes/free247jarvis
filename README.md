@@ -146,6 +146,8 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   so you can reply ("yes", "A", "tell it to go on") without the wake word. `FOLLOWUP_SECONDS=` in `.env`
   changes that; 0 turns it off. An acknowledgment ("Understood") or plain news (a worker finished) ends
   there, with no listening.
+- It never talks over you. While it records you, while the 8 seconds are open, or for 3 seconds after you
+  spoke (30 at most, in case that's a TV), every line waits in a queue and plays when you're done.
 - Whatever is playing (a video, Spotify) pauses while it speaks and resumes after, if it was playing.
 - In a call (another app is on the mic), it only says "I have an update", at most every 5 minutes, and
   never keeps listening. Say "Hey Jarvis, what's the update?" for the full lines. Apps that hold the mic

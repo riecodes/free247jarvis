@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { asksForHeld, asksSomething, verbFor } from './rules.mjs'
+import { asksForHeld, asksSomething, isAnswer, isLong, verbFor } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -125,6 +125,7 @@ const KINDS = {
 async function route(text) {
   log(`heard (mic): ${text}`)
   if (held.length && asksForHeld(text)) return answer(held.splice(0).join(' '))
+  if (isAnswer(text)) return send(text, 'mic')
   const key = secret('TYPESAFE_API_KEY')
   let kind = 'work', p = 1
   if (key) {
@@ -155,7 +156,7 @@ async function route(text) {
     log(`router: ${kind} ${p.toFixed(2)} in ${Date.now() - t} ms`)
   }
   // Jev unsure: the boss decides ("Sino ang may kailangan sa akin?" scored status 0.67, and asking again was wrong).
-  if (p < JEV_MIN) kind = 'work'
+  if (p < JEV_MIN || (kind === 'unclear' && isLong(text))) kind = 'work'
   if (kind === 'unclear') return answer(pro ? 'Sorry, ano ulit?' : 'Say that again?', true)
   const quick = kind === 'status' ? status() : kind === 'chat' ? await chat(text) : ''
   if (quick) return answer(quick)
