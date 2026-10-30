@@ -6,6 +6,7 @@
   call   in a call: a heads-up at most every HEADS_UP_GAP seconds, the line held; never a window
   media  what was playing resumes after the line, or after the window when one opens
   tries  wake word peaks are logged; a near miss ticks, a wake while busy gets the still-working sound, neither in a call
+  look   repeated tries, and each failure the user can't hear, go on screen; nothing else does
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
   scan   the real WASAPI and media session calls run on this machine (nothing is paused)
 """
@@ -20,6 +21,7 @@ import listener
 
 HERE = Path(__file__).resolve().parent
 RATE = listener.CHIME_UP[1]
+REAL_OUTPUT_PROBLEM = listener.output_problem
 
 
 def ears() -> listener.Ears:
@@ -29,10 +31,10 @@ def ears() -> listener.Ears:
     e.oww, e.vad, e.recent = mock.Mock(), mock.Mock(), []
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.threshold, e.peak, e.peak_word, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0.0, {"jarvis": "ack"}, ["jarvis"]
-    e.spoken, e.played, e.queue, e.queue_since, e.last_speech = [], [], [], 0.0, 0.0
+    e.spoken, e.played, e.queue, e.queue_since, e.last_speech, e.tries = [], [], [], 0.0, 0.0, []
     e.vad.predict = lambda *a, **k: 0.0
     e.speech = lambda text: (e.spoken.append(text), np.zeros(10, np.float32), RATE, "test")[1:]
-    e.play = lambda samples, *a, **k: e.played.append(samples)
+    e.play = lambda samples, *a, **k: e.played.append(samples) or True
     return e
 
 
@@ -77,8 +79,72 @@ def run(call: bool, playing: list, **say) -> tuple[listener.Ears, list, list]:
     return e, events, resumed
 
 
+def looking() -> None:
+    """The on-screen caption: repeated tries that got nowhere, a stray near miss, and each failure the user can't hear."""
+    near_twice = [0.3, 0.05, 0.3, 0.05]
+    with mock.patch.object(listener, "media_playing", lambda: False):
+        captions = lambda r: [d for ev, d in r[1] if ev == "caption"]
+        # Once is not looking; twice is, with the generic hint since nothing is detectably wrong.
+        assert not captions(tries([0.3, 0.05]))
+        shown = captions(tries(near_twice))
+        assert len(shown) == 1 and shown[0]["looking"] and listener.CANT_HEAR in shown[0]["text"]
+        # A wake word while busy counts too, and is no stray.
+        assert len(captions(tries([0.5, 0.0, 0.5], busy=True))) == 1
+        # A near miss in a call stays quiet, as does one with a video playing.
+        assert not captions(tries(near_twice, call=True))
+    with mock.patch.object(listener, "media_playing", lambda: True):
+        assert not captions(tries(near_twice))
+    # Two tries spread out are not looking.
+    with mock.patch.object(listener, "media_playing", lambda: False), mock.patch.object(listener, "emit") as emitted:
+        e = ears()
+        e.tried()
+        e.tries = [t - listener.LOOK_WINDOW for t in e.tries]
+        e.tried()
+        assert not emitted.called
+        # "Jarvis, Jarvis" twice leaves no words: looking. A real request clears the count.
+        e = ears()
+        with mock.patch.object(listener, "transcribe", lambda clip: "Jarvis, Jarvis"):
+            e.request_done(np.zeros(1, np.int16))
+            e.request_done(np.zeros(1, np.int16))
+        assert any(c.args[0] == "caption" for c in emitted.call_args_list)
+        e = ears()
+        e.tried()
+        with mock.patch.object(listener, "transcribe", lambda clip: "open notepad"):
+            e.request_done(np.zeros(1, np.int16))
+        assert e.tries == []
+
+    # A muted PC: the line goes on screen, word for word. Failed sound or voice: the same.
+    with mock.patch.object(listener, "output_problem", lambda: "Your PC's sound is muted."):
+        _, events, _ = run(False, [], asked=False)
+    assert ("caption", {"text": "Your PC's sound is muted. I said: The news."}) in events
+    _, events, _ = run(False, [], asked=False)
+    assert not [ev for ev in events if ev[0] == "caption"]  # all fine: never a caption per line
+    events = []
+    with mock.patch.object(listener, "emit", lambda event, **d: events.append((event, d))):
+        e = ears()
+        e.line("The news.", asked=False)
+        e.say = mock.Mock(side_effect=OSError("no voice"))
+        e.flush()
+    assert ("caption", {"text": "My voice failed, so in words: The news."}) in events
+
+    # What Windows can tell about the speaker.
+    def problem(mute=0, level=0.5, name="Speakers (Realtek(R) Audio)", device=True):
+        speakers = mock.Mock(FriendlyName=name)
+        speakers.EndpointVolume.GetMute.return_value = mute
+        speakers.EndpointVolume.GetMasterVolumeLevelScalar.return_value = level
+        with mock.patch("pycaw.pycaw.AudioUtilities.GetSpeakers", return_value=speakers, side_effect=None if device else OSError()), \
+                mock.patch("sounddevice.query_devices", return_value={"name": "Speakers (Realtek(R) Audio)"}):
+            return REAL_OUTPUT_PROBLEM()
+
+    assert problem() == ""
+    assert "muted" in problem(mute=1) and "zero" in problem(level=0.0) and "no speaker" in problem(device=False)
+    assert "switched" in problem(name="Headphones (WH-1000XM4)")
+
+
 def main() -> None:
     video = object()
+    listener.output_problem = lambda: ""  # this machine's real speaker must not decide the checks
+    looking()
 
     # A reply: in full, then the window, with the video still paused until the window ends.
     e, events, resumed = run(False, [video])
@@ -204,7 +270,13 @@ def main() -> None:
 
     subprocess.run(["node", "--input-type=module", "-e", """
         import assert from 'node:assert'
-        import { asksForHeld as a, asksSomething as q, isAnswer as n, isLong as l, verbFor as v } from './rules.mjs'
+        import { asksForHeld as a, asksSomething as q, isAnswer as n, isLong as l, isLooking as k, verbFor as v } from './rules.mjs'
+        for (const t of ['Hello?', 'Hello, hello.', 'Hi Jarvis', 'Are you there?', 'Hello? Are you there, Jarvis?',
+          'Can you hear me?', 'Andyan ka ba?', 'Jarvis, are you still there?'])
+          assert(k(t), t)
+        for (const t of ['Hello, how do I fix the navbar?', 'Tell the course session it can go on now.', 'Okay, ship it.',
+          'Hi, so I want to implement a fallback for when you do not hear me at all.'])
+          assert(!k(t), t)
         for (const t of ['Q8 A', 'q8a', 'p1 b.', 'P 1, B', 'B.', 'b', '3', 'B. Okay. Hello?',
           'Alright, A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, C, U, V, W, X, Y, and Z.', 'A, B, C, D.'])
           assert(n(t), t)

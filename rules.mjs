@@ -16,6 +16,14 @@ export function isAnswer(text) {
     /^\W*[a-z]\s*([.,!?:;]|$)/i.test(text) || (text.match(/\b[a-z0-9]\b/gi) ?? []).length >= 4
 }
 
+// "Hello? Are you there?": checking that it's there, not a request. Whole short utterances only, so "hello, how do I
+// fix this" or a long line with "hear me" in it is not one.
+export function isLooking(text) {
+  const said = text.toLowerCase().replace(/[^\w\s']/g, ' ').trim()
+  return said.split(/\s+/).length <= 8 && (/^((hello|hi|hey|helo|jarvis|claude|okay|ok)\s*)+$/.test(said) ||
+    /\b(are you there|you there|you still there|can you hear|do you hear|hear me|anyone there|you listening|andyan ka|nandyan ka|nandiyan ka|naririnig mo)\b/.test(said))
+}
+
 // Too long to be a cut-off fragment: never "Say that again?", the boss decides.
 export const isLong = text => text.trim().split(/\s+/).length >= 6
 

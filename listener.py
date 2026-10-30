@@ -5,12 +5,14 @@ voice.mjs (the channel server) starts this and talks to it over pipes. It reads 
 and writes one JSON event per stdout line:
 
   commands  on | off | enroll | cancel | listen (record without the wake word) | quit
+            looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
             end <text>                          as say, but it closes the exchange: no follow-up window
             late <text>                         an older reply, or a question nobody prompted: a heads-up in a call, else as say
             tell <text>                         news nobody asked for: a heads-up in a call, else in full; no follow-up window
   events    status {text}                       a model is loading or downloading
             state {on, trained}                 after on, off, enroll and cancel
+            caption {text, looking}             show this on screen; looking: voice.mjs adds what the user is waiting on
             queued {text}                       the user has the floor: said once they are done
             peak {word, score, busy}            how high a try at the wake word scored, fired or not
             wake                                heard the wake word, now recording the request
@@ -95,6 +97,8 @@ HEADS_UP_GAP = 300  # seconds between heads-ups in one call; lines in between ar
 PEAK_FLOOR = 0.1  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
 NEAR_MISS = 0.25  # a peak from here up to the threshold gets the near-miss tick
 CUE_GAP = 2  # seconds between near-miss and still-working sounds
+LOOK_TRIES, LOOK_WINDOW = 2, 20  # this many tries that got nowhere within this many seconds: they are looking for it
+CANT_HEAR = "Can't hear me? Check your speaker's power and knob, your headphones, and your PC's sound."
 SPOKE_WAIT = 3  # a line waits until the user has been quiet this many seconds, even outside a recording
 HOLD_MAX = 30  # but no longer than this outside a recording: speech that long is a TV or someone else
 # Silence after each sound. sd.wait() closes the stream when the last buffer is queued, and on this MME speaker
@@ -192,14 +196,50 @@ def in_call() -> bool:
     return False
 
 
+def output_problem() -> str:
+    """Why the user can't hear a line, when Windows can tell; empty when it can't (a speaker switched off at its
+    knob looks like any other). PortAudio keeps the output it found at start, so a new Windows default is not used."""
+    try:
+        import sounddevice as sd
+        from pycaw.pycaw import AudioUtilities
+
+        try:
+            device = AudioUtilities.GetSpeakers()
+            name = device.FriendlyName
+        except Exception:
+            return "Windows has no speaker right now: plug one in or turn it on."
+        volume = device.EndpointVolume
+        if volume.GetMute():
+            return "Your PC's sound is muted: unmute it to hear me."
+        if volume.GetMasterVolumeLevelScalar() < 0.02:
+            return "Your PC's volume is at zero: turn it up to hear me."
+        mine = sd.query_devices(kind="output")["name"]
+        if mine[:20] not in name:  # MME cuts names at 31 characters
+            return f"Windows switched its sound to {name}, but I still play on {mine}: switch back, or restart me."
+    except Exception as e:  # can't tell: the same as nothing wrong
+        emit("error", message=f"Can't check the speaker: {e}")
+    return ""
+
+
+async def playing_sessions() -> list:
+    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as Manager
+    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
+
+    manager = await Manager.request_async()
+    return [s for s in manager.get_sessions() if s.get_playback_info().playback_status == Status.PLAYING]
+
+
+def media_playing() -> bool:
+    try:
+        return bool(asyncio.run(playing_sessions()))
+    except Exception:
+        return False
+
+
 def pause_media() -> list:
     """Pauses whatever is playing in Windows' media sessions (browsers, Spotify) and returns just those, to resume."""
     async def pause() -> list:
-        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as Manager
-        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
-
-        manager = await Manager.request_async()
-        playing = [s for s in manager.get_sessions() if s.get_playback_info().playback_status == Status.PLAYING]
+        playing = await playing_sessions()
         for session in playing:
             await session.try_pause_async()
         return playing
@@ -377,6 +417,7 @@ class Ears:
         self.queue: list[tuple[str, dict]] = []  # lines waiting for the user to finish, oldest first
         self.queue_since = 0.0  # when the oldest of them started waiting
         self.last_speech = 0.0  # when the VAD last heard speech
+        self.tries: list[float] = []  # recent tries at the wake word that got nowhere
         self.wait_for_wake()
 
     def feed(self, chunk: np.ndarray) -> None:
@@ -402,6 +443,7 @@ class Ears:
             emit("peak", word=fired, score=round(score, 2), busy=busy)
             if busy:  # saying "Hey Jarvis" again before the reply must not reopen it, but it is answered
                 self.cue(CHIME_BUSY)
+                self.tried()
                 self.wait_for_wake()
                 return
             emit("wake")
@@ -418,6 +460,20 @@ class Ears:
             emit("peak", word=self.peak_word, score=round(peak, 2), busy=busy)
             if peak >= NEAR_MISS and not busy:
                 self.cue(CHIME_NEAR)
+                self.tried(stray=True)
+
+    def tried(self, stray: bool = False) -> None:
+        """A try at the wake word got nowhere. Repeated, the user is looking for it and may not hear its sounds. A
+        near miss could be a video or the other side of a call (stray), so those two keep it quiet."""
+        now = time.monotonic()
+        self.tries = [t for t in self.tries if now - t < LOOK_WINDOW] + [now]
+        if len(self.tries) >= LOOK_TRIES:
+            self.tries = []
+            if not (stray and (in_call() or media_playing())):
+                emit("caption", text=self.looking(), looking=True)
+
+    def looking(self) -> str:
+        return f"Hello, I'm Jarvis, and I can hear you. {output_problem() or CANT_HEAR}"
 
     def cue(self, sound: tuple[np.ndarray, int]) -> None:
         """A sound that answers a try at the wake word: at most one per CUE_GAP, and none in a call."""
@@ -461,10 +517,12 @@ class Ears:
         if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS:
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
         if text:
+            self.tries = []
             emit("heard", text=text)
             self.busy_until = time.monotonic() + REPLY_WAIT
         else:
             emit("nothing")
+            self.tried()  # such as "Jarvis, Jarvis", which leaves no words once the wake word is taken out
 
     def close(self) -> None:
         """The follow-up window ran out with nothing said: the done sound, then back to the wake word."""
@@ -490,7 +548,11 @@ class Ears:
         """Says the oldest waiting line once the user is done. The main loop calls this after every event."""
         if self.queue and not self.user_turn():
             text, how = self.queue.pop(0)
-            self.say(text, **how)
+            try:
+                self.say(text, **how)
+            except Exception as e:
+                emit("error", message=f"Can't speak: {e}")
+                emit("caption", text=f"My voice failed, so in words: {text}")
 
     def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True) -> None:
         """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
@@ -518,7 +580,11 @@ class Ears:
         if listen and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
             samples = np.concatenate([samples.astype(np.float32), np.zeros(rate * 6 // 10, np.float32), CHIME_UP[0]])  # 0.7 s after the last word
         self.paused += pause_media()
-        self.play(samples, rate)
+        problem = output_problem()  # not caught by the sound failing: a muted speaker plays along silently
+        if problem:
+            emit("caption", text=f"{problem} I said: {text}")
+        if not self.play(samples, rate) and not problem:
+            emit("caption", text=f"I can't play sound. {CANT_HEAR} I said: {text}")
         if listen:  # the user may answer without the wake word for a few seconds, then it waits for it again
             if rate != CHIME_UP[1]:
                 self.play(*CHIME_UP, tail=0.15)  # the mic is open again
@@ -527,8 +593,9 @@ class Ears:
         else:
             self.wait_for_wake()
 
-    def play(self, samples: np.ndarray, rate: int, tail: float = ECHO, drain: bool = True) -> None:
-        """Plays it with the mic deaf until `tail` seconds after the end."""
+    def play(self, samples: np.ndarray, rate: int, tail: float = ECHO, drain: bool = True) -> bool:
+        """Plays it with the mic deaf until `tail` seconds after the end. False if it could not play."""
+        played = True
         try:
             import sounddevice as sd
 
@@ -536,7 +603,9 @@ class Ears:
             sd.wait()
         except Exception as e:  # no speaker: a reply's wav is still there
             emit("error", message=f"Can't play: {e}")
+            played = False
         self.deaf_until = time.monotonic() + tail
+        return played
 
     def load_ack(self, text: str) -> tuple[np.ndarray, int]:
         """`text` in the current voice, rendered once per voice and cached in tmp/, so it plays the moment it's needed."""
@@ -677,10 +746,7 @@ def main(commands: list[str]) -> None:
     # Nothing but exact zeros: a virtual mic whose app isn't running (Voicemod, which sends faint noise while it runs).
     zeros_since, warned = 0.0, False
     while True:
-        try:
-            ears.flush()
-        except Exception as e:
-            emit("error", message=f"Can't speak: {e}")
+        ears.flush()
         kind, value, at = events.get()
         if kind == "audio":
             if value.any():
@@ -690,6 +756,9 @@ def main(commands: list[str]) -> None:
             elif not warned and at - zeros_since > SILENT_WARN:
                 warned, name = True, os.environ.get("MIC_DEVICE", "")
                 emit("error", message=f"The microphone ({name or 'Windows default'}) sends pure silence: is it on?")
+                emit("caption", text=f"The {name} microphone sends nothing, so I can't hear you. Check that "
+                                     f"{name} is running." if name else "The microphone sends nothing, so I can't hear "
+                                     "you. Check that it's plugged in and not muted.")
                 ears.line(f"The {name} microphone hears nothing at all. Check that {name} is running." if name
                           else "The microphone hears nothing at all. Check that it's plugged in and not muted.",
                           asked=False, hold=True)
@@ -703,6 +772,9 @@ def main(commands: list[str]) -> None:
             continue
         if value == "quit":
             break
+        if value == "looking":
+            emit("caption", text=ears.looking(), looking=True)
+            continue
         if value == "listen":  # after "Say that again?": record the next sentence without the wake word
             if not ears.queue and not in_call():
                 ears.record(ears.request_done)

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { asksForHeld, asksSomething, isAnswer, isLong, verbFor } from './rules.mjs'
+import { asksForHeld, asksSomething, isAnswer, isLong, isLooking, verbFor } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -104,6 +104,31 @@ const send = (text, via) => {
   return mcp.notification({ method: 'notifications/claude/channel', params: { content: text, meta: { via } } })
 }
 
+// On screen, for when the user can't hear the voice: only when they look for it or something failed, never per line.
+// A repeat of the same words within CAPTION_GAP is dropped. Detached, to outlive this process when the boss closes.
+const CAPTION_GAP = 20_000
+let caption, captioned = '', captionedAt = 0
+function showCaption(text) {
+  log(`caption: ${text}`)
+  if (text === captioned && Date.now() - captionedAt < CAPTION_GAP) return
+  [captioned, captionedAt] = [text, Date.now()]
+  // The whole tree: a venv's pythonw is a launcher, and the window lives in its child.
+  if (caption) spawn('taskkill', ['/pid', String(caption.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true }).on('error', () => {})
+  caption = spawn(PYTHON.replace('python.exe', 'pythonw.exe'), [join(HERE, 'caption.py'), text],
+    { cwd: HERE, env, detached: true, stdio: 'ignore', windowsHide: true })
+  caption.on('error', e => log(`caption failed: ${e.message}`))
+  caption.unref()
+}
+
+// What the user may be waiting on, for a caption shown because they are looking for the voice.
+function waitingOn() {
+  const minutes = Math.round((Date.now() - askedAt) / 60_000)
+  return [
+    held.length && `I held ${count(held.length, held.length === 1 ? 'line' : 'lines')} for your call: say "what's the update".`,
+    askedAt && minutes >= 1 && `The orch has had your last request for ${count(minutes, minutes === 1 ? 'minute' : 'minutes')}: check its window if no answer comes.`,
+  ].filter(Boolean).join(' ')
+}
+
 // The router, for spoken requests. With TYPESAFE_API_KEY in .env, Jev (TypeSafe's classifier) sorts each one, and
 // quick ones are answered here, about a second after they're heard, without a turn of the boss: the sessions'
 // status, small talk (Claude Haiku, with ANTHROPIC_API_KEY), and speech that isn't a clear request ("Say that
@@ -125,6 +150,10 @@ const KINDS = {
 async function route(text) {
   log(`heard (mic): ${text}`)
   if (held.length && asksForHeld(text)) return answer(held.splice(0).join(' '))
+  if (isLooking(text)) {
+    ears.stdin.write('looking\n')
+    return answer("Hello, I'm Jarvis, and I can hear you. What do you need?")
+  }
   if (isAnswer(text)) return send(text, 'mic')
   const key = secret('TYPESAFE_API_KEY')
   let kind = 'work', p = 1
@@ -233,14 +262,19 @@ function startEars() {
   createInterface({ input: ears.stdout }).on('line', line => {
     let e
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
-    if (e.event === 'heard') route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
+    if (e.event === 'heard') {
+      route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
+        .catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
+    } else if (e.event === 'caption') showCaption(`${e.text}${e.looking && waitingOn() ? ` ${waitingOn()}` : ''}`)
     else if (e.event === 'held') (held.push(e.text), log(`held for after the call: ${e.text}`))
     else if (e.event === 'peak') log(`wake peak: ${e.word} ${e.score}${e.busy ? ' (busy)' : ''}`)
     else log(`listener ${e.event}${e.text || e.message ? `: ${e.text || e.message}` : ''}`)
   })
   ears.on('exit', code => {
     log(`listener exited (${code})`)
-    if (!quitting) setTimeout(startEars, 5000)
+    if (quitting) return
+    showCaption('My ears stopped: I am restarting them, and I can\'t hear you for a few seconds.')
+    setTimeout(startEars, 5000)
   })
   if (mic) ears.stdin.write('on\n')
 }
@@ -268,6 +302,7 @@ createServer((req, res) => {
 // Claude Code exits by closing our stdin; the listener then sees its own stdin close and quits too.
 function quit() {
   quitting = true
+  showCaption('Jarvis is off: the orch closed, so I can\'t hear or answer you.')
   ears.kill()
   process.exit(0)
 }
