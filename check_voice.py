@@ -1,6 +1,6 @@
 """Checks the interruption rules without a mic or a speaker. Run: .venv\\Scripts\\python check_voice.py
 
-  say    a reply to a request opens the follow-up window, a line nobody asked for does not
+  say    a reply that wants an answer opens the follow-up window; an acknowledgment or a line nobody asked for does not
   call   in a call: a heads-up at most every HEADS_UP_GAP seconds, the line held; never a window
   media  what was playing resumes after the line, or after the window when one opens
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
@@ -53,6 +53,9 @@ def main() -> None:
     # Nobody asked: in full, no window, the video back at once, and a pending request still counts as pending.
     e, events, resumed = run(False, [video], asked=False, hold=True)
     assert e.on_chunk == e.wake_chunk and e.spoken == ["The news."] and resumed == [video] and e.busy_until > 0
+    # A reply that ends the exchange: in full, no window, the video back at once, the wake word free again.
+    e, events, resumed = run(False, [video], window=False)
+    assert e.on_chunk == e.wake_chunk and e.spoken == ["The news."] and resumed == [video] and e.busy_until == 0
     # Nothing was playing: nothing resumes.
     assert run(False, [], asked=False)[2] == []
 
@@ -84,11 +87,17 @@ def main() -> None:
 
     subprocess.run(["node", "--input-type=module", "-e", """
         import assert from 'node:assert'
-        import { asksForHeld as a, verbFor as v } from './rules.mjs'
-        assert.equal(v(0, 1e9), 'tell')
-        assert.equal(v(1e9 - 10_000, 1e9), 'say')
-        assert.equal(v(1e9 - 300_000, 1e9), 'late')
-        assert.equal(v(1e9 - 3_600_000, 1e9), 'tell')
+        import { asksForHeld as a, asksSomething as q, verbFor as v } from './rules.mjs'
+        assert.equal(v(0, true, 1e9), 'tell')
+        assert.equal(v(1e9 - 10_000, true, 1e9), 'say')
+        assert.equal(v(1e9 - 10_000, false, 1e9), 'end')
+        assert.equal(v(1e9 - 300_000, true, 1e9), 'late')
+        assert.equal(v(1e9 - 300_000, false, 1e9), 'tell')
+        assert.equal(v(1e9 - 3_600_000, true, 1e9), 'tell')
+        for (const t of ['Sir, restart now?', 'Sir, say A for on, or B to keep it off.', 'Pick one in the terminal.'])
+          assert(q(t), t)
+        for (const t of ['Sir, understood.', 'Sir, okay, no restart.', 'Sir, turning email on now.'])
+          assert(!q(t), t)
         for (const t of ["What's the update?", 'Ano yung balita?', 'Go ahead.', 'Ano yun?', 'Tell me the message.'])
           assert(a(t), t)
         for (const t of ['Update the README please.', 'Yes.', "What's the update on the dentaria deploy today please?"])

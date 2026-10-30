@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { asksForHeld, verbFor } from './rules.mjs'
+import { asksForHeld, asksSomething, verbFor } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -30,7 +30,7 @@ for (const [, k, v] of dotenv.matchAll(/^([A-Z][A-Z0-9_]*)=(.*)$/gm)) env[k] ??=
 const pro = /^elevenlabs$/i.test(env.VOICE_ENGINE ?? '')
 // VOICE_TITLE=Sir: every spoken line opens with it ("Sir, the course session needs you.").
 const TITLE = env.VOICE_TITLE?.trim() ?? ''
-// The listener's rising chime after each reply says the mic is open again (FOLLOWUP_SECONDS), so no spoken cue here.
+// The listener's rising chime after a reply that asks something says the mic is open again (FOLLOWUP_SECONDS), so no spoken cue here.
 const titled = text => !TITLE || !text || text.toLowerCase().startsWith(TITLE.toLowerCase()) ? text
   : `${TITLE}, ${text[0].toLowerCase()}${text.slice(1)}`
 const SPEAK = (TITLE ? `Start every spoken reply with "${TITLE},". ` : '') +
@@ -56,7 +56,9 @@ const mcp = new Server(
     instructions:
       'Spoken requests from the user arrive as <channel source="voice">, already turned into text (English, ' +
       'Tagalog or Taglish, with the odd speech-to-text mistake). Act on each one, then answer it out loud with ' +
-      'exactly one call to the reply tool: one or two short spoken sentences, no markdown. ' + SPEAK,
+      'exactly one call to the reply tool: one or two short spoken sentences, no markdown. The mic reopens after ' +
+      'a reply only when it asks the user something; when the user just answered your question, your ' +
+      'acknowledgment ends the exchange, so pass listen: false if its wording could read as asking. ' + SPEAK,
   },
 )
 
@@ -66,7 +68,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     description: 'Say something out loud to the user. Plain spoken sentences only: no markdown, code, or long paths.',
     inputSchema: {
       type: 'object',
-      properties: { text: { type: 'string', description: 'What to say, one or two short sentences' } },
+      properties: {
+        text: { type: 'string', description: 'What to say, one or two short sentences' },
+        listen: {
+          type: 'boolean',
+          description: 'Keep the mic open a few seconds after this reply. Default: only when the line asks something ' +
+            '(a question, or "say ..."). False on an acknowledgment of an answer the user just gave.',
+        },
+      },
       required: ['text'],
     },
   }],
@@ -77,7 +86,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const text = titled(String(req.params.arguments?.text ?? '').replace(/\s+/g, ' ').trim())
   log(`reply: ${text}`)
   if (text) {
-    ears.stdin.write(`${verbFor(askedAt)} ${text}\n`)
+    ears.stdin.write(`${verbFor(askedAt, req.params.arguments?.listen ?? asksSomething(text))} ${text}\n`)
     askedAt = 0 // one reply answers the request; later lines are the boss's own news
   }
   return { content: [{ type: 'text', text: 'Speaking.' }] }
@@ -157,7 +166,7 @@ async function route(text) {
 function answer(text, listen = false) {
   text = titled(text)
   log(`reply (router): ${text}`)
-  ears.stdin.write(`say ${text}\n${listen ? 'listen\n' : ''}`)
+  ears.stdin.write(`${asksSomething(text) ? 'say' : 'end'} ${text}\n${listen ? 'listen\n' : ''}`)
 }
 
 const NUMBERS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten']

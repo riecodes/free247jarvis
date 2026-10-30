@@ -139,9 +139,10 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - If the wake word misses you, set `WAKE_THRESHOLD=0.3` in `.env`, or train it on your voice.
 - After it hears a request, it waits for the answer before the wake word works again, so saying
   "Hey Jarvis" twice doesn't start over.
-- After each spoken answer it keeps listening for 8 seconds, so you can reply ("yes", "A", "tell it
-  to go on") without the wake word. `FOLLOWUP_SECONDS=` in `.env` changes that; 0 turns it off.
-  Lines you didn't ask for (a worker finished) never open this window.
+- After a spoken answer that asks you something, it keeps listening for 8 seconds, so you can reply
+  ("yes", "A", "tell it to go on") without the wake word. `FOLLOWUP_SECONDS=` in `.env` changes that;
+  0 turns it off. An acknowledgment ("Understood") ends the exchange, and lines you didn't ask for (a
+  worker finished) never open this window.
 - Whatever is playing (a video, Spotify) pauses while it speaks and resumes after, if it was playing.
 - In a call (another app is on the mic), it only says "I have an update", at most every 5 minutes, and
   never keeps listening. Say "Hey Jarvis, what's the update?" for the full lines. Apps that hold the mic

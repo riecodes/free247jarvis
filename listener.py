@@ -6,6 +6,7 @@ and writes one JSON event per stdout line:
 
   commands  on | off | enroll | cancel | listen (record without the wake word) | quit
             say <text>                          answers a request just heard: said in full, then the follow-up window
+            end <text>                          as say, but it closes the exchange: no follow-up window
             late <text>                         answers an older request: a heads-up in a call, else as say
             tell <text>                         nobody asked: a heads-up in a call, else in full; never a follow-up window
   events    status {text}                       a model is loading or downloading
@@ -424,10 +425,11 @@ class Ears:
         self.play(*CHIME_CLOSE, tail=0.1)
         self.wait_for_wake()
 
-    def say(self, text: str, asked: bool = True, hold: bool = False) -> None:
+    def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True) -> None:
         """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
-        meanwhile. Only a line that answers a request (asked) opens the follow-up window, and never in a call, so call
-        audio is not sent to speech to text. With hold, a call gets a short heads-up and the line goes back as `held`."""
+        meanwhile. Only a line that answers a request (asked) and wants an answer (window) opens the follow-up window,
+        and never in a call, so call audio is not sent to speech to text. With hold, a call gets a short heads-up and
+        the line goes back as `held`."""
         import soundfile as sf
 
         if asked:
@@ -440,7 +442,7 @@ class Ears:
             self.next_heads_up = time.monotonic() + HEADS_UP_GAP
             title = (os.environ.get("VOICE_TITLE") or "").strip()
             text = f"{title}, I have an update." if title else "I have an update."
-        listen = bool(self.followup) and asked and not call
+        listen = bool(self.followup) and asked and window and not call
         samples, rate, _ = self.speech(text)
         REPLY_WAV.parent.mkdir(exist_ok=True)
         sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
@@ -637,10 +639,10 @@ def main(commands: list[str]) -> None:
             if not in_call():
                 ears.record(ears.request_done)
             continue
-        if value.startswith(("say ", "late ", "tell ")):
+        if value.startswith(("say ", "end ", "late ", "tell ")):
             verb, text = value.split(" ", 1)
             try:  # with the mic closed no window can open or end, and paused media would never resume
-                ears.say(text, asked=verb != "tell" and mic is not None, hold=verb != "say")
+                ears.say(text, asked=verb != "tell" and mic is not None, hold=verb in ("late", "tell"), window=verb != "end")
             except Exception as e:
                 emit("error", message=f"Can't speak: {e}")
             continue
