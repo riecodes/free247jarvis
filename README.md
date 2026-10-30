@@ -134,8 +134,6 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - Every message a worker gets counts against your plan's usage.
 - The free voice is Kokoro's calm British `bm_george`. Set `VOICE=` in `.env` to `bm_daniel`,
   `bm_fable`, `bm_lewis`, or the old American `af_heart`, then restart the boss.
-- Rather say "Hey Claude"? Set `WAKE_WORDS=hey_claude` in `.env` (it answers "Claude here"), or
-  `WAKE_WORDS=hey_jarvis,hey_claude` for both. "Hey Claude" can't tell "hey Clyde" apart.
 - If the wake word misses you, set `WAKE_THRESHOLD=0.25` in `.env`, or train it on your voice. A faint
   high tick means it almost heard you (a score of 0.12 up to the threshold): say it again. Every try's
   score and level are in `tmp\voice.log` as `wake peak:`, to tune the threshold by. Say the whole "Hey

@@ -206,6 +206,12 @@ def main() -> None:
     looking()
     hush()
 
+    # Only "Hey Jarvis" wakes it, and "Claude" in a request is the user's word, not a wake word to strip.
+    assert listener.wake_words() == ["hey_jarvis"]
+    assert listener.strip_wake("Hey Jarvis, status") == "status"
+    assert listener.strip_wake("Claude Code is slow") == "Claude Code is slow"
+    assert listener.strip_wake("Hey Claude is what I said") == "Hey Claude is what I said"
+
     # A reply: in full, then the window, with the video still paused until the window ends.
     e, events, resumed = run(False, [video])
     assert e.on_chunk == e.record_chunk and e.spoken == ["The news."]

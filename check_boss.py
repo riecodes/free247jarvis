@@ -1,7 +1,7 @@
 """End-to-end check against real Claude Code sessions. Run: .venv\\Scripts\\python check_boss.py
 
 Clips are synthesized with Kokoro, so no microphone is needed. Checks, in order:
-  wake      each wake word in WAKE_WORDS wakes the listener, also after a pause (and plain speech does not)
+  wake      the wake word wakes the listener, also after a pause (and plain speech does not)
   taglish   a Taglish clip transcribes through Groq
   terminal  "tell terminal 2 to create tmp\\t2.txt" reaches t2 and the file appears
   free      "give this to whoever is free" goes to an idle session (t2 is kept busy meanwhile)
@@ -201,14 +201,11 @@ def text_of(evs: list[dict]) -> str:
     return " ".join(e["text"] for e in evs if e["event"] == "heard").lower()
 
 
-assert listener.strip_wake("Hey Claude, what's up?") == "what's up?"
-assert listener.strip_wake("Hey, Cloud. Open Notepad") == "Open Notepad"
-assert listener.strip_wake("Cloudy skies today") == "Cloudy skies today"
+assert listener.strip_wake("Hey, Jarvis. Open Notepad") == "Open Notepad"
 assert listener.strip_wake("Hey Jarvis, status") == "status"
 assert listener.strip_wake("Open Notepad. Hey Jarvis, and type hello") == "Open Notepad. and type hello"
 
-# Every wake word in WAKE_WORDS, said in one breath with the request; the first one also with a pause, after which
-# it answers "Jarvis here" (out loud) and records the request.
+# The wake word, said in one breath with the request, and also with a pause, after which it answers "Jarvis here" (out loud) and records the request.
 WAKE = [w.replace("_", " ").title() for w in ears.words]
 evs = [hear(speak(f"{w}, what time is it in Manila?")) for w in WAKE]
 evs.append(hear(speak(f"{WAKE[0]}."), np.zeros(listener.RATE, np.int16), speak("What time is it in Manila?")))

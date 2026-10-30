@@ -1,5 +1,4 @@
-"""The ears and voice of the boss: waits for "Hey Jarvis" (or "Hey Claude", WAKE_WORDS in .env), answers
-"Jarvis here", records the request that follows, turns it into text, and speaks the boss's replies.
+"""The ears and voice of the boss: waits for "Hey Jarvis", answers "Jarvis here", records the request that follows, turns it into text, and speaks the boss's replies.
 
 voice.mjs (the channel server) starts this and talks to it over pipes. It reads one command per stdin line
 and writes one JSON event per stdout line:
@@ -24,8 +23,8 @@ and writes one JSON event per stdout line:
             enrolled                            voice training finished
             error {message}
 
-Everything but speech to text runs on the CPU: openWakeWord (its own hey_jarvis, or gdiamos/hey-claude, plus a
-verifier trained on the user's voice, once trained), Silero VAD to hear when a request ends, and Kokoro 82M for
+Everything but speech to text runs on the CPU: openWakeWord (its own hey_jarvis, plus a verifier trained on the
+user's voice, once trained), Silero VAD to hear when a request ends, and Kokoro 82M for
 the voice. Speech to text is Groq's whisper-large-v3-turbo, which handles Tagalog and Taglish.
 
 With VOICE_ENGINE=elevenlabs and an ElevenLabs key, speech to text is ElevenLabs Scribe v2 and the voice is an
@@ -57,13 +56,11 @@ sys.stdout = sys.stderr  # libraries print progress; only events may reach the p
 HERE = Path(__file__).resolve().parent
 MODELS = HERE / "models"
 REPLY_WAV = HERE / "tmp" / "reply.wav"
-# WAKE_WORDS in .env (comma separated) picks from these, hey_jarvis by default: the model in models/, and what
-# it says on waking (in the current voice, from a clip cached in tmp/).
+# The wake word: the model in models/, and what it says on waking (in the current voice, from a clip cached in tmp/).
+# Only this one: gdiamos/hey-claude scored 0.99 with nobody saying it (2026-10-30), and the user dropped it.
 WAKES = {
     "hey_jarvis": ("hey_jarvis_v0.1", "Jarvis here."),  # openWakeWord's official model
-    "hey_claude": ("hey_claude", "Claude here."),  # gdiamos/hey-claude
 }
-WAKE_URL = "https://huggingface.co/gdiamos/hey-claude/resolve/main/hey_claude.onnx"
 # Words Whisper should spell right. Never a whole sentence: on a near-silent clip Whisper hands its prompt back,
 # and a command in it ("Tell terminal 3 to fix the navbar") was then acted on.
 VOCAB = "Claude, Jarvis, terminal, session, Notepad, Taglish, pakisabi, yung."
@@ -82,11 +79,10 @@ EL_VOICE = "JBFqnCBsd6RMkjVDRZzb"  # George, a stock British ElevenLabs voice, w
 
 RATE = 16000
 CHUNK = 1280  # 80 ms, the frame openWakeWord expects
-# Tuning knobs. WAKE_THRESHOLD (default 0.5) is read from .env in Ears; the model card suggests 0.3 when it
-# misses a real "hey Claude".
+# Tuning knobs. WAKE_THRESHOLD (default 0.5) is read from .env in Ears; lower it when it misses a real "Hey Jarvis".
 SPEECH = 0.5  # Silero VAD score that counts as speech
 # Counted in 80 ms chunks.
-PRE_ROLL = 3  # chunks from just before the wake fired, so "Hey Claude, tell..." said in one breath keeps its start
+PRE_ROLL = 3  # chunks from just before the wake fired, so "Hey Jarvis, tell..." said in one breath keeps its start
 GRACE = 5  # speech within this many chunks of the wake is one breath ("Hey Jarvis, status"): no "Jarvis here"
 MIN_VOICED = 3  # less speech than this is a click or a cough, not a request
 END_QUIET = 62  # about 5s of quiet ends a request (1s cut people off mid-sentence, 2s still cut thinking pauses)
@@ -332,20 +328,18 @@ def load_env() -> None:
                 os.environ.setdefault(key.strip(), value.strip().strip('"'))
 
 
-NAMES = r"(claude|claud|cloud|clyde|clod|jarvis|jervis)"
+NAMES = r"(jarvis|jervis)"
 
 
 def strip_wake(text: str) -> str:
-    """The pre-roll carries the wake word into the transcript, sometimes misheard as Cloud or Clyde, and a "Hey
-    Jarvis" said again mid-request is dropped too."""
+    """The pre-roll carries the wake word into the transcript, and a "Hey Jarvis" said again mid-request is dropped
+    too."""
     text = re.sub(rf"^\W*((hey|hi|hay|okay|ok)\W+)?{NAMES}\b\W*", "", text.strip(), flags=re.IGNORECASE)
     return re.sub(rf"\b(hey|hi|hay|okay|ok)\W+{NAMES}\b\W*", "", text, flags=re.IGNORECASE).strip()
 
 
 def wake_words() -> list[str]:
-    """WAKE_WORDS from .env, such as "hey_claude" or "hey_jarvis,hey_claude"; hey_jarvis when empty."""
-    words = [w.strip().lower() for w in (os.environ.get("WAKE_WORDS") or "").split(",")]
-    return [w for w in words if w in WAKES] or ["hey_jarvis"]
+    return list(WAKES)
 
 
 def verifier(word: str) -> Path:
@@ -360,7 +354,7 @@ def fetch() -> None:
 
     MODELS.mkdir(exist_ok=True)
     download_models(["hey_jarvis"], target_directory=str(MODELS))  # plus the feature and VAD models
-    for name, url in [("hey_claude.onnx", WAKE_URL)] + [(n, KOKORO_URL + n) for n in KOKORO]:
+    for name, url in [(n, KOKORO_URL + n) for n in KOKORO]:
         path = MODELS / name
         if not path.is_file():
             emit("status", text=f"Downloading {name}...")
@@ -429,7 +423,7 @@ def transcribe(clip: np.ndarray) -> str:
         try:
             r = requests.post(f"{EL_URL}/speech-to-text", headers={"xi-api-key": key},
                               files={"file": audio_file(clip)},
-                              # The clip starts mid "Claude"; without the keyterm Scribe hears "Odd" or "God".
+                              # The clip can start mid wake word; without the keyterm Scribe mishears it.
                               data={"model_id": "scribe_v2", "tag_audio_events": "false",
                                     "keyterms": [w.replace("_", " ").title() for w in wake_words()]},
                               timeout=600)
