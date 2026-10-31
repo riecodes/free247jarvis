@@ -98,6 +98,10 @@ skip the boss:
 - **Unclear speech** (cut off, garbled, the TV): it asks "Say that again?" and listens without the
   wake word.
 
+- **Your notes** ("what's my refund policy"), with `KNOWLEDGE_DIR=` set to a folder of short `.md` notes: Claude
+  Haiku answers from them, all sent to Anthropic with each such question. `KNOWLEDGE_FACTS=` is an optional URL of
+  live values as flat JSON, for `{placeholders}` in the notes. What the notes don't settle goes to the boss.
+
 Everything else, and everything when Jev isn't sure, goes to the boss as before. To try it without
 the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
 

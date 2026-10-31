@@ -4,6 +4,13 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
 
+import { withFacts } from './rules.mjs'
+
+// Placeholders fill from live values, the live values come along marked newer, and an unknown one stays for the guard.
+const known = withFacts('{price} lang, {nope}', { price: '₱499' })
+assert(known.startsWith('₱499 lang, {nope}') && known.includes('price: ₱499') && known.includes('newer'), known)
+assert.strictEqual(withFacts('{price} lang', {}), '{price} lang')
+
 const PORT = 8797
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const voice = spawn('node', ['voice.mjs'], {
@@ -23,6 +30,11 @@ try {
   const page = await fetch(url('/window'))
   assert.match(page.headers.get('content-type'), /text\/html/)
   assert.match(await page.text(), /EventSource\('\/events'\)/)
+
+  // With nothing to replay yet, the stream still opens at once (it hung here until the first event).
+  const empty = await fetch(url('/events'), { signal: AbortSignal.timeout(3000) })
+  assert.match(empty.headers.get('content-type'), /text\/event-stream/)
+  await empty.body.cancel()
 
   // A typed request is passed on, and a watcher that connects later still gets it, then new ones as they come.
   await fetch(url('/'), { method: 'POST', body: 'first' })

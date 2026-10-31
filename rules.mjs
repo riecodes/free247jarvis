@@ -36,3 +36,12 @@ export function asksForHeld(text) {
     (/\b(what|what's|whats|ano|anong|give|tell|read|sabihin)\b.*\b(update|updates|message|balita)\b/.test(said) ||
       /^(the )?updates?$|^go ahead$|^what is it$|^what was that$|^ano (yun|yon|iyon)$/.test(said))
 }
+
+// The notes with their {placeholders} filled, then the live values themselves: a note can go stale ("no schedule yet"
+// with a webinar tonight), so they are marked as newer. A placeholder with no value stays, and the answer then passes
+// to the boss.
+export function withFacts(notes, facts) {
+  const filled = notes.replace(/\{(\w+)\}/g, (all, key) => facts[key] ?? all)
+  const lines = Object.entries(facts).map(([k, v]) => `${k}: ${v}`).join('\n')
+  return lines ? `${filled}\n\nLive values, newer than the notes above; they win where the two differ:\n${lines}` : filled
+}
