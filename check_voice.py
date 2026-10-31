@@ -382,6 +382,23 @@ def main() -> None:
     e.vad.predict = lambda chunk, **k: seen.append(chunk) or 0.9
     chunk = np.array([100, -3000], dtype=np.int16)
     assert e.is_speech(chunk) and seen[0].tolist() == [1600, -32768] and chunk.tolist() == [100, -3000]
+
+    # A MIC_DEVICE that won't open falls back to Windows' default and says so; if the default fails too, it raises.
+    def stream(device, **_):
+        if device is not None:
+            raise OSError("Sample format not supported")
+        return mock.Mock()
+    statuses = []
+    with mock.patch.object(listener, "mic_device", return_value=18), mock.patch("sounddevice.InputStream", side_effect=stream), \
+            mock.patch.object(listener, "emit", lambda event, **d: statuses.append((event, d))):
+        listener.open_mic(listener.queue.Queue())
+    assert statuses and statuses[0][0] == "status" and "Windows" in statuses[0][1]["text"], statuses
+    with mock.patch.object(listener, "mic_device", return_value=None), mock.patch("sounddevice.InputStream", side_effect=OSError("no mic")):
+        try:
+            listener.open_mic(listener.queue.Queue())
+            raise AssertionError("open_mic should raise when the default fails too")
+        except OSError:
+            pass
     print("ok")
 
 

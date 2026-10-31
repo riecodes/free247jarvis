@@ -797,10 +797,21 @@ def mic_device():
 def open_mic(events: queue.Queue):
     import sounddevice as sd
 
-    stream = sd.InputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=CHUNK, device=mic_device(),
-                            callback=lambda data, *_: events.put(("audio", data[:, 0].copy(), time.monotonic())))
-    stream.start()
-    return stream
+    def open_on(device):
+        stream = sd.InputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=CHUNK, device=device,
+                                callback=lambda data, *_: events.put(("audio", data[:, 0].copy(), time.monotonic())))
+        stream.start()
+        return stream
+
+    device = mic_device()
+    try:
+        return open_on(device)
+    except Exception as e:
+        if device is None:
+            raise
+        # MIC_DEVICE can match an input that won't open at 16 kHz (Voicemod's WDM-KS entry when its app is closed)
+        emit("status", text=f"MIC_DEVICE won't open ({e}); using Windows' default microphone")
+        return open_on(None)
 
 
 def main(commands: list[str]) -> None:
