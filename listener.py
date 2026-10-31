@@ -785,16 +785,18 @@ def kokoro_session():
     return rt.InferenceSession(str(MODELS / KOKORO[0]), providers=providers)  # without CUDA it falls back to the CPU
 
 
-def mic_device():
-    """The first input whose name contains MIC_DEVICE from .env (such as "WebCamera"), else Windows' default."""
+def mic_device(want: str | None = None):
+    """The first input whose name contains `want` (MIC_DEVICE from .env, such as "WebCamera"), else Windows' default."""
     import sounddevice as sd
 
-    want = (os.environ.get("MIC_DEVICE") or "").lower()
+    want = (os.environ.get("MIC_DEVICE") if want is None else want or "") or ""
     return next((i for i, d in enumerate(sd.query_devices()) if want and d["max_input_channels"] > 0
-                 and want in d["name"].lower()), None)
+                 and want.lower() in d["name"].lower()), None)
 
 
-def open_mic(events: queue.Queue):
+def open_mic(events: queue.Queue, want: str | None = None):
+    """Opens `want` (MIC_DEVICE by default), else MIC_FALLBACK, else Windows' default, and says when it had to move on.
+    MIC_DEVICE can match an input that won't open at 16 kHz (Voicemod's WDM-KS entry when its app is closed)."""
     import sounddevice as sd
 
     def open_on(device):
@@ -803,15 +805,34 @@ def open_mic(events: queue.Queue):
         stream.start()
         return stream
 
-    device = mic_device()
+    spare = os.environ.get("MIC_FALLBACK") or ""
+    first = mic_device(want)
+    failure = None
+    for device, name in {first: want or "MIC_DEVICE", mic_device(spare): spare, None: "Windows' default microphone"}.items():
+        try:
+            stream = open_on(device)
+        except Exception as e:
+            emit("status", text=f"{name} won't open ({e})")
+            failure = e
+            continue
+        if device != first:
+            emit("status", text=f"Using {name}")
+        return stream
+    raise failure
+
+
+def spare_mic(mic, events: queue.Queue):
+    """The mic went silent: moves to MIC_FALLBACK and returns the new stream, or None with the old one left as it was."""
+    spare = os.environ.get("MIC_FALLBACK") or ""
+    if not spare:
+        return None
     try:
-        return open_on(device)
+        new = open_mic(events, spare)
     except Exception as e:
-        if device is None:
-            raise
-        # MIC_DEVICE can match an input that won't open at 16 kHz (Voicemod's WDM-KS entry when its app is closed)
-        emit("status", text=f"MIC_DEVICE won't open ({e}); using Windows' default microphone")
-        return open_on(None)
+        emit("error", message=f"Can't open {spare}: {e}")
+        return None
+    mic.close()
+    return new
 
 
 def main(commands: list[str]) -> None:
@@ -835,6 +856,8 @@ def main(commands: list[str]) -> None:
     mic = None
     # Nothing but exact zeros: a virtual mic whose app isn't running (Voicemod, which sends faint noise while it runs).
     zeros_since, warned = 0.0, False
+    # ponytail: on the spare until the mic is turned off and on or the voice restarts; no check for the first one's return.
+    on_spare = False
     while True:
         ears.flush()
         kind, value, at = events.get()
@@ -844,7 +867,14 @@ def main(commands: list[str]) -> None:
             elif not zeros_since:
                 zeros_since = at
             elif not warned and at - zeros_since > SILENT_WARN:
-                warned, name = True, os.environ.get("MIC_DEVICE", "")
+                name = os.environ.get("MIC_FALLBACK" if on_spare else "MIC_DEVICE", "")
+                if mic is not None and not on_spare and (new := spare_mic(mic, events)):
+                    mic, on_spare, zeros_since = new, True, 0.0
+                    spare = os.environ["MIC_FALLBACK"]
+                    emit("status", text=f"{name or 'The microphone'} sent pure silence for {SILENT_WARN} s; now on {spare}")
+                    ears.line(f"The {name} microphone went silent, so I switched to {spare}.", asked=False, hold=True)
+                    continue
+                warned = True
                 emit("error", message=f"The microphone ({name or 'Windows default'}) sends pure silence: is it on?")
                 emit("caption", text=f"The {name} microphone sends nothing, so I can't hear you. Check that "
                                      f"{name} is running." if name else "The microphone sends nothing, so I can't hear "
@@ -878,7 +908,7 @@ def main(commands: list[str]) -> None:
             zeros_since, warned = 0.0, False  # time with the mic closed is not silence
         if value in ("on", "enroll") and mic is None:
             try:
-                mic = open_mic(events)
+                mic, on_spare = open_mic(events), False
             except Exception as e:  # no microphone, or Windows privacy settings block desktop apps
                 emit("error", message=f"Can't open the microphone: {e}")
         elif value == "off" and mic is not None:

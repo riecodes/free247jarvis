@@ -161,7 +161,8 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   all day, such as Voicemod, go in `CALL_IGNORE=` in `.env`. A meeting that lets go of a muted mic looks
   like no call.
 - If the mic sends nothing but silence for 30 seconds (a virtual mic such as Voicemod whose app is
-  closed), it says so once.
+  closed), it says so once. With `MIC_FALLBACK=` in `.env` (part of a second mic's name, such as
+  `MIC_FALLBACK=Realtek`) it moves to that mic instead and says so.
 - Not hearing you at all? Windows may be listening to another mic. Set `MIC_DEVICE=` in `.env` to
   part of your mic's name as Windows Sound settings shows it (such as `MIC_DEVICE=WebCamera`, or
   `MIC_DEVICE=Voicemod` to hear you through Voicemod), then restart the boss. If that device won't open

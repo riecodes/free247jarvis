@@ -392,13 +392,36 @@ def main() -> None:
     with mock.patch.object(listener, "mic_device", return_value=18), mock.patch("sounddevice.InputStream", side_effect=stream), \
             mock.patch.object(listener, "emit", lambda event, **d: statuses.append((event, d))):
         listener.open_mic(listener.queue.Queue())
-    assert statuses and statuses[0][0] == "status" and "Windows" in statuses[0][1]["text"], statuses
+    assert statuses and statuses[-1][0] == "status" and "Windows" in statuses[-1][1]["text"], statuses
     with mock.patch.object(listener, "mic_device", return_value=None), mock.patch("sounddevice.InputStream", side_effect=OSError("no mic")):
         try:
             listener.open_mic(listener.queue.Queue())
             raise AssertionError("open_mic should raise when the default fails too")
         except OSError:
             pass
+
+    # MIC_FALLBACK comes before Windows' default, whether MIC_DEVICE won't open or goes silent later.
+    inputs = [{"name": "Microphone (Voicemod)", "max_input_channels": 2}, {"name": "Speakers", "max_input_channels": 0},
+              {"name": "Microphone (Realtek)", "max_input_channels": 2}]
+    opened = []
+
+    def stream2(device, **_):
+        opened.append(device)
+        if device == 0:
+            raise OSError("won't open")
+        return mock.Mock()
+    with mock.patch.dict(listener.os.environ, {"MIC_DEVICE": "voicemod", "MIC_FALLBACK": "Realtek"}), \
+            mock.patch("sounddevice.query_devices", return_value=inputs), mock.patch("sounddevice.InputStream", side_effect=stream2), \
+            mock.patch.object(listener, "emit", lambda *a, **k: None):
+        assert listener.mic_device() == 0 and listener.mic_device("") is None
+        listener.open_mic(listener.queue.Queue())
+        assert opened == [0, 2], opened
+        opened.clear()
+        old = mock.Mock()
+        assert listener.spare_mic(old, listener.queue.Queue()) and opened == [2] and old.close.called
+    with mock.patch.dict(listener.os.environ, {"MIC_FALLBACK": ""}):  # no spare: the old mic stays, and the warning goes on
+        old = mock.Mock()
+        assert listener.spare_mic(old, listener.queue.Queue()) is None and not old.close.called
     print("ok")
 
 
