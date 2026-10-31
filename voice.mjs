@@ -21,6 +21,13 @@ const PORT = Number(process.env.VOICE_PORT || 8790)
 const PYTHON = join(HERE, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
 mkdirSync(join(HERE, 'tmp'), { recursive: true })
 const log = line => appendFileSync(join(HERE, 'tmp', 'voice.log'), `${new Date().toISOString()} ${line}\n`)
+// What the window shows (window/index.html): every step of an exchange, kept for a window that opens later.
+const shown = [], watchers = new Set()
+function show(event, data = {}) {
+  const line = `data: ${JSON.stringify({ ...data, event, at: Date.now() })}\n\n`
+  if (shown.push(line) > 200) shown.shift()
+  for (const w of watchers) w.write(line)
+}
 // The pro voice (VOICE_ENGINE=elevenlabs, from start.ps1 -Engine or .env) speaks Filipino well, so it answers
 // in Taglish; Kokoro's British voice only says English words, so the free voice answers in plain English.
 // .env next to this file, first line wins as in listener.py; real environment variables win over it.
@@ -86,6 +93,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const text = titled(String(req.params.arguments?.text ?? '').replace(/\s+/g, ' ').trim())
   log(`reply: ${text}`)
   if (text) {
+    show('reply', { text, by: 'claude' })
     ears.stdin.write(`${verbFor(askedAt, req.params.arguments?.listen ?? asksSomething(text))} ${text}\n`)
     askedAt = 0 // one reply answers the request; later lines are the boss's own news
   }
@@ -101,6 +109,7 @@ let askedAt = 0 // when the boss last got a spoken request it has not answered y
 const held = [] // lines not said because of a call, until the user asks for them
 const send = (text, via) => {
   if (via === 'mic') askedAt = Date.now()
+  show('sent', { text, via })
   return mcp.notification({ method: 'notifications/claude/channel', params: { content: text, meta: { via } } })
 }
 
@@ -183,6 +192,7 @@ async function route(text) {
       log(`router: Jev failed: ${e.message}`)
     }
     log(`router: ${kind} ${p.toFixed(2)} in ${Date.now() - t} ms`)
+    show('route', { kind, p, ms: Date.now() - t })
   }
   // Jev unsure: the boss decides ("Sino ang may kailangan sa akin?" scored status 0.67, and asking again was wrong).
   if (p < JEV_MIN || (kind === 'unclear' && isLong(text))) kind = 'work'
@@ -196,6 +206,7 @@ async function route(text) {
 function answer(text, listen = false) {
   text = titled(text)
   log(`reply (router): ${text}`)
+  show('reply', { text, by: 'router' })
   ears.stdin.write(`${asksSomething(text) ? 'say' : 'end'} ${text}\n${listen ? 'listen\n' : ''}`)
 }
 
@@ -262,6 +273,8 @@ function startEars() {
   createInterface({ input: ears.stdout }).on('line', line => {
     let e
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
+    show(e.event, e)
+    if (e.event === 'spoken') return
     if (e.event === 'heard') {
       route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
         .catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
@@ -282,8 +295,32 @@ function startEars() {
 let mic = process.env.VOICE_MIC !== 'off'
 startEars()
 
+// The window, once `npm install` has run in window/ (optional: Electron is about 250 MB). VOICE_WINDOW=off skips it.
+// Detached, to outlive a restart of the voice; a second copy quits by itself. No .env keys go to it.
+const ELECTRON = join(HERE, 'window', 'node_modules', 'electron', 'dist', 'electron.exe')
+if (env.VOICE_WINDOW !== 'off' && existsSync(ELECTRON)) {
+  const { ELECTRON_RUN_AS_NODE, ...plain } = process.env // set, it would run Electron as plain Node
+  spawn(ELECTRON, [join(HERE, 'window')], {
+    env: { ...plain, VOICE_PORT: String(PORT), CAPTION_VISIBLE: env.CAPTION_VISIBLE ?? '' },
+    detached: true, stdio: 'ignore',
+  }).on('error', e => log(`window failed: ${e.message}`)).unref()
+}
+
 // POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /mic: on or off.
+// GET /window and /events: the window and its live events, for this address only, so a web page can't read them
+// by pointing its own domain name at this machine.
 createServer((req, res) => {
+  const here = req.headers.host === `127.0.0.1:${PORT}`
+  if (here && req.method === 'GET' && req.url === '/window') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+    return res.end(readFileSync(join(HERE, 'window', 'index.html')))
+  }
+  if (here && req.method === 'GET' && req.url === '/events') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
+    for (const line of shown) res.write(line)
+    watchers.add(res)
+    return req.on('close', () => watchers.delete(res))
+  }
   if (req.method === 'GET') return res.end(req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
   let body = ''
   req.on('data', d => (body += d))

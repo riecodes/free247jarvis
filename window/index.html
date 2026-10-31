@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jarvis</title>
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #14161a; --panel: #1d2026; --text: #eceef1; --dim: #9aa1ab; --line: #2c3038;
+    --idle: #6b7280; --listen: #34d399; --work: #fbbf24; --speak: #60a5fa; --bad: #f87171;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --text: #16181d; --dim: #5b6470; --line: #dfe2e7;
+      --idle: #6b7280; --listen: #047857; --work: #b45309; --speak: #1d4ed8; --bad: #b91c1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line);
+  }
+  #dot { width: 12px; height: 12px; border-radius: 50%; background: var(--idle); flex: none; }
+  #state { font-size: 16px; font-weight: 600; }
+  #detail { margin-left: auto; color: var(--dim); font-size: 12px; text-align: right; }
+  body[data-mood=listen] #dot { background: var(--listen); animation: pulse 1.2s ease-in-out infinite; }
+  body[data-mood=work] #dot { background: var(--work); }
+  body[data-mood=speak] #dot { background: var(--speak); }
+  body[data-mood=bad] #dot { background: var(--bad); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { body[data-mood=listen] #dot { animation: none; } }
+  #live {
+    min-height: 76px; padding: 12px 16px; font-size: 18px; line-height: 1.35;
+    border-bottom: 1px solid var(--line); overflow-wrap: anywhere;
+  }
+  #live:empty::before { content: "Say \201CHey Jarvis\201D"; color: var(--dim); }
+  #live .draft { color: var(--dim); }
+  #log { flex: 1; overflow-y: auto; padding: 10px 16px 16px; list-style: none; margin: 0; }
+  #log li { padding: 7px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  #log li:last-child { border-bottom: 0; }
+  .tag { display: block; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .you { font-weight: 600; }
+  .note { color: var(--dim); }
+  .fail { color: var(--bad); }
+</style>
+</head>
+<body data-mood="idle">
+<header>
+  <span id="dot" aria-hidden="true"></span>
+  <span id="state" role="status">Connecting</span>
+  <span id="detail"></span>
+</header>
+<div id="live" aria-live="polite"></div>
+<ul id="log"></ul>
+<script>
+  const $ = id => document.getElementById(id)
+  const body = document.body, log = $('log'), live = $('live')
+  const WAITING = 'Waiting for "Hey Jarvis"'
+  const KINDS = { status: 'session status', chat: 'small talk', unclear: 'unclear', work: 'work for Claude', knowledge: 'your notes' }
+
+  function state(mood, words, detail = '') {
+    body.dataset.mood = mood
+    $('state').textContent = words
+    $('detail').textContent = detail
+  }
+
+  function add(tag, text, cls = '', at = Date.now()) {
+    const li = document.createElement('li')
+    const label = document.createElement('span')
+    label.className = 'tag'
+    label.textContent = `${new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}  ${tag}`
+    const words = document.createElement('span')
+    words.className = cls
+    words.textContent = text
+    li.append(label, words)
+    const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40
+    log.append(li)
+    while (log.children.length > 100) log.firstChild.remove()
+    if (atEnd) log.scrollTop = log.scrollHeight
+  }
+
+  const words = (done, draft = '') => {
+    const d = document.createElement('span')
+    d.className = 'draft'
+    d.textContent = draft
+    live.replaceChildren(done, d)
+  }
+
+  let on = true
+  const HANDLERS = {
+    state: e => { on = e.on; on ? state('idle', WAITING) : state('idle', 'Mic off') },
+    wake: () => { words(''); state('listen', 'Listening') },
+    partial: e => { words(e.done ?? '', e.text ?? ''); state('listen', 'Listening') },
+    heard: e => { words(e.text); add('You', e.text, 'you', e.at); state('work', 'Sorting your request') },
+    nothing: e => { words(''); state('idle', on ? WAITING : 'Mic off', 'Heard no request') },
+    route: e => add('Sorted', `${KINDS[e.kind] ?? e.kind}, ${Math.round(e.p * 100)}% sure, ${e.ms} ms`, 'note', e.at),
+    sent: e => { add(e.via === 'mic' ? 'Passed to Claude' : `Passed to Claude (${e.via})`, e.via === 'mic' ? '' : e.text, 'note', e.at); state('work', 'Claude is working') },
+    reply: e => add(e.by === 'router' ? 'Jarvis (quick answer)' : 'Jarvis', e.text, '', e.at),
+    said: () => state('speak', 'Speaking'),
+    spoken: e => e.listening ? state('listen', 'Listening for your answer') : state('idle', on ? WAITING : 'Mic off'),
+    held: e => add('Held for your call', e.text, 'note', e.at),
+    queued: () => $('detail').textContent = 'A line is waiting for you to finish',
+    peak: e => { if (e.score < 0.5) $('detail').textContent = `Last try ${e.score}` },
+    status: e => { if (/^Voice:|^Using |now on /.test(e.text)) add('Voice', e.text, 'note', e.at) },
+    error: e => add('Problem', e.message, 'fail', e.at),
+  }
+
+  const source = new EventSource('/events')
+  source.onopen = () => { log.replaceChildren(); words(''); state('idle', WAITING) } // the server replays what happened
+  source.onerror = () => state('bad', 'Jarvis is off', 'Reconnecting')
+  source.onmessage = m => {
+    const e = JSON.parse(m.data)
+    HANDLERS[e.event]?.(e)
+  }
+</script>
+</body>
+</html>

@@ -101,6 +101,21 @@ skip the boss:
 Everything else, and everything when Jev isn't sure, goes to the boss as before. To try it without
 the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
 
+## Window (optional)
+
+A small window shows the wake state, what it heard, how Jev sorted it, when it was passed to Claude, and the
+reply. Electron is about 250 MB on disk and the open window uses about 140 MB of RAM of its own, so it is not
+installed by default:
+
+```
+npm install --prefix window
+node window/node_modules/electron/install.js
+```
+
+It opens with the voice from then on, without taking the keyboard, and stays out of screen shares and
+recordings (`CAPTION_VISIBLE=1` in `.env` shows it there). `VOICE_WINDOW=off` skips it. To check it without
+a mic: `node check_window.mjs`.
+
 ## How it works
 
 ```
@@ -199,6 +214,7 @@ free247jarvis/
   gui.ps1        screenshots, typing, keys, and clicks for Windows apps
   start.ps1      starts the boss
   setup.ps1      one-time setup (safe to re-run)
+  window/        optional Electron window; voice.mjs serves its page and events
   check_boss.py  end-to-end check
 ```
 

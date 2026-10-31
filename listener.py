@@ -17,7 +17,8 @@ and writes one JSON event per stdout line:
             wake                                heard the wake word, now recording the request
             heard {text}                        the request as text
             nothing                             woke up, but no request followed
-            said {wav}                          a reply was spoken (and saved to wav)
+            said {wav}                          a reply is about to play (saved to wav)
+            spoken {listening}                  it has played; listening: the follow-up window is open
             held {text}                         a call is on: not said, kept by voice.mjs until the user asks for it
             enroll {prompt, done, total, retry} voice training: what to say next
             enrolled                            voice training finished
@@ -664,6 +665,7 @@ class Ears:
             emit("caption", text=f"{problem} I said: {text}")
         if not self.play(samples, rate) and not problem:
             emit("caption", text=f"I can't play sound. {CANT_HEAR} I said: {text}")
+        emit("spoken", listening=listen)
         if listen:  # the user may answer without the wake word for a few seconds, then it waits for it again
             if rate != CHIME_UP[1]:
                 self.play(*CHIME_UP, tail=0.15)  # the mic is open again
