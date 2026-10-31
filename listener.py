@@ -4,6 +4,7 @@ voice.mjs (the channel server) starts this and talks to it over pipes. It reads 
 and writes one JSON event per stdout line:
 
   commands  on | off | enroll | cancel | listen (record without the wake word) | quit
+            watch on | watch off                the window opened or closed: live words only while it is open
             looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
             end <text>                          as say, but it closes the exchange: no follow-up window
@@ -15,6 +16,7 @@ and writes one JSON event per stdout line:
             queued {text}                       the user has the floor: said once they are done
             peak {word, score, level}           how high a try at the wake word scored, fired or not, and how loud (RMS)
             wake                                heard the wake word, now recording the request
+            partial {text}                      live words of the request so far, for show only
             heard {text}                        the request as text
             nothing                             woke up, but no request followed
             said {wav}                          a reply is about to play (saved to wav)
@@ -36,6 +38,7 @@ Run `python listener.py train` once to train the verifier on your voice, `python
 download the models ahead of time.
 """
 import asyncio
+import base64
 import io
 import json
 import os
@@ -77,6 +80,8 @@ KOKORO = ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 EL_URL = "https://api.elevenlabs.io/v1"
 EL_VOICE = "JBFqnCBsd6RMkjVDRZzb"  # George, a stock British ElevenLabs voice, when ELEVENLABS_VOICE_ID is empty
+SCRIBE_LIVE_URL = ("wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime"
+                   "&audio_format=pcm_16000&commit_strategy=manual&keyterms=Hey%20Jarvis")
 
 RATE = 16000
 CHUNK = 1280  # 80 ms, the frame openWakeWord expects
@@ -112,6 +117,9 @@ MIN_LOGPROB = -1.0
 HALLUCINATIONS = {"thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye"}
 GIVE_UP = 62  # about 5s without speech after waking: nobody is talking
 MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV tops Groq's free 25 MB at 13 min)
+# Free voice's live words, in chunks: every 4 s is 15 requests a minute, leaving room in Groq's 20 for the request itself.
+LIVE_EVERY = 50
+LIVE_CLIP = 188  # the last 15 s
 
 WAKE_TAKES = 5  # then these sentences
 SENTENCES = [
@@ -155,9 +163,13 @@ CHIME_CLOSE = earcon("close", chime(660, 440))  # done listening, nothing heard 
 CHIME_NEAR = earcon("near", chime(2200, note=0.045, level=0.1))
 
 
+EMITTING = threading.Lock()  # live words come from their own threads
+
+
 def emit(event: str, **data) -> None:
-    EVENTS.write(json.dumps({"event": event, **data}) + "\n")
-    EVENTS.flush()
+    with EMITTING:
+        EVENTS.write(json.dumps({"event": event, **data}) + "\n")
+        EVENTS.flush()
 
 
 def in_call() -> bool:
@@ -432,19 +444,107 @@ def transcribe(clip: np.ndarray) -> str:
             return r.json()["text"].strip()
         except Exception as e:
             emit("error", message=f"ElevenLabs speech to text failed, trying Groq: {e}")
+    return groq_text(clip)
+
+
+def groq_text(clip: np.ndarray, timeout: int = 600) -> str:
+    import requests
+
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
         raise RuntimeError("GROQ_API_KEY is missing: put it in .env (free at https://console.groq.com/keys)")
     r = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"},
                       files={"file": audio_file(clip)},
                       data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "prompt": VOCAB},
-                      timeout=600)
+                      timeout=timeout)
     r.raise_for_status()
     return " ".join(s["text"].strip() for s in r.json().get("segments", []) if s["avg_logprob"] > MIN_LOGPROB).strip()
 
 
+class ScribeLive:
+    """Words on screen while the user speaks, from ElevenLabs Scribe Realtime. For show only: the request's text still
+    comes from transcribe(), which got more Taglish right on the far-mic test, so a failure here loses nothing."""
+
+    def __init__(self, key: str) -> None:
+        self.key, self.chunks, self.stopped = key, queue.Queue(), False
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def feed(self, chunk: np.ndarray) -> None:
+        self.chunks.put(chunk)
+
+    def stop(self) -> None:
+        self.stopped = True
+        self.chunks.put(None)
+
+    def run(self) -> None:
+        try:
+            from websockets.sync.client import connect
+
+            with connect(SCRIBE_LIVE_URL, additional_headers={"xi-api-key": self.key}, open_timeout=5) as ws:
+                threading.Thread(target=self.receive, args=(ws,), daemon=True).start()
+                while (chunk := self.chunks.get()) is not None:
+                    ws.send(json.dumps({"message_type": "input_audio_chunk", "commit": False, "sample_rate": RATE,
+                                        "audio_base_64": base64.b64encode(chunk.tobytes()).decode()}))
+        except Exception as e:
+            if not self.stopped:
+                emit("status", text=f"Live words stopped: {e}")
+
+    def receive(self, ws) -> None:
+        try:
+            for message in ws:
+                event = json.loads(message)
+                kind = event.get("message_type", "")
+                if self.stopped:
+                    return
+                if kind == "partial_transcript":
+                    emit("partial", text=strip_wake(event.get("text", "")))
+                elif kind.endswith(("error", "exceeded", "limited", "terms")):
+                    emit("status", text=f"Live words: {kind}")
+        except Exception:  # closed: run says why, if it matters
+            pass
+
+
+class GroqLive:
+    """The free voice's live words: Groq takes only finished files, so the last LIVE_CLIP chunks go up every LIVE_EVERY
+    chunks, one at a time. For show only, as in ScribeLive."""
+
+    def __init__(self) -> None:
+        self.clip: deque[np.ndarray] = deque(maxlen=LIVE_CLIP)
+        self.waiting, self.busy, self.stopped = 0, False, False
+
+    def feed(self, chunk: np.ndarray) -> None:
+        self.clip.append(chunk)
+        self.waiting += 1
+        if self.waiting >= LIVE_EVERY and not self.busy:
+            self.waiting, self.busy = 0, True
+            threading.Thread(target=self.ask, args=(np.concatenate(self.clip),), daemon=True).start()
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def ask(self, clip: np.ndarray) -> None:
+        try:
+            text = strip_wake(groq_text(clip, timeout=10))
+            if text and not self.stopped and " ".join(re.findall(r"\w+", text.lower())) not in HALLUCINATIONS:
+                emit("partial", text=text)
+        except Exception as e:  # such as the rate limit: the next try may pass, and the request's own text is apart
+            emit("status", text=f"Live words skipped: {e}")
+        finally:
+            self.busy = False
+
+
+def live_words():
+    """Live words for the voice in use; None when there is no key for them."""
+    if key := el_key():
+        return ScribeLive(key)
+    return GroqLive() if os.environ.get("GROQ_API_KEY") else None
+
+
 class Ears:
     """Turns 80 ms microphone chunks into events: waits for the wake word, then records until the speaker stops."""
+
+    watching = False  # the window is open: worth paying for live words
+    live = None  # the live words of the clip being recorded
 
     def __init__(self) -> None:
         from kokoro_onnx import Kokoro
@@ -498,7 +598,13 @@ class Ears:
             resume_media(self.paused)
             self.paused = []
 
+    def stop_live(self) -> None:
+        if self.live:
+            self.live.stop()
+            self.live = None
+
     def wait_for_wake(self, keep: bool = False) -> None:
+        self.stop_live()
         if not keep:  # not earlier: a video's sound in the follow-up window would be recorded as a request
             self.release()
         self.oww.reset()
@@ -573,6 +679,7 @@ class Ears:
     def record(self, on_done, start=(), give_up: int = GIVE_UP) -> None:
         """Collects chunks until the speaker stops, then calls on_done with the clip, or with None if nobody spoke
         within give_up chunks."""
+        self.stop_live()
         self.vad.reset_states()
         self.clip, self.voiced, self.quiet, self.on_done, self.give_up = list(start), 0, 0, on_done, give_up
         self.on_chunk = self.record_chunk
@@ -582,10 +689,18 @@ class Ears:
         if self.is_speech(chunk):
             self.voiced, self.quiet = self.voiced + 1, 0
             self.last_speech = time.monotonic()
+            # From the first speech, so a false wake or an unused follow-up window costs nothing. Not voice training.
+            if self.voiced == 1 and self.watching and not self.live and self.on_done != self.take_done:
+                self.live = live_words()
+                for earlier in self.clip[:-1]:
+                    self.live and self.live.feed(earlier)
         else:
             self.quiet += 1
+        if self.live:
+            self.live.feed(chunk)
         spoke = self.voiced >= MIN_VOICED
         if (spoke and self.quiet >= END_QUIET) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP:
+            self.stop_live()
             self.on_done(np.concatenate(self.clip) if spoke else None)
 
     def request_done(self, clip: np.ndarray | None) -> None:
@@ -896,6 +1011,9 @@ def main(commands: list[str]) -> None:
             break
         if value == "looking":
             emit("caption", text=ears.looking(), looking=True)
+            continue
+        if value in ("watch on", "watch off"):
+            ears.watching = value == "watch on"
             continue
         if value == "listen":  # after "Say that again?": record the next sentence without the wake word
             if not ears.queue and not in_call():

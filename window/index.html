@@ -95,7 +95,7 @@
   const HANDLERS = {
     state: e => { on = e.on; on ? state('idle', WAITING) : state('idle', 'Mic off') },
     wake: () => { words(''); state('listen', 'Listening') },
-    partial: e => { words(e.done ?? '', e.text ?? ''); state('listen', 'Listening') },
+    partial: e => words('', e.text),
     heard: e => { words(e.text); add('You', e.text, 'you', e.at); state('work', 'Sorting your request') },
     nothing: e => { words(''); state('idle', on ? WAITING : 'Mic off', 'Heard no request') },
     route: e => add('Sorted', `${KINDS[e.kind] ?? e.kind}, ${Math.round(e.p * 100)}% sure, ${e.ms} ms`, 'note', e.at),

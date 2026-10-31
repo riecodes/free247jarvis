@@ -13,6 +13,7 @@
 """
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -422,6 +423,69 @@ def main() -> None:
     with mock.patch.dict(listener.os.environ, {"MIC_FALLBACK": ""}):  # no spare: the old mic stays, and the warning goes on
         old = mock.Mock()
         assert listener.spare_mic(old, listener.queue.Queue()) is None and not old.close.called
+
+    # Live words start at the first speech with the pre-roll, only with the window open, never in voice training,
+    # and stop before the request's own text is asked for.
+    class Live:
+        def __init__(self):
+            self.got, self.stopped = [], False
+
+        def feed(self, chunk):
+            self.got.append(chunk)
+
+        def stop(self):
+            self.stopped = True
+
+    speech = np.ones(listener.CHUNK, np.int16)
+    live = Live()
+    with mock.patch.object(listener, "live_words", return_value=live) as start:
+        e = ears()
+        e.vad_boost, e.watching, done = 1, True, []
+        e.vad.predict = lambda *a, **k: 0.9 if e.talking else 0.0
+        e.talking = False
+        e.record(done.append, [speech])
+        e.record_chunk(speech)
+        assert not start.called  # a false wake pays for nothing
+        e.talking = True
+        for _ in range(3):
+            e.record_chunk(speech)
+        assert start.call_count == 1 and len(live.got) == 5 and e.live is live
+        e.talking = False
+        for _ in range(listener.END_QUIET):
+            e.record_chunk(speech)
+        assert done and live.stopped and e.live is None
+        start.reset_mock()
+        e = ears()  # the window closed
+        e.vad_boost, e.watching = 1, False
+        e.vad.predict = lambda *a, **k: 0.9
+        e.record(done.append)
+        e.record_chunk(speech)
+        assert not start.called
+        e = ears()  # voice training stays on this PC
+        e.vad_boost, e.watching = 1, True
+        e.vad.predict = lambda *a, **k: 0.9
+        e.record(e.take_done)
+        e.record_chunk(speech)
+        assert not start.called
+
+    # Groq's live words: one request at a time, every LIVE_EVERY chunks, shown without the wake word; a failure says so.
+    calls, shown, go = [], [], listener.threading.Event()
+
+    def groq(clip, timeout):
+        calls.append(len(clip))
+        go.wait(5)
+        return "Hey Jarvis, open terminal two"
+    with mock.patch.object(listener, "groq_text", groq), mock.patch.object(listener, "emit", lambda ev, **d: shown.append((ev, d))):
+        g = listener.GroqLive()
+        for _ in range(listener.LIVE_EVERY * 3):
+            g.feed(speech)
+        assert len(calls) == 1 and calls[0] == listener.LIVE_EVERY * listener.CHUNK and g.busy
+        go.set()
+        for _ in range(100):
+            if not g.busy:
+                break
+            time.sleep(0.01)
+        assert shown == [("partial", {"text": "open terminal two"})], shown
     print("ok")
 
 

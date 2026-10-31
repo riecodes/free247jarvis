@@ -116,6 +116,10 @@ It opens with the voice from then on, without taking the keyboard, and stays out
 recordings (`CAPTION_VISIBLE=1` in `.env` shows it there). `VOICE_WINDOW=off` skips it. To check it without
 a mic: `node check_window.mjs`.
 
+While the window is open, your words appear as you speak: from ElevenLabs Scribe Realtime with the pro voice
+(about $0.39 per hour of speech, on top of the batch Scribe that still makes the final text), or from Groq every
+4 seconds with the free voice. They are for show only. If they fail, your request still goes through.
+
 ## How it works
 
 ```

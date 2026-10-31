@@ -4,6 +4,8 @@ sounddevice>=0.5
 soundfile>=0.12
 kokoro-onnx>=0.4
 requests>=2.31
+# Live words in the window (pro voice)
+websockets>=13
 # Interruption rules: who else is on the mic (a call), and pausing what plays while it speaks
 pycaw>=20260927; sys_platform == "win32"
 winrt-runtime>=2.3; sys_platform == "win32"

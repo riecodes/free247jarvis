@@ -274,7 +274,7 @@ function startEars() {
     let e
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
     show(e.event, e)
-    if (e.event === 'spoken') return
+    if (e.event === 'spoken' || e.event === 'partial') return
     if (e.event === 'heard') {
       route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
         .catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
@@ -290,6 +290,7 @@ function startEars() {
     setTimeout(startEars, 5000)
   })
   if (mic) ears.stdin.write('on\n')
+  if (watchers.size) ears.stdin.write('watch on\n')
 }
 // VOICE_MIC=off starts with the microphone closed; POST on or off to /mic opens or closes it, no restart needed.
 let mic = process.env.VOICE_MIC !== 'off'
@@ -319,7 +320,11 @@ createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
     for (const line of shown) res.write(line)
     watchers.add(res)
-    return req.on('close', () => watchers.delete(res))
+    ears.stdin.write('watch on\n')
+    return req.on('close', () => {
+      watchers.delete(res)
+      if (!watchers.size) ears.stdin.write('watch off\n')
+    })
   }
   if (req.method === 'GET') return res.end(req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
   let body = ''
