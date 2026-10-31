@@ -20,7 +20,8 @@ const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
 const PYTHON = join(HERE, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
 mkdirSync(join(HERE, 'tmp'), { recursive: true })
-const log = line => appendFileSync(join(HERE, 'tmp', 'voice.log'), `${new Date().toISOString()} ${line}\n`)
+// VOICE_LOG: another file, so a check's lines never read as live ones.
+const log = line => appendFileSync(process.env.VOICE_LOG || join(HERE, 'tmp', 'voice.log'), `${new Date().toISOString()} ${line}\n`)
 // What the window shows (window/index.html): every step of an exchange, kept for a window that opens later.
 const shown = [], watchers = new Set()
 function show(event, data = {}) {
@@ -92,7 +93,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   if (req.params.name !== 'reply') throw new Error(`unknown tool: ${req.params.name}`)
   const text = titled(String(req.params.arguments?.text ?? '').replace(/\s+/g, ' ').trim())
   log(`reply: ${text}`)
-  if (text) {
+  if (text && ears) {
     show('reply', { text, by: 'claude' })
     ears.stdin.write(`${verbFor(askedAt, req.params.arguments?.listen ?? asksSomething(text))} ${text}\n`)
     askedAt = 0 // one reply answers the request; later lines are the boss's own news
@@ -333,7 +334,6 @@ function startEars() {
 }
 // VOICE_MIC=off starts with the microphone closed; POST on or off to /mic opens or closes it, no restart needed.
 let mic = process.env.VOICE_MIC !== 'off'
-startEars()
 
 // The window, once `npm install` has run in window/ (optional: Electron is about 250 MB). VOICE_WINDOW=off skips it.
 // Detached, to outlive a restart of the voice; a second copy quits by itself. No .env keys go to it.
@@ -349,7 +349,7 @@ if (env.VOICE_WINDOW !== 'off' && existsSync(ELECTRON)) {
 // POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /mic: on or off.
 // GET /window and /events: the window and its live events, for this address only, so a web page can't read them
 // by pointing its own domain name at this machine.
-createServer((req, res) => {
+const server = createServer((req, res) => {
   const here = req.headers.host === `127.0.0.1:${PORT}`
   if (here && req.method === 'GET' && req.url === '/window') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -379,13 +379,24 @@ createServer((req, res) => {
     else if (text) await push(text, 'http')
     res.end('ok')
   })
-}).on('error', e => log(`http ${PORT}: ${e.message}`)).listen(PORT, '127.0.0.1')
+})
+// The port is the one owner of the mic and the speaker: two voices at once are gibberish, so the ears start only once
+// it is ours. A relaunch waits here for the old voice to let go; after 30 s this one gives up.
+let portTries = 0
+server.on('error', e => {
+  log(`http ${PORT}: ${e.message}`)
+  if (e.code !== 'EADDRINUSE') return
+  if (++portTries > 30) process.exit(1)
+  setTimeout(() => server.listen(PORT, '127.0.0.1'), 1000)
+})
+server.once('listening', startEars)
+server.listen(PORT, '127.0.0.1')
 
 // Claude Code exits by closing our stdin; the listener then sees its own stdin close and quits too.
 function quit() {
   quitting = true
   showCaption('Jarvis is off: the orch closed, so I can\'t hear or answer you.')
-  ears.kill()
+  ears?.kill()
   process.exit(0)
 }
 mcp.onclose = quit
