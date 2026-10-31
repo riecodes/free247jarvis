@@ -10,16 +10,22 @@
   look   repeated tries, and each failure the user can't hear, go on screen; nothing else does
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
   scan   the real WASAPI and media session calls run on this machine (nothing is paused)
+  data   only wake word clips are kept, and pruned; words.txt feeds the prompt; a prompt handed back goes nowhere
 """
+import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from unittest import mock
 
 import numpy as np
 
+os.environ["VOICE_DATA"] = "off"  # no check clip lands in the real voice data
 import listener
+import mishears
 
 HERE = Path(__file__).resolve().parent
 RATE = listener.CHIME_UP[1]
@@ -196,6 +202,78 @@ def looking() -> None:
     assert problem() == ""
     assert "muted" in problem(mute=1) and "zero" in problem(level=0.0) and "no speaker" in problem(device=False)
     assert "switched" in problem(name="Headphones (WH-1000XM4)")
+
+
+def voice_data() -> None:
+    """Only wake word clips are kept, in no synced folder, not in a call, not with VOICE_DATA=off; old ones go."""
+    real = Path(listener.os.environ["LOCALAPPDATA"]) / "free247jarvis" / "voicedata"
+    assert HERE.parent not in real.parents, real
+    clip = np.ones(listener.RATE, np.int16)
+
+    def asked(e, said="open notepad", call=False, off=""):
+        with mock.patch.object(listener, "transcribe", lambda clip: said), mock.patch.object(listener, "in_call", lambda: call), \
+                mock.patch.dict(listener.os.environ, {"VOICE_DATA": off}), mock.patch.object(listener, "emit", lambda *a, **k: None):
+            e.request_done(clip)
+
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(listener.os.environ, {"LOCALAPPDATA": tmp}):
+        folder = Path(tmp) / "free247jarvis" / "voicedata"
+        rows = lambda: [json.loads(line) for line in (folder / "requests.jsonl").read_text(encoding="utf-8").splitlines()]
+        e = ears()
+        asked(e)  # a follow-up window's clip: no wake word
+        e.woke = (0.5, 9)
+        asked(e, off="off")
+        e.woke = (0.5, 9)
+        asked(e, call=True)
+        assert not folder.exists()
+        time.sleep(0.002)
+        e.woke = (0.91, 120)
+        asked(e, "Hey Jarvis, open notepad")  # VOICE_DATA empty: on
+        assert e.woke is None
+        asked(e)  # the next one is a follow-up again
+        assert [r["wake_score"] for r in rows()] == [0.91] and rows()[0]["kept"], rows()
+        assert rows()[0]["transcript"] == "Hey Jarvis, open notepad" and (folder / rows()[0]["clip"]).is_file()
+
+        # A failure to save never costs the request.
+        heard = []
+        with mock.patch.object(listener, "wav_bytes", side_effect=OSError("full")), mock.patch.object(listener, "transcribe", lambda clip: "open notepad"), \
+                mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: heard.append(ev)), \
+                mock.patch.dict(listener.os.environ, {"VOICE_DATA": ""}):
+            e.woke = (0.5, 9)
+            e.request_done(clip)
+        assert "heard" in heard and "status" in heard, heard
+
+        # Past DATA_DAYS or over DATA_MAX, clip and row both go.
+        old = folder / rows()[0]["clip"]
+        listener.os.utime(old, (1, 1))
+        listener.prune_data()
+        assert not old.exists() and rows() == []
+        for name in ("1.wav", "2.wav"):
+            (folder / name).write_bytes(b"x" * 10)
+        with mock.patch.object(listener, "DATA_MAX", 15):
+            listener.prune_data()
+        assert [c.name for c in folder.glob("*.wav")] == ["2.wav"]
+
+        # The prompt: words.txt adds to the base without repeats, and never passes Groq's limit, which fails the request.
+        words = Path(tmp) / "words.txt"
+        words.write_text("# note\nclaude\nVercel  # a note\n\n" + "\n".join(f"word{i:04d}" for i in range(400)), encoding="utf-8")
+        terms = listener.load_terms(words)
+        assert terms[:len(listener.BASE_TERMS) + 1] == listener.BASE_TERMS + ["Vercel"] and len(", ".join(terms)) + 1 <= listener.PROMPT_MAX
+        assert len(terms) < 400 and listener.load_terms(Path(tmp) / "none.txt") == listener.BASE_TERMS
+
+    # Whisper's prompt handed back on noise (from real answers, 2026-11-01), and what must still pass.
+    for back in ["Rc, Cpd, Su, Toc, Cpd, Su, Toc", "Riecodes, wrc, crc, cpc, cpc.", "Cpd, co, ManyChat, Nakeem.", "Cpd."]:
+        with mock.patch.object(listener, "emit", lambda *a, **k: heard.append(a[0])):
+            heard.clear()
+            with mock.patch.object(listener, "transcribe", lambda clip: back), mock.patch.object(listener, "in_call", lambda: False):
+                ears().request_done(clip)
+        assert "heard" not in heard, back
+    for real_one in ["A, B, C", "yes, go on", "deploy to Vercel, then tell me", "cpd na yung riecodes"]:
+        assert not listener.handed_back(real_one), real_one
+
+    found = mishears.near_terms([{"kept": True, "transcript": "open versal, name cheap, and my sessions"},
+                                 {"kept": False, "transcript": "versal"}], ["Vercel", "Namecheap", "session"])
+    assert found == {("versal", "Vercel"): 1, ("name cheap", "Namecheap"): 1}, found
+    assert mishears.shaky([{"clip": "a.wav", "segments": [{"text": " huh", "avg_logprob": -0.9}, {"text": "ok", "avg_logprob": -0.1}]}]) == [(-0.9, "a.wav", "huh")]
 
 
 def main() -> None:
@@ -486,6 +564,7 @@ def main() -> None:
                 break
             time.sleep(0.01)
         assert shown == [("partial", {"text": "open terminal two"})], shown
+    voice_data()
     print("ok")
 
 

@@ -67,7 +67,27 @@ WAKES = {
 }
 # Words Whisper should spell right. Never a whole sentence: on a near-silent clip Whisper hands its prompt back,
 # and a command in it ("Tell terminal 3 to fix the navbar") was then acted on.
-VOCAB = "Claude, Jarvis, terminal, session, Notepad, Taglish, pakisabi, yung."
+BASE_TERMS = ["Claude", "Jarvis", "terminal", "session", "Notepad", "Taglish", "pakisabi", "yung"]
+PROMPT_MAX = 896  # Groq answers a longer prompt with a 400 (measured 2026-11-01): the request fails, nothing is cut
+
+
+def load_terms(path: Path = HERE / "words.txt") -> list[str]:
+    """BASE_TERMS, then one term per line of words.txt, up to what fits in the prompt; later lines drop first."""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    unique: dict[str, str] = {}
+    for term in BASE_TERMS + [line.split("#")[0].strip() for line in lines]:
+        if term:
+            unique.setdefault(term.lower(), term)
+    terms: list[str] = []
+    for term in unique.values():
+        if len(", ".join(terms + [term])) + 1 > PROMPT_MAX:
+            break
+        terms.append(term)
+    return terms
+
+
+TERMS = load_terms()
+VOCAB = ", ".join(TERMS) + "."
 FEATURES = {
     "inference_framework": "onnx",
     "melspec_model_path": str(MODELS / "melspectrogram.onnx"),
@@ -120,6 +140,8 @@ MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV 
 # Free voice's live words, in chunks: every 4 s is 15 requests a minute, leaving room in Groq's 20 for the request itself.
 LIVE_EVERY = 50
 LIVE_CLIP = 188  # the last 15 s
+DATA_DAYS = 30  # voice data older than this is deleted
+DATA_MAX = 2 * 1024 ** 3  # and past this many bytes of clips, the oldest go first
 
 WAKE_TAKES = 5  # then these sentences
 SENTENCES = [
@@ -429,25 +451,42 @@ def voice_key() -> str:
 
 
 def transcribe(clip: np.ndarray) -> str:
-    """ElevenLabs Scribe v2 when set up, else (or when it fails) Groq. Both detect English, Tagalog and Taglish."""
+    """ElevenLabs Scribe v2 when set up, else (or when it fails) Groq. Both detect English, Tagalog and Taglish.
+    What the engine said about the clip stays in heard_how, for keep_clip."""
     import requests
 
+    global heard_how
     if key := el_key():
         try:
             r = requests.post(f"{EL_URL}/speech-to-text", headers={"xi-api-key": key},
                               files={"file": audio_file(clip)},
                               # The clip can start mid wake word; without the keyterm Scribe mishears it.
                               data={"model_id": "scribe_v2", "tag_audio_events": "false",
-                                    "keyterms": [w.replace("_", " ").title() for w in wake_words()]},
+                                    "keyterms": [w.replace("_", " ").title() for w in wake_words()] + TERMS[:99]},
                               timeout=600)
             r.raise_for_status()
-            return r.json()["text"].strip()
+            j = r.json()
+            heard_how = {"engine": "scribe", "language": j.get("language_code"),
+                         "language_probability": j.get("language_probability")}
+            return j["text"].strip()
         except Exception as e:
             emit("error", message=f"ElevenLabs speech to text failed, trying Groq: {e}")
-    return groq_text(clip)
+    j = groq_json(clip)
+    heard_how = {"engine": "groq", "language": j.get("language"),
+                 "segments": [{k: s.get(k) for k in ("text", "avg_logprob", "compression_ratio", "no_speech_prob")}
+                              for s in j.get("segments", [])]}
+    return segments_text(j)
 
 
 def groq_text(clip: np.ndarray, timeout: int = 600) -> str:
+    return segments_text(groq_json(clip, timeout))
+
+
+def segments_text(j: dict) -> str:
+    return " ".join(s["text"].strip() for s in j.get("segments", []) if s["avg_logprob"] > MIN_LOGPROB).strip()
+
+
+def groq_json(clip: np.ndarray, timeout: int = 600) -> dict:
     import requests
 
     key = os.environ.get("GROQ_API_KEY", "")
@@ -458,7 +497,68 @@ def groq_text(clip: np.ndarray, timeout: int = 600) -> str:
                       data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "prompt": VOCAB},
                       timeout=timeout)
     r.raise_for_status()
-    return " ".join(s["text"].strip() for s in r.json().get("segments", []) if s["avg_logprob"] > MIN_LOGPROB).strip()
+    return r.json()
+
+
+heard_how: dict = {}  # what the engine said about the last request clip; only transcribe writes it, not the live words
+
+
+def handed_back(text: str) -> bool:
+    """A list with a VOCAB word in it, such as "Rc, Cpd, Su, Toc": Whisper's prompt coming back on a noisy clip, which
+    must not reach the orch with a command in it. A real "yes, cpd" goes too, and only has to be said again."""
+    parts = [re.findall(r"\w+", part.lower()) for part in text.split(",")]
+    parts = [p for p in parts if p]
+    terms = {t.lower() for t in TERMS}
+    return len(parts) >= 2 and all(len(p) == 1 for p in parts) and any(p[0] in terms for p in parts)
+
+
+def data_dir() -> Path | None:
+    """Where voice data lands: outside C:\\dev, which Syncthing copies to the other machine."""
+    root = os.environ.get("LOCALAPPDATA")
+    return Path(root) / "free247jarvis" / "voicedata" if root else None
+
+
+def prune_data() -> None:
+    """Deletes clips past DATA_DAYS or over DATA_MAX, oldest first (their names sort by time), and their rows."""
+    folder = data_dir()
+    if not folder or not folder.is_dir():
+        return
+    clips = sorted(folder.glob("*.wav"))
+    total, gone = sum(c.stat().st_size for c in clips), False
+    for clip in clips:
+        size = clip.stat().st_size
+        if time.time() - clip.stat().st_mtime > DATA_DAYS * 86400 or total > DATA_MAX:
+            clip.unlink()
+            total, gone = total - size, True
+    rows = folder / "requests.jsonl"
+    if gone and rows.is_file():
+        kept = [line for line in rows.read_text(encoding="utf-8").splitlines()
+                if (folder / json.loads(line)["clip"]).is_file()]
+        rows.with_suffix(".partial").write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+        os.replace(rows.with_suffix(".partial"), rows)
+
+
+def keep_clip(clip: np.ndarray, transcript: str, text: str, score: float, level: int) -> None:
+    """A clip that passed the wake word, and one row about it, for mishears.py. Not in a call, where a client could be
+    on it. VOICE_DATA=off stops it. A failure here only goes to the log: the request matters more."""
+    folder = data_dir()
+    if not folder or os.environ.get("VOICE_DATA", "").lower() == "off":
+        return
+    try:
+        if in_call():
+            return
+        folder.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        name = time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + f"-{int(now * 1000) % 1000:03d}.wav"
+        (folder / name).write_bytes(wav_bytes(clip))
+        row = {"time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)), "clip": name,
+               "seconds": round(len(clip) / RATE, 1), "transcript": transcript, "kept": bool(text),
+               "wake_score": round(score, 2), "level": level, **heard_how}
+        with open(folder / "requests.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        prune_data()
+    except Exception as e:
+        emit("status", text=f"Voice data not kept: {e}")
 
 
 class ScribeLive:
@@ -545,6 +645,7 @@ class Ears:
 
     watching = False  # the window is open: worth paying for live words
     live = None  # the live words of the clip being recorded
+    woke = None  # (score, level) while the clip being recorded came from the wake word, not a follow-up window
 
     def __init__(self) -> None:
         from kokoro_onnx import Kokoro
@@ -605,6 +706,7 @@ class Ears:
 
     def wait_for_wake(self, keep: bool = False) -> None:
         self.stop_live()
+        self.woke = None
         if not keep:  # not earlier: a video's sound in the follow-up window would be recorded as a request
             self.release()
         self.oww.reset()
@@ -629,6 +731,7 @@ class Ears:
             self.peak_level = max(self.peak_level, int(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))))
         if score >= self.threshold:
             emit("peak", word=fired, score=round(score, 2), level=self.peak_level)
+            self.woke = (score, self.peak_level)
             self.peak_level = 0
             emit("wake")  # also while the boss works on the last request: this one reaches it as a new message
             self.hush()  # first, so the video's sound stays out of the request            # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
@@ -705,11 +808,15 @@ class Ears:
 
     def request_done(self, clip: np.ndarray | None) -> None:
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
+        woke = self.woke
         self.wait_for_wake(keep=clip is not None)  # first, so a failed transcription still leaves the ears listening
-        text = strip_wake(transcribe(clip)) if clip is not None else ""
+        transcript = transcribe(clip) if clip is not None else ""
+        text = strip_wake(transcript)
         words = re.findall(r"\w+", text.lower())
-        if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS:
+        if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS or handed_back(text):
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
+        if clip is not None and woke:
+            keep_clip(clip, transcript, text, *woke)
         if text:
             self.tries = []
             self.reply_by = time.monotonic() + REPLY_HOLD
@@ -954,6 +1061,10 @@ def spare_mic(mic, events: queue.Queue):
 
 def main(commands: list[str]) -> None:
     load_env()
+    try:
+        prune_data()  # also with VOICE_DATA=off or no new requests: old clips still go
+    except Exception as e:
+        emit("status", text=f"Voice data not pruned: {e}")
     events: queue.Queue = queue.Queue()  # microphone chunks and commands, in arrival order
     for c in commands:
         events.put(("command", c, 0))

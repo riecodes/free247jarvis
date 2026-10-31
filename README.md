@@ -195,6 +195,22 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - Nothing arrives in the boss? Run `/mcp` there and check that `voice` is connected, and read
   `tmp\voice.log`.
 
+## Voice data and your words
+
+To learn how it mishears you, it keeps each request that passed the wake word: the audio and one line
+(time, transcript, language, confidence, wake score) in `%LOCALAPPDATA%\free247jarvis\voicedata`, outside
+any synced folder and outside git. It keeps nothing while the mic is off, nothing from a follow-up window,
+nothing in a call, and never continuous audio. Clips go after 30 days, or sooner past 2 GB, oldest first.
+`VOICE_DATA=off` in `.env` stops it; what is already there still ages out.
+
+**Anyone near the mic while you make a request is in the clip.** Tell them, or turn it off for that stretch.
+
+`.venv\Scripts\python mishears.py` lists likely mishears and the stretches Whisper was unsure of. Add the
+right spelling to `words.txt`, one term per line, and restart. Terms feed Whisper's prompt (Groq refuses
+more than 896 characters, so later lines drop first) and Scribe's keyterms. Keep them to words: on a noisy
+clip Whisper can hand them back. A reply made only of these words, such as a bare "cpd" or "yes, cpd",
+counts as noise, so say it in a phrase: "cpd na".
+
 ## Check
 
 `.venv\Scripts\python check_boss.py` runs end to end against real sessions and prints
@@ -218,6 +234,8 @@ free247jarvis/
   boss/          the boss session's folder: CLAUDE.md (routing) and .mcp.json (voice channel)
   voice.mjs      the voice channel (MCP server); runs listener.py
   listener.py    wake word, end of speech, speech to text, Kokoro voice, voice training
+  words.txt      words speech to text should spell right
+  mishears.py    lists likely mishears from the voice data, for review
   spawn.ps1      opens worker terminals t1 to t6 in their grid cells
   gui.ps1        screenshots, typing, keys, and clicks for Windows apps
   start.ps1      starts the boss

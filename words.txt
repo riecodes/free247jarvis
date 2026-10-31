@@ -1,0 +1,14 @@
+# Words speech to text should spell right, one per line. Read when the voice starts. Never a sentence or a command:
+# on a noisy clip Whisper can hand these back. mishears.py suggests what to add here.
+riecodes
+wrc
+crc
+cpd
+reco
+ManyChat
+Namecheap
+Vercel
+Cloudflare
+Claude
+Groq
+Taglish
