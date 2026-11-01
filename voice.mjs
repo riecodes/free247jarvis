@@ -245,7 +245,7 @@ async function route(text) {
 
 // Says it without the boss; `listen` then records the next sentence without the wake word.
 function answer(text, listen = false) {
-  text = titled(text)
+  text = titled(text).replace(/\s+/g, ' ').trim()  // one line: the listener takes each line as a command
   log(`reply (router): ${text}`)
   show('reply', { text, by: 'router' })
   ears.stdin.write(`${asksSomething(text) ? 'say' : 'end'} ${text}\n${listen ? 'listen\n' : ''}`)
@@ -385,7 +385,7 @@ const server = createServer((req, res) => {
       if (!watchers.size) ears.stdin.write('watch off\n')
     })
   }
-  if (req.method === 'GET') return res.end(req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
+  if (req.method === 'GET') return res.end(here && req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
   // Every POST reaches a session with permissions off, so only from this address and never from a web page: a browser
   // adds an Origin to every POST (curl and scripts send none), and the Host check stops DNS rebinding.
   const origin = req.headers.origin

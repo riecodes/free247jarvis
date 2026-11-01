@@ -119,6 +119,15 @@ try {
     }).on('error', reject))
   })
   assert.strictEqual(raw, 'ok')
+  const micFrom = host => new Promise((resolve, reject) => {
+    import('node:http').then(({ get }) => get(url('/mic'), { headers: { Host: host } }, r => {
+      let b = ''
+      r.on('data', d => (b += d))
+      r.on('end', () => resolve(b))
+    }).on('error', reject))
+  })
+  assert.strictEqual(await micFrom('evil.example'), 'ok')
+  assert.strictEqual(await micFrom(`127.0.0.1:${PORT}`), 'off')
 
   // A web page can't post to the boss: a browser adds an Origin to every POST, and another Host is refused too.
   const { request } = await import('node:http')

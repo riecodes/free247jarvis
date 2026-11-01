@@ -891,7 +891,7 @@ class Ears:
         if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS or handed_back(text):
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
         if sure and clip is not None and not re.search(rf"\b{NAMES}\b", transcript, re.IGNORECASE):
-            text = ""  # a score can reach 1.00 on other people's words; only the wake word itself goes through
+            text = ""  # a score can reach 1.00 on other people's words, so the name must be in them (the clip already went to speech to text)
             emit("status", text="Woke while staying quiet, but the words had no wake word: dropped")
         if clip is not None and woke and not sure:  # staying quiet: other people may be on the clip
             keep_clip(clip, transcript, text, *woke)

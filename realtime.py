@@ -28,7 +28,8 @@ READ = "Read the user's text aloud, word for word, in the language it is in. Add
 
 class Session:
     """One connection, kept open: it costs nothing idle, and saves the connecting on the next turn. Audio goes up only
-    from the wake word to the end of a request, and replies leave the conversation out, so no old audio is billed."""
+    from the wake word to the end of a request and through a listening window, even a silent one; replies leave the
+    conversation out, so no old audio is billed."""
 
     def __init__(self, key: str) -> None:
         self.key, self.ws, self.audio = key, None, queue.Queue()

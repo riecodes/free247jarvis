@@ -110,8 +110,9 @@ the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
 
 `realtime.py` swaps the slowest parts: OpenAI's Realtime API hears when you finished, instead of 5 seconds of quiet, and
 reads replies aloud as the sound arrives. The wake word stays local, and the router stays: Jev sorts, Haiku answers
-from your notes, and real work goes to the orch. Audio goes to OpenAI from the wake word to the end of each request,
-and on every line it says, the text. If it fails, the normal listener takes over for that turn.
+from your notes, and real work goes to the orch. Audio goes to OpenAI from the wake word to the end of each request and
+all through the listening window after a line that asks you something, even if nobody speaks. On every line it says, the
+text goes too. If it fails, the normal listener takes over for that turn.
 
 Put in `.env`, then restart the voice:
 
@@ -178,6 +179,11 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 
 - Workers bypass permission prompts, so the boss does too; Claude Code only delivers messages
   between sessions in the same permission class unless you set `crossSessionInbound` to `accept`.
+- **What it hears counts as you, and the boss acts with permissions off.** Without a trained voice, anything that says
+  the wake word works: someone in the room, or a video. Training lowers that, but it isn't a lock.
+- **The local port has no password.** Web pages are refused, but any program on this PC can send the boss a request and
+  read what it heard, and expect other Windows accounts on this PC to reach it too. Don't run it on a PC you share with
+  someone you don't trust.
 - A message cannot answer a permission prompt or a menu inside a worker. Answer those at that
   terminal.
 - Every message a worker gets counts against your plan's usage.
@@ -209,8 +215,9 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - It stays quiet by itself while you're with someone, and the window shows why: another app on the mic (a Meet in
   Chrome, Zoom), a meeting's window title, or, with neither, speech in 40% of the last 30 seconds (`TALK_SHARE=`). Then
   lines nobody just asked for wait unsaid, with no notification and no listening window. The wake word needs a score
-  of 0.7 (`WAKE_STRICT=`), and speech to text must hear "Jarvis" too, so 1.5 seconds before the wake word goes to it.
-  Nothing from those clips is kept. Say "Hey Jarvis, what's the update?" for the lines. A listening window that runs
+  of 0.7 (`WAKE_STRICT=`), and speech to text must hear "Jarvis" too, so the whole clip goes to it first, from 1.5 seconds
+  before the wake word (90 seconds at most). No audio from those clips is kept, and a request that passes is logged as
+  text like any other. Say "Hey Jarvis, what's the update?" for the lines. A listening window that runs
   past 90 seconds is thrown away unsent. **It can't see** a call on your phone or one in another room, nor a
   conversation too quiet for the mic, and a video's voices count as talking. Chrome on the mic for anything else counts
   as a call. Apps that hold the mic
@@ -248,6 +255,9 @@ limits, including ones kept under `forever`.
 
 **Anyone near the mic while you make a request is in the clip, and with `forever` they stay in it.** Tell them, or
 turn it off for that stretch.
+
+Whatever you choose here, `tmp\voice.log` keeps what it heard and said as text on this PC, with no limit, and
+`tmp\listener.log` keeps errors. Neither is in git. Delete them to erase them.
 
 `.venv\Scripts\python mishears.py` lists likely mishears and the stretches Whisper was unsure of. Add the
 right spelling to `words.txt`, one term per line, and restart. Terms feed Whisper's prompt (Groq refuses

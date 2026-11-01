@@ -6,6 +6,8 @@ __pycache__/
 
 # Keys and scratch files stay local
 .env
+.env.*
+!.env.example
 tmp/
 
 # Sync tools
