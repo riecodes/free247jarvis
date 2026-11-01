@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The "voice" channel: the boss session loads this MCP server, which pushes spoken requests into the
 // session and speaks the boss's replies. It runs listener.py (wake word, speech to text, voice) as a child
-// and also takes typed requests on POST http://127.0.0.1:8790/, so anything local can talk to the boss.
+// and also takes typed requests on POST http://127.0.0.1:8790/ from local tools like curl (no Origin header), never from a web page.
 // Everything it hears and says is logged to tmp/voice.log.
 // With a TypeSafe key in .env, a router answers quick requests itself, without a turn of the boss (see route).
 import { spawn } from 'node:child_process'
@@ -367,6 +367,13 @@ const server = createServer((req, res) => {
     })
   }
   if (req.method === 'GET') return res.end(req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
+  // Every POST reaches a session with permissions off, so only from this address and never from a web page: a browser
+  // adds an Origin to every POST (curl and scripts send none), and the Host check stops DNS rebinding.
+  const origin = req.headers.origin
+  if (!here || (origin !== undefined && origin !== `http://127.0.0.1:${PORT}`)) {
+    res.writeHead(403)
+    return res.end('forbidden')
+  }
   let body = ''
   req.on('data', d => (body += d))
   req.on('end', async () => {

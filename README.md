@@ -146,7 +146,8 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - **Windows apps:** Claude Code's computer use runs only on macOS in the CLI, so the boss uses
   `gui.ps1` instead: screenshots to look, and app launch, typing, keys, and clicks to act.
 - **Typed requests** work too: `curl -d "tell terminal 2 to run the tests" http://127.0.0.1:8790/`.
-  Everything heard and said is logged to `tmp\voice.log`.
+  Everything heard and said is logged to `tmp\voice.log`. A POST is refused (403) unless its Host is
+  `127.0.0.1:8790` and it has no Origin header (curl, scripts) or its own, so a web page can't send the boss text.
 
 ## Good to know
 

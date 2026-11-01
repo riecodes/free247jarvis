@@ -87,6 +87,19 @@ try {
   })
   assert.strictEqual(raw, 'ok')
 
+  // A web page can't post to the boss: a browser adds an Origin to every POST, and another Host is refused too.
+  const { request } = await import('node:http')
+  const post = (path, headers) => new Promise((resolve, reject) => {
+    request(url(path), { method: 'POST', headers }, r => { r.resume(); resolve(r.statusCode) })
+      .on('error', reject).end('page')
+  })
+  for (const path of ['/', '/heard', '/mic']) {
+    assert.strictEqual(await post(path, { Origin: 'https://evil.example' }), 403, path)
+    assert.strictEqual(await post(path, { Origin: 'null' }), 403, path)
+    assert.strictEqual(await post(path, { Host: 'evil.example' }), 403, path)
+  }
+  assert.strictEqual(await post('/', { Origin: `http://127.0.0.1:${PORT}` }), 200)
+
   // This check's lines stay out of the live log.
   const live = readFileSync(join(HERE, 'tmp', 'voice.log'), 'utf8').slice(before)
   assert(!/heard \(http\): (first|second)/.test(live), 'check lines reached the live log')
