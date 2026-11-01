@@ -309,14 +309,14 @@ def staying_quiet() -> None:
 
 
 def voice_data() -> None:
-    """Only wake word clips are kept, in no synced folder, not in a call, not with VOICE_DATA=off; old ones go."""
+    """Only wake word clips are kept, only by choice, in no synced folder, not in a call; old ones go unless forever."""
     real = Path(listener.os.environ["LOCALAPPDATA"]) / "free247jarvis" / "voicedata"
     assert HERE.parent not in real.parents, real
     clip = np.ones(listener.RATE, np.int16)
 
-    def asked(e, said="open notepad", call=False, off=""):
+    def asked(e, said="open notepad", call=False, choice="on"):
         with mock.patch.object(listener, "transcribe", lambda clip: said), mock.patch.object(listener, "in_call", lambda: call), \
-                mock.patch.dict(listener.os.environ, {"VOICE_DATA": off}), mock.patch.object(listener, "emit", lambda *a, **k: None):
+                mock.patch.dict(listener.os.environ, {"VOICE_DATA": choice}), mock.patch.object(listener, "emit", lambda *a, **k: None):
             e.request_done(clip)
 
     with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(listener.os.environ, {"LOCALAPPDATA": tmp}):
@@ -324,14 +324,15 @@ def voice_data() -> None:
         rows = lambda: [json.loads(line) for line in (folder / "requests.jsonl").read_text(encoding="utf-8").splitlines()]
         e = ears()
         asked(e)  # a follow-up window's clip: no wake word
-        e.woke = (0.5, 9)
-        asked(e, off="off")
+        for choice in ("off", ""):  # nobody chose: nothing is kept
+            e.woke = (0.5, 9)
+            asked(e, choice=choice)
         e.woke = (0.5, 9)
         asked(e, call=True)
         assert not folder.exists()
         time.sleep(0.002)
         e.woke = (0.91, 120)
-        asked(e, "Hey Jarvis, open notepad")  # VOICE_DATA empty: on
+        asked(e, "Hey Jarvis, open notepad")
         assert e.woke is None
         asked(e)  # the next one is a follow-up again
         assert [r["wake_score"] for r in rows()] == [0.91] and rows()[0]["kept"], rows()
@@ -341,14 +342,25 @@ def voice_data() -> None:
         heard = []
         with mock.patch.object(listener, "wav_bytes", side_effect=OSError("full")), mock.patch.object(listener, "transcribe", lambda clip: "open notepad"), \
                 mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: heard.append(ev)), \
-                mock.patch.dict(listener.os.environ, {"VOICE_DATA": ""}):
+                mock.patch.dict(listener.os.environ, {"VOICE_DATA": "on"}):
             e.woke = (0.5, 9)
             e.request_done(clip)
         assert "heard" in heard and "status" in heard, heard
 
-        # Past DATA_DAYS or over DATA_MAX, clip and row both go.
+        # forever keeps a clip past both limits, and it is saved like any other.
         old = folder / rows()[0]["clip"]
         listener.os.utime(old, (1, 1))
+        with mock.patch.dict(listener.os.environ, {"VOICE_DATA": "forever"}), mock.patch.object(listener, "DATA_MAX", 0):
+            listener.prune_data()
+        assert old.exists() and len(rows()) == 1
+        time.sleep(0.002)
+        e.woke = (0.5, 9)
+        asked(e, choice="forever")
+        assert len(rows()) == 2 and old.exists()
+        (folder / rows()[1]["clip"]).unlink()
+        (folder / "requests.jsonl").write_text(json.dumps(rows()[0]) + "\n", encoding="utf-8")
+
+        # Past DATA_DAYS or over DATA_MAX, clip and row both go.
         listener.prune_data()
         assert not old.exists() and rows() == []
         for name in ("1.wav", "2.wav"):

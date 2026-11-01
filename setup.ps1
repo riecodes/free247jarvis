@@ -40,4 +40,21 @@ if ((Get-Content .env -Raw) -notmatch '(GROQ|ELEVENLABS)_API_KEY=\S') {
     'run setup.ps1 again.'
     exit 1
 }
+
+# Off unless you say yes. With nobody there to answer (an agent, a pipe) it stays off and asks next time.
+if ((Get-Content .env -Raw) -notmatch '(?m)^VOICE_DATA=[^\s]') {
+    ''
+    'Optional voice data: keep the audio and words of each request that passes the wake word, to tune how'
+    'Jarvis hears you, your accent and your tone. Anyone near the mic is in those clips. They stay on this PC,'
+    'in %LOCALAPPDATA%\free247jarvis\voicedata, for 30 days. Nothing is kept in a call. README, "Voice data".'
+    try { $answer = Read-Host 'Keep them? y or n (n if unsure; change it any time with VOICE_DATA in .env)' } catch { $answer = '' }
+    $choice = switch -Regex ($answer) { '^\s*y' { 'on' } '^\s*n' { 'off' } default { '' } }
+    if ($choice) {
+        $text = [IO.File]::ReadAllText("$PSScriptRoot\.env")
+        if ($text -match '(?m)^VOICE_DATA=') { $text = $text -replace '(?m)^VOICE_DATA=[ \t]*', "VOICE_DATA=$choice" }
+        else { $text = $text.TrimEnd() + "`r`nVOICE_DATA=$choice`r`n" }
+        [IO.File]::WriteAllText("$PSScriptRoot\.env", $text)
+        "VOICE_DATA=$choice saved in .env."
+    } else { 'No answer: voice data stays off. Run setup.ps1 again to choose.' }
+}
 'Setup done. Start the boss with: powershell -ExecutionPolicy Bypass -File start.ps1'

@@ -558,9 +558,10 @@ def data_dir() -> Path | None:
 
 
 def prune_data() -> None:
-    """Deletes clips past DATA_DAYS or over DATA_MAX, oldest first (their names sort by time), and their rows."""
+    """Deletes clips past DATA_DAYS or over DATA_MAX, oldest first (their names sort by time), and their rows.
+    VOICE_DATA=forever deletes nothing."""
     folder = data_dir()
-    if not folder or not folder.is_dir():
+    if not folder or not folder.is_dir() or os.environ.get("VOICE_DATA", "").lower() == "forever":
         return
     clips = sorted(folder.glob("*.wav"))
     total, gone = sum(c.stat().st_size for c in clips), False
@@ -578,10 +579,10 @@ def prune_data() -> None:
 
 
 def keep_clip(clip: np.ndarray, transcript: str, text: str, score: float, level: int) -> None:
-    """A clip that passed the wake word, and one row about it, for mishears.py. Not in a call, where a client could be
-    on it. VOICE_DATA=off stops it. A failure here only goes to the log: the request matters more."""
+    """A clip that passed the wake word, and one row about it, for mishears.py. Opt-in: only with VOICE_DATA=on or
+    forever. Not in a call, where a client could be on it. A failure here only goes to the log: the request matters more."""
     folder = data_dir()
-    if not folder or os.environ.get("VOICE_DATA", "").lower() == "off":
+    if not folder or os.environ.get("VOICE_DATA", "").lower() not in ("on", "forever"):
         return
     try:
         if in_call():

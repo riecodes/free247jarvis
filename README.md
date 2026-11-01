@@ -31,8 +31,8 @@ Documents folder (install Git first if it is missing, after asking me). In that 
 powershell -ExecutionPolicy Bypass -File setup.ps1 and install anything it reports missing
 after asking me. Get me a free Groq key from https://console.groq.com/keys (get it for me if
 you have browser tools such as Claude in Chrome, otherwise walk me through it), put it in the
-.env file as GROQ_API_KEY, and run setup.ps1 again until it says "Setup done". Then run
-start.ps1, tell me to pick "I am using this for local development" in the new boss window, and
+.env file as GROQ_API_KEY, and run setup.ps1 again until it says "Setup done". Show me what it
+says about optional voice data and do what I answer; don't choose for me. Then run start.ps1, tell me to pick "I am using this for local development" in the new boss window, and
 to say "Hey Jarvis, open one more terminal".
 ```
 
@@ -46,7 +46,8 @@ to say "Hey Jarvis, open one more terminal".
    voice speaks in about half a second instead of two (that needs the CUDA toolkit and cuDNN;
    without them it runs on the processor).
 3. **Add your Groq key.** Get a free key at <https://console.groq.com/keys> (no card needed) and
-   put it in `.env`: `GROQ_API_KEY=gsk_...`.
+   put it in `.env`: `GROQ_API_KEY=gsk_...`. Run `setup.ps1` again: it also asks whether to keep optional
+   voice data on this PC ("Voice data and your words"). The answer is off unless you say yes.
 4. **Start the boss.** `powershell -ExecutionPolicy Bypass -File start.ps1`. The very first time,
    the new window asks whether you trust the folder: pick **Yes, I trust this folder** (once; "No,
    exit" closes the window). Then pick **I am using this for local development** (Claude Code asks
@@ -229,13 +230,24 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 
 ## Voice data and your words
 
-To learn how it mishears you, it keeps each request that passed the wake word: the audio and one line
-(time, transcript, language, confidence, wake score) in `%LOCALAPPDATA%\free247jarvis\voicedata`, outside
-any synced folder and outside git. It keeps nothing while the mic is off, nothing from a follow-up window,
-nothing in a call, and never continuous audio. Clips go after 30 days, or sooner past 2 GB, oldest first.
-`VOICE_DATA=off` in `.env` stops it; what is already there still ages out.
+Optional, and off unless you choose it: `setup.ps1` asks once, or set `VOICE_DATA` in `.env` and restart.
+It helps you tune how Jarvis hears you, your accent and your tone.
 
-**Anyone near the mic while you make a request is in the clip.** Tell them, or turn it off for that stretch.
+| `VOICE_DATA` | What it keeps |
+| --- | --- |
+| empty or `off` | Nothing |
+| `on` | Requests for 30 days, or less past 2 GB, oldest first |
+| `forever` | Requests with no age or size limit, until you delete them |
+
+A kept request is what passed the wake word: the audio and one line (time, transcript, language, confidence,
+wake score) in `%LOCALAPPDATA%\free247jarvis\voicedata`, outside any synced folder and outside git. It keeps
+nothing while the mic is off, nothing from a follow-up window, nothing in a call, and never continuous audio.
+**Nothing here is uploaded by keeping it**, though the request itself still goes to your speech-to-text service to
+be heard. Delete that folder to erase it all. With `off` or `on`, clips already there age out under the `on`
+limits, including ones kept under `forever`.
+
+**Anyone near the mic while you make a request is in the clip, and with `forever` they stay in it.** Tell them, or
+turn it off for that stretch.
 
 `.venv\Scripts\python mishears.py` lists likely mishears and the stretches Whisper was unsure of. Add the
 right spelling to `words.txt`, one term per line, and restart. Terms feed Whisper's prompt (Groq refuses
