@@ -190,7 +190,7 @@ class RealtimeEars(listener.Ears):
         to Ears.say."""
         import sounddevice as sd
 
-        call = listener.in_call()
+        call = self.busy()
         if (call and hold) or not self.session.open():
             return super().say(text, asked, hold, window)
         listen = bool(self.followup) and asked and window and not call

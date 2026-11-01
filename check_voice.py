@@ -3,7 +3,7 @@
   queue  while the user has the floor every line waits, and goes out oldest first once they are done
   play   each sound gets the silence that lets it play to its end
   say    a line that wants an answer opens the follow-up window, prompted or not; an acknowledgment or plain news does not
-  call   in a call: a heads-up at most every HEADS_UP_GAP seconds, the line held; never a window
+  call   in a call: the line held unsaid; never a window
   media  what was playing resumes after the line, or after the window when one opens
   hush   the wake word pauses the video and shows the orch's window until the reply; a false wake puts both back at once
   tries  wake word peaks are logged; a near miss ticks, except in a call; the wake word also works mid-task
@@ -35,8 +35,9 @@ REAL_OUTPUT_PROBLEM = listener.output_problem
 def ears() -> listener.Ears:
     """Ears without its models, with a silent speaker that records what it was told to play."""
     e = listener.Ears.__new__(listener.Ears)
-    e.followup, e.deaf_until, e.next_heads_up, e.paused, e.raised, e.reply_by = 100, 0.0, 0.0, [], None, 0.0
+    e.followup, e.deaf_until, e.paused, e.raised, e.reply_by = 100, 0.0, [], None, 0.0
     e.oww, e.vad, e.vad_boost, e.recent = mock.Mock(), mock.Mock(), 1, []
+    e.spoke = listener.deque(maxlen=listener.TALK_CHUNKS)
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.threshold, e.peak, e.peak_word, e.peak_level, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0, 0.0, {"jarvis": "ack"}, ["jarvis"]
     e.spoken, e.played, e.queue, e.queue_since, e.last_speech, e.tries = [], [], [], 0.0, 0.0, []
@@ -158,7 +159,8 @@ def looking() -> None:
     with mock.patch.object(listener, "media_playing", lambda: True):
         assert not captions(tries(near_twice))
     # Two tries spread out are not looking.
-    with mock.patch.object(listener, "media_playing", lambda: False), mock.patch.object(listener, "emit") as emitted:
+    with mock.patch.object(listener, "media_playing", lambda: False), mock.patch.object(listener, "emit") as emitted, \
+            mock.patch.object(listener, "in_call", lambda: False):
         e = ears()
         e.tried()
         e.tries = [t - listener.LOOK_WINDOW for t in e.tries]
@@ -216,6 +218,94 @@ def mic_names() -> None:
     with mock.patch("sounddevice.query_devices", side_effect={4: {"name": "Mic A"}}.__getitem__), mock.patch.object(listener, "emit", lambda *a, **k: None):
         assert listener.mic_name(mock.Mock(device=4)) == "Mic A"
         assert listener.mic_name(mock.Mock(device=99)) == ""  # gone: says so, and the voice goes on
+
+
+def staying_quiet() -> None:
+    """A call or talk around: a stricter wake word that speech to text must also hear, no unasked line, no window."""
+    chunk = np.ones(listener.CHUNK, np.int16)
+
+    def wake(e, score, said="Hey Jarvis, open notepad", call=False):
+        events = []
+        with mock.patch.object(listener, "in_call", lambda: call), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+                mock.patch.object(listener, "transcribe", lambda clip: said), mock.patch.object(listener, "pause_media", list), mock.patch.object(listener, "media_playing", lambda: False):
+            e.oww.predict = lambda _: {"jarvis": score}
+            e.on_chunk(chunk)
+            if e.on_chunk != e.wake_chunk:
+                e.on_chunk = e.record_chunk
+                e.vad.predict = lambda *a, **k: 0.9
+                for _ in range(listener.MIN_VOICED):
+                    e.on_chunk(chunk)
+                e.vad.predict = lambda *a, **k: 0.0
+                for _ in range(listener.END_QUIET):
+                    e.on_chunk(chunk)
+        return events
+
+    # The signals: an app on the mic comes first and names itself; titles only match a meeting's window.
+    with mock.patch.object(listener, "mic_holder", lambda: "chrome on the mic"), mock.patch.object(listener, "call_window", lambda: "a Meet window"):
+        assert listener.in_call() and listener.call_why == "chrome on the mic"
+    with mock.patch.object(listener, "mic_holder", lambda: ""), mock.patch.object(listener, "call_window", lambda: "a Meet window"):
+        assert listener.in_call() and listener.call_why == "a Meet window"
+    with mock.patch.object(listener, "mic_holder", lambda: ""), mock.patch.object(listener, "call_window", lambda: ""):
+        assert not listener.in_call() and listener.call_why == ""
+    match = lambda title: [app for app, p in listener.CALL_TITLES.items() if listener.re.search(p, title)]
+    assert match("Meet - abc-defg-hij - Google Chrome") == ["Meet"] and match("Zoom Meeting") == ["Zoom"]
+    assert match("Weekly sync | Meeting | Microsoft Teams") == ["Teams"]
+    for other in ("Meeting notes - Google Docs", "How to meet people - YouTube", "Zoom out - Figma", "Microsoft Teams"):
+        assert not match(other), other
+
+    heard = lambda ev: [d["text"] for k, d in ev if k == "heard"]
+    # Alone, with the same weak score: wakes as before, and the wake word isn't needed in the words.
+    assert heard(wake(ears(), 0.45, "open notepad")) == ["open notepad"]
+    # In a call: too weak; strong but not heard in the words; strong and heard.
+    e = ears()
+    assert wake(e, 0.45, call=True) and e.on_chunk == e.wake_chunk
+    assert not heard(wake(ears(), 0.95, "how much can you give", call=True))
+    assert heard(wake(ears(), 0.95, call=True)) == ["open notepad"]
+
+    # People talking, with no call: the same, then the state goes to the window, and a real request clears it.
+    e = ears()
+    e.spoke.extend([True] * 100 + [False] * 100)
+    assert e.talking()
+    events = []
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))):
+        e.oww.predict = lambda _: {"jarvis": 0.0}
+        e.wake_chunk(chunk)
+    assert ("quiet", {"on": True, "text": "people talking"}) in events and e.on_chunk == e.wake_chunk
+    assert heard(wake(e, 0.95)) == ["open notepad"] and not e.talking() and not e.spoke
+    quiet_room = ears()
+    quiet_room.spoke.extend([True] * 124)
+    assert not quiet_room.talking()  # too little to tell
+    quiet_room.spoke.extend([False] * 300)
+    assert not quiet_room.talking()
+
+    # Staying quiet, a line nobody asked for waits unsaid, and a reply they asked for opens no window.
+    e = ears()
+    e.spoke.extend([True] * 200)
+    events = []
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+            mock.patch("soundfile.write"), mock.patch.object(listener.os, "replace"), mock.patch.object(listener, "output_problem", lambda: ""), \
+            mock.patch.object(listener, "pause_media", list):
+        e.say("News?", hold=True)
+        assert e.spoken == [] and ("held", {"text": "News?"}) in events and not [x for x in events if x[0] == "caption"]
+        e.say("Your answer?")
+        assert e.spoken == ["Your answer?"] and ("spoken", {"listening": False}) in events and e.on_chunk == e.wake_chunk
+
+    # A listening window that runs on is thrown away unsent, and a wake word's request isn't capped.
+    e = ears()
+    e.vad.predict = lambda *a, **k: 0.9
+    sent = []
+    with mock.patch.object(listener, "emit", lambda *a, **k: None), mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "pause_media", list):
+        e.record(sent.append, give_up=100)
+        for _ in range(listener.SHORT_CLIP):
+            e.on_chunk(chunk)
+        assert not sent and e.on_chunk == e.wake_chunk and e.talking()
+        e = ears()
+        e.vad.predict = lambda *a, **k: 0.9
+        e.woke = (0.9, 9)
+        e.record(sent.append)
+        for _ in range(listener.SHORT_CLIP + 1):
+            e.record_chunk(chunk)
+        assert e.on_chunk == e.record_chunk and e.cap == listener.MAX_CLIP
 
 
 def voice_data() -> None:
@@ -318,22 +408,16 @@ def main() -> None:
     # Nothing was playing: nothing resumes.
     assert run(False, [], asked=False)[2] == []
 
-    # A call: a heads-up, the line held, no window.
-    with mock.patch.dict(listener.os.environ, {"VOICE_TITLE": "Sir"}):
-        e, events, resumed = run(True, [video], asked=False, hold=True)
-    assert e.spoken == ["Sir, I have an update."] and ("held", {"text": "The news."}) in events
-    assert e.on_chunk == e.wake_chunk and resumed == [video]
-    # The second line in that call is only held.
-    with mock.patch.object(listener, "in_call", lambda: True), mock.patch.object(listener, "emit"):
-        e.spoken.clear()
-        e.say("More news.", asked=False, hold=True)
-    assert e.spoken == []
+    # A call: the line held, unsaid, no window, and nothing paused.
+    e, events, resumed = run(True, [video], asked=False, hold=True)
+    assert e.spoken == [] and ("held", {"text": "The news."}) in events
+    assert e.on_chunk == e.wake_chunk and not e.paused
     # In a call the user asked: in full, but still no window.
     e, _, _ = run(True, [], asked=True)
     assert e.spoken == ["The news."] and e.on_chunk == e.wake_chunk
     # An older request in a call waits like any other line.
     e, events, _ = run(True, [], asked=True, hold=True)
-    assert e.spoken[0].endswith("I have an update.") and events[0][0] == "held"
+    assert e.spoken == [] and events[0][0] == "held"
 
     # Never over the user: while a request or an answer is being recorded every line waits, oldest first.
     events = []
@@ -391,11 +475,11 @@ def main() -> None:
         listener.Ears.play(e, tone, 1000, drain=False)
         assert len(played.call_args[0][0]) == 100
 
-    # A question with nobody talking and no call: in full, with the window. In a call: the heads-up, no window.
+    # A question with nobody talking and no call: in full, with the window. In a call: held, no window.
     e, _, _ = run(False, [], hold=True)
     assert e.spoken == ["The news."] and e.on_chunk == e.record_chunk
     e, events, _ = run(True, [], hold=True)
-    assert e.spoken[0].endswith("I have an update.") and e.on_chunk == e.wake_chunk and events[0][0] == "held"
+    assert e.spoken == [] and e.on_chunk == e.wake_chunk and events[0][0] == "held"
 
     # A near miss: its peak is logged and it ticks once the try is over, not while the score still climbs.
     e, events, played = tries([0.0, 0.3, 0.35])
@@ -426,7 +510,7 @@ def main() -> None:
         assert e.spoken == [] and e.queue
     # In a call the tick stays silent, and the score still reaches the log.
     assert tries([0.3, 0.0], call=True)[2] == []
-    assert tries([0.3, 0.0], call=True)[1][0][0] == "peak"
+    assert [ev for ev in tries([0.3, 0.0], call=True)[1] if ev[0] != "quiet"][0][0] == "peak"
 
     # The tick against the three sounds the user knows.
     known = [pitch(s) for s in (listener.CHIME_UP, listener.CHIME_DOWN, listener.CHIME_CLOSE)]
@@ -580,6 +664,7 @@ def main() -> None:
         assert shown == [("partial", {"text": "open terminal two"})], shown
     voice_data()
     mic_names()
+    staying_quiet()
     print("ok")
 
 

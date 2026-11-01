@@ -116,11 +116,13 @@ def main() -> None:
             e.say("Done.", asked=False)
         assert e.spoken == ["Done."] and played, "the fallback voice did not speak"
 
-        # In a call, the heads-up rule stays the listener's, and no audio goes up for a voice training take.
-        e.spoken.clear()
-        with mock.patch.object(listener, "in_call", lambda: True), mock.patch("soundfile.write"), mock.patch.object(listener.os, "replace"):
+        # In a call, a line nobody asked for waits unsaid and costs nothing, and no audio goes up for a voice training take.
+        e.spoken.clear(), events.clear()
+        requests = len([x for x in got if x["type"] == "response.create"])
+        with mock.patch.object(listener, "in_call", lambda: True):
             e.say("News.", asked=False, hold=True)
-        assert e.spoken == ["I have an update."] or e.spoken[0].endswith("I have an update.")
+        assert e.spoken == [] and ("held", {"text": "News."}) in events
+        assert len([x for x in got if x["type"] == "response.create"]) == requests
         e.record(e.take_done)
         assert not e.streaming
 

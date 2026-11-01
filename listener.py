@@ -8,8 +8,8 @@ and writes one JSON event per stdout line:
             looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
             end <text>                          as say, but it closes the exchange: no follow-up window
-            late <text>                         an older reply, or a question nobody prompted: a heads-up in a call, else as say
-            tell <text>                         news nobody asked for: a heads-up in a call, else in full; no follow-up window
+            late <text>                         an older reply, or a question nobody prompted: held while staying quiet, else as say
+            tell <text>                         news nobody asked for: held while staying quiet, else in full; no follow-up window
   events    status {text}                       a model is loading or downloading
             state {on, trained}                 after on, off, enroll and cancel
             caption {text, looking, remind}     show this in the window; looking: voice.mjs adds what the user is waiting
@@ -110,12 +110,18 @@ CHUNK = 1280  # 80 ms, the frame openWakeWord expects
 SPEECH = 0.5  # Silero VAD score that counts as speech
 # Counted in 80 ms chunks.
 PRE_ROLL = 3  # chunks from just before the wake fired, so "Hey Jarvis, tell..." said in one breath keeps its start
+SURE_ROLL = 19  # 1.5 s: while staying quiet, enough for speech to text to hear "Hey Jarvis" itself
+# Staying quiet: a call, or speech around while nobody woke it. TALK_SHARE and WAKE_STRICT are read from .env in Ears.
+WAKE_STRICT = 0.7  # the wake word score needed then; tonight's real wakes went as low as 0.39, so not all the time
+TALK_SHARE = 0.4  # this share of the last 30 s was speech: people are talking
+TALK_CHUNKS, TALK_MIN = 375, 125  # 30 s, and no verdict on less than 10 s
+QUIET_EVERY = 5  # seconds between checks for the window
+SHORT_CLIP = 1125  # 90 s cap, thrown away unsent: a listening window or a quiet-time request. A real answer ran about 60 s.
 GRACE = 5  # speech within this many chunks of the wake is one breath ("Hey Jarvis, status"): no "Jarvis here"
 MIN_VOICED = 3  # less speech than this is a click or a cough, not a request
 END_QUIET = 62  # about 5s of quiet ends a request (1s cut people off mid-sentence, 2s still cut thinking pauses)
 ECHO = 1.0  # seconds the mic stays deaf after a reply: the room's echo, and a moment before the next "Hey Jarvis"
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
-HEADS_UP_GAP = 300  # seconds between heads-ups in one call; lines in between are only held
 PEAK_FLOOR = 0.03  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
 NEAR_MISS = 0.12  # a peak from here up to the threshold gets the near-miss tick
 CUE_GAP = 2  # seconds between near-miss ticks
@@ -196,10 +202,42 @@ def emit(event: str, **data) -> None:
 
 
 def in_call() -> bool:
-    """Another app is capturing from a microphone: a call, a meeting, a stream. Asks WASAPI for its live capture
-    sessions, because Windows' privacy registry goes stale (here its last mic entry was 2026-09-17, with Voicemod and
-    this listener on the mic right then). CALL_IGNORE in .env names apps that hold the mic all day. A meeting with
-    the mic muted may release it, and then this can't tell."""
+    """A call, by what Windows can see; call_why says which signal. Next: speech around, in Ears.talking."""
+    global call_why
+    call_why = mic_holder() or call_window()
+    return bool(call_why)
+
+
+call_why = ""  # the signal behind the last in_call(), for the window
+CALL_TITLES = {"Meet": r"^Meet\b", "Zoom": r"\bZoom (Meeting|Webinar)\b", "Teams": r"\b(Meeting|Call).*Microsoft Teams\b",
+               "Webex": r"\bWebex (Meeting|Meetings)\b", "Messenger": r"\bMessenger call\b"}
+
+
+def call_window() -> str:
+    """A meeting's window title, for one that let go of a muted mic. Chrome's title is only its open tab's. Compared
+    here, and never kept or sent: titles carry people's names."""
+    from ctypes import WINFUNCTYPE, create_unicode_buffer, windll, wintypes
+
+    found = []
+
+    def each(h, _):
+        if windll.user32.IsWindowVisible(h):
+            title = create_unicode_buffer(300)
+            windll.user32.GetWindowTextW(h, title, 300)
+            found.extend(app for app, pattern in CALL_TITLES.items() if re.search(pattern, title.value))
+        return True
+
+    try:
+        windll.user32.EnumWindows(WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(each), 0)
+    except Exception as e:
+        emit("error", message=f"Can't check for a meeting window: {e}")
+    return f"a {found[0]} window" if found else ""
+
+
+def mic_holder() -> str:
+    """Another app capturing from a microphone: a call, a meeting, a stream; its name, or "". Asks WASAPI for its live
+    capture sessions, because Windows' privacy registry goes stale (its last mic entry was 2026-09-17 during a Meet on
+    2026-11-01). It can't tell which of Chrome's tabs. CALL_IGNORE in .env names apps that hold the mic all day."""
     try:
         import comtypes
         import psutil
@@ -222,10 +260,10 @@ def in_call() -> bool:
                 except psutil.Error:  # it just ended
                     continue
                 if not any(w in name for w in ignore):
-                    return True
+                    return f"{name.removesuffix('.exe')} on the mic"
     except Exception as e:  # can't tell: speak as if there is no call
         emit("error", message=f"Can't check for a call: {e}")
-    return False
+    return ""
 
 
 def output_problem() -> str:
@@ -647,6 +685,10 @@ class Ears:
     watching = False  # the window is open: worth paying for live words
     live = None  # the live words of the clip being recorded
     woke = None  # (score, level) while the clip being recorded came from the wake word, not a follow-up window
+    sure = False  # it woke while staying quiet: speech to text must hear the wake word too
+    cap = MAX_CLIP  # chunks the clip being recorded may reach
+    strict, talk_share = WAKE_STRICT, TALK_SHARE
+    quiet_why, next_quiet = "", 0.0
 
     def __init__(self) -> None:
         from kokoro_onnx import Kokoro
@@ -657,6 +699,9 @@ class Ears:
         self.words = wake_words()
         self.oww = wake_model(self.words)
         self.threshold = float(os.environ.get("WAKE_THRESHOLD") or 0.5)  # here, not at import: .env loads later
+        self.strict = max(self.threshold, float(os.environ.get("WAKE_STRICT") or WAKE_STRICT))
+        self.talk_share = float(os.environ.get("TALK_SHARE") or TALK_SHARE)
+        self.spoke: deque[bool] = deque(maxlen=TALK_CHUNKS)
         self.followup = round(float(os.environ.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
         self.vad_boost = float(os.environ.get("VAD_BOOST") or 1)  # the wake word and speech to text cope without it
@@ -665,11 +710,10 @@ class Ears:
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
         self.acks = {WAKES[w][0]: self.load_ack(WAKES[w][1]) for w in self.words}  # by model name, as scores are
         self.deaf_until = 0.0  # audio recorded before this moment was our own voice coming out of the speaker
-        self.recent: deque[np.ndarray] = deque(maxlen=PRE_ROLL)
+        self.recent: deque[np.ndarray] = deque(maxlen=SURE_ROLL)
         self.paused: list = []  # media sessions paused for an exchange, resumed when it is over
         self.raised: tuple[int, bool] | None = None  # the orch's window, shown because that paused something
         self.reply_by = 0.0  # a request was heard: the video stays paused for its reply until this moment
-        self.next_heads_up = 0.0  # no heads-up before this moment
         self.voiced = 0  # chunks of speech in the clip being recorded
         self.peak, self.peak_word, self.peak_level = 0.0, "", 0  # the highest wake word score of the try going on
         self.next_cue = 0.0  # no near-miss tick before this moment
@@ -707,7 +751,7 @@ class Ears:
 
     def wait_for_wake(self, keep: bool = False) -> None:
         self.stop_live()
-        self.woke = None
+        self.woke, self.sure = None, False
         if not keep:  # not earlier: a video's sound in the follow-up window would be recorded as a request
             self.release()
         self.oww.reset()
@@ -719,26 +763,48 @@ class Ears:
         """Silero stops hearing a quiet mic long before the wake word or Whisper do, so far-away speech ended as "nobody
         spoke". Only its copy of the chunk is boosted."""
         louder = np.clip(chunk.astype(np.float64) * self.vad_boost, -32768, 32767).astype(np.int16)
-        return self.vad.predict(louder, frame_size=640) >= SPEECH  # about 0.6 ms per chunk
+        speech = self.vad.predict(louder, frame_size=640) >= SPEECH  # about 0.6 ms per chunk
+        self.spoke.append(speech)
+        return speech
+
+    def talking(self) -> bool:
+        """Speech around that nobody woke it for. The VAD can't tell who, so a video's voices count, and it can't hear
+        what the mic can't: a call in headphones with the user silent."""
+        return len(self.spoke) >= TALK_MIN and sum(self.spoke) / len(self.spoke) >= self.talk_share
+
+    def busy(self) -> bool:
+        """The user may be with someone else: no line that nobody asked for, no listening window, no toast."""
+        return in_call() or self.talking()
+
+    def report_quiet(self) -> None:
+        now = time.monotonic()
+        if now >= self.next_quiet:
+            self.next_quiet = now + QUIET_EVERY
+            why = (call_why or "a call") if in_call() else "people talking" if self.talking() else ""
+            if why != self.quiet_why:
+                self.quiet_why = why
+                emit("quiet", on=bool(why), text=why)
 
     def wake_chunk(self, chunk: np.ndarray) -> None:
         if self.is_speech(chunk):
             self.last_speech = time.monotonic()
+        self.report_quiet()
         self.recent.append(chunk)
         scores = self.oww.predict(chunk)
         fired = max(scores, key=scores.get)
         score = float(scores[fired])
         if score >= PEAK_FLOOR:
             self.peak_level = max(self.peak_level, int(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))))
-        if score >= self.threshold:
+        sure = score >= self.threshold and self.busy()
+        if score >= (self.strict if sure else self.threshold):
             emit("peak", word=fired, score=round(score, 2), level=self.peak_level)
-            self.woke = (score, self.peak_level)
+            self.woke, self.sure = (score, self.peak_level), sure
             self.peak_level = 0
             emit("wake")  # also while the boss works on the last request: this one reaches it as a new message
             self.hush()  # first, so the video's sound stays out of the request            # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
             # start of a longer file, so the stream closing early doesn't reach it.
             self.play(*CHIME_UP, tail=0.05, drain=False)
-            self.record(self.request_done, list(self.recent))
+            self.record(self.request_done, list(self.recent)[-(SURE_ROLL if sure else PRE_ROLL):])
             self.ack, self.grace, self.on_chunk = self.acks[fired], GRACE, self.after_wake
         elif score >= PEAK_FLOOR:
             if score > self.peak:
@@ -758,7 +824,7 @@ class Ears:
         self.tries = [t for t in self.tries if now - t < LOOK_WINDOW] + [now]
         if len(self.tries) >= LOOK_TRIES:
             self.tries = []
-            if not (stray and (in_call() or media_playing())):
+            if not self.busy() and not (stray and media_playing()):
                 emit("caption", text=self.looking(), looking=True)
 
     def looking(self) -> str:
@@ -766,7 +832,7 @@ class Ears:
 
     def cue(self, sound: tuple[np.ndarray, int]) -> None:
         """A sound that answers a try at the wake word: at most one per CUE_GAP, and none in a call."""
-        if time.monotonic() >= self.next_cue and not in_call():
+        if time.monotonic() >= self.next_cue and not self.busy():
             self.next_cue = time.monotonic() + CUE_GAP
             self.play(*sound, tail=0.05)
 
@@ -778,7 +844,8 @@ class Ears:
         if self.voiced:
             self.on_chunk = self.record_chunk
         elif not self.grace:
-            self.record(self.request_done)  # the wake chime already played (it replaced the spoken "Jarvis here")
+            # The wake chime already played (it replaced the spoken "Jarvis here"). Staying quiet, the wake word stays in.
+            self.record(self.request_done, self.clip if self.sure else ())
 
     def record(self, on_done, start=(), give_up: int = GIVE_UP) -> None:
         """Collects chunks until the speaker stops, then calls on_done with the clip, or with None if nobody spoke
@@ -786,6 +853,7 @@ class Ears:
         self.stop_live()
         self.vad.reset_states()
         self.clip, self.voiced, self.quiet, self.on_done, self.give_up = list(start), 0, 0, on_done, give_up
+        self.cap = MAX_CLIP if self.woke and not self.sure else SHORT_CLIP
         self.on_chunk = self.record_chunk
 
     def record_chunk(self, chunk: np.ndarray) -> None:
@@ -803,22 +871,31 @@ class Ears:
         if self.live:
             self.live.feed(chunk)
         spoke = self.voiced >= MIN_VOICED
+        # Nobody's answer runs this long: a conversation the window caught, tonight 852 words of it. Nothing is sent.
+        if self.cap < MAX_CLIP and len(self.clip) >= self.cap:
+            emit("status", text="Too long for a reply: dropped unsent")
+            self.wait_for_wake()
+            return
         if (spoke and self.quiet >= END_QUIET) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP:
             self.stop_live()
             self.on_done(np.concatenate(self.clip) if spoke else None)
 
     def request_done(self, clip: np.ndarray | None) -> None:
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
-        woke = self.woke
+        woke, sure = self.woke, self.sure
         self.wait_for_wake(keep=clip is not None)  # first, so a failed transcription still leaves the ears listening
         transcript = transcribe(clip) if clip is not None else ""
         text = strip_wake(transcript)
         words = re.findall(r"\w+", text.lower())
         if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS or handed_back(text):
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
-        if clip is not None and woke:
+        if sure and clip is not None and not re.search(rf"\b{NAMES}\b", transcript, re.IGNORECASE):
+            text = ""  # a score can reach 1.00 on other people's words; only the wake word itself goes through
+            emit("status", text="Woke while staying quiet, but the words had no wake word: dropped")
+        if clip is not None and woke and not sure:  # staying quiet: other people may be on the clip
             keep_clip(clip, transcript, text, *woke)
         if text:
+            self.spoke.clear()  # that was the user talking to it, not people talking
             self.tries = []
             self.reply_by = time.monotonic() + REPLY_HOLD
             emit("heard", text=text)
@@ -861,19 +938,15 @@ class Ears:
 
     def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True) -> None:
         """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
-        meanwhile. Only a line that wants an answer (asked and window) opens the follow-up window, and never in a call,
-        so call audio is not sent to speech to text. With hold, a call gets a short heads-up and the line goes back
-        as `held`."""
+        meanwhile. Only a line that wants an answer (asked and window) opens the follow-up window, and never while
+        staying quiet, so other people's audio is not sent to speech to text. With hold, staying quiet keeps the line
+        back unsaid as `held`."""
         import soundfile as sf
 
-        call = in_call()
+        call = self.busy()
         if call and hold:
             emit("held", text=text)
-            if time.monotonic() < self.next_heads_up:
-                return
-            self.next_heads_up = time.monotonic() + HEADS_UP_GAP
-            title = (os.environ.get("VOICE_TITLE") or "").strip()
-            text = f"{title}, I have an update." if title else "I have an update."
+            return
         listen = bool(self.followup) and asked and window and not call
         if hold and listen:
             emit("caption", text=text, remind=True)  # nobody prompted it and it needs them: a notification too
@@ -1146,7 +1219,7 @@ def main(commands: list[str]) -> None:
             ears.watching = value == "watch on"
             continue
         if value == "listen":  # after "Say that again?": record the next sentence without the wake word
-            if not ears.queue and not in_call():
+            if not ears.queue and not ears.busy():
                 ears.record(ears.request_done)
             continue
         if value.startswith(("say ", "end ", "late ", "tell ")):

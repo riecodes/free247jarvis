@@ -24,10 +24,10 @@ mkdirSync(join(HERE, 'tmp'), { recursive: true })
 const log = line => appendFileSync(process.env.VOICE_LOG || join(HERE, 'tmp', 'voice.log'), `${new Date().toISOString()} ${line}\n`)
 // What the window shows (window/index.html): every step of an exchange, kept for a window that opens later.
 const shown = [], watchers = new Set()
-let lastState = '' // the mic and whether it's on: a window that opens later needs it even after 200 other events
+const latest = {} // the mic and whether it's staying quiet: a window that opens later needs them even after 200 other events
 function show(event, data = {}) {
   const line = `data: ${JSON.stringify({ ...data, event, at: Date.now() })}\n\n`
-  if (event === 'state') lastState = line
+  if (event === 'state' || event === 'quiet') latest[event] = line
   if (shown.push(line) > 200) shown.shift()
   for (const w of watchers) w.write(line)
 }
@@ -126,8 +126,9 @@ function showCaption(text, toast = false) {
   if (text === captioned && Date.now() - captionedAt < CAPTION_GAP) return
   [captioned, captionedAt] = [text, Date.now()]
   show('caption', { text })
-  if (toast || !watchers.size) showToast(text)
+  if (toast || (!watchers.size && !quiet)) showToast(text)
 }
+let quiet = false // the listener thinks the user is with someone: no notification unless they asked for it
 // Detached, to outlive this process when the boss closes.
 function showToast(text) {
   log(`toast: ${text}`)
@@ -328,6 +329,7 @@ function startEars() {
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
     if (e.event !== 'caption') show(e.event, e)
     if (e.event === 'spoken' || e.event === 'partial') return
+    if (e.event === 'quiet') quiet = e.on
     if (e.event === 'heard') {
       route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
         .catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
@@ -374,7 +376,7 @@ const server = createServer((req, res) => {
   if (here && req.method === 'GET' && req.url === '/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
     res.flushHeaders() // with nothing to replay yet, the window would otherwise wait on these until the first event
-    if (!shown.includes(lastState)) res.write(lastState)
+    for (const line of Object.values(latest)) if (!shown.includes(line)) res.write(line)
     for (const line of shown) res.write(line)
     watchers.add(res)
     ears.stdin.write('watch on\n')
@@ -419,7 +421,7 @@ server.listen(PORT, '127.0.0.1')
 // Claude Code exits by closing our stdin; the listener then sees its own stdin close and quits too.
 function quit() {
   quitting = true
-  showCaption('Jarvis is off: the orch closed, so I can\'t hear or answer you.', true)  // the window goes with it
+  showCaption('Jarvis is off: the orch closed, so I can\'t hear or answer you.', !quiet)  // the window goes with it
   ears?.kill()
   process.exit(0)
 }

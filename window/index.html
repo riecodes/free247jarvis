@@ -36,6 +36,8 @@
   @media (prefers-reduced-motion: reduce) { body[data-mood=listen] #dot { animation: none; } }
   #mic { padding: 6px 16px; color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
   #mic:empty { display: none; }
+  #quiet { padding: 6px 16px; color: var(--work); font-size: 12px; border-bottom: 1px solid var(--line); }
+  #quiet:empty { display: none; }
   #live {
     min-height: 76px; padding: 12px 16px; font-size: 18px; line-height: 1.35;
     border-bottom: 1px solid var(--line); overflow-wrap: anywhere;
@@ -58,6 +60,7 @@
   <span id="detail"></span>
 </header>
 <div id="mic"></div>
+<div id="quiet"></div>
 <div id="live" aria-live="polite"></div>
 <ul id="log"></ul>
 <script>
@@ -115,12 +118,13 @@
     peak: e => { if (e.score < 0.5) $('detail').textContent = `Last try ${e.score}` },
     status: e => { if (/^Voice:|^Using |now on /.test(e.text)) add('Voice', e.text, 'note', e.at) },
     caption: e => add('Note', e.text, 'note', e.at),
+    quiet: e => $('quiet').textContent = e.on ? `Staying quiet: ${e.text}. Lines wait, and the wake word must be clear.` : '',
     error: e => add('Problem', e.message, 'fail', e.at),
   }
 
   const source = new EventSource('/events')
   source.onopen = () => { log.replaceChildren(); words(''); state('idle', WAITING) } // the server replays what happened
-  source.onerror = () => { state('bad', 'Jarvis is off', 'Reconnecting'); $('mic').textContent = '' }
+  source.onerror = () => { state('bad', 'Jarvis is off', 'Reconnecting'); $('mic').textContent = $('quiet').textContent = '' }
   source.onmessage = m => {
     const e = JSON.parse(m.data)
     HANDLERS[e.event]?.(e)

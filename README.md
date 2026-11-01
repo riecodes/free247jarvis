@@ -205,9 +205,15 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   recording.** Windows' Do Not Disturb holds them in the notification center.
 - Whatever is playing (a video, Spotify) pauses at the wake word or when it speaks, and resumes when the exchange ends, if it was playing. A false wake resumes it at once, and a request with no reply within a minute too.
 - Pausing something also shows the orch's terminal (titled "PC Orchestrator" or "LP Orchestrator") without taking the keyboard. It goes back when the exchange ends: minimized if it was, and left up if you clicked into it.
-- In a call (another app is on the mic), it only says "I have an update", at most every 5 minutes, and
-  never keeps listening. Say "Hey Jarvis, what's the update?" for the full lines. Apps that hold the mic
-  all day, such as Voicemod, go in `CALL_IGNORE=` in `.env`. A meeting that lets go of a muted mic looks
+- It stays quiet by itself while you're with someone, and the window shows why: another app on the mic (a Meet in
+  Chrome, Zoom), a meeting's window title, or, with neither, speech in 40% of the last 30 seconds (`TALK_SHARE=`). Then
+  lines nobody just asked for wait unsaid, with no notification and no listening window. The wake word needs a score
+  of 0.7 (`WAKE_STRICT=`), and speech to text must hear "Jarvis" too, so 1.5 seconds before the wake word goes to it.
+  Nothing from those clips is kept. Say "Hey Jarvis, what's the update?" for the lines. A listening window that runs
+  past 90 seconds is thrown away unsent. **It can't see** a call on your phone or one in another room, nor a
+  conversation too quiet for the mic, and a video's voices count as talking. Chrome on the mic for anything else counts
+  as a call. Apps that hold the mic
+  all day, such as Voicemod, go in `CALL_IGNORE=` in `.env`. A meeting that lets go of a muted mic, in a tab you aren't on, looks
   like no call.
 - If the mic sends nothing but silence for 30 seconds (a virtual mic such as Voicemod whose app is
   closed), it says so once. With `MIC_FALLBACK=` in `.env` (part of a second mic's name, such as
