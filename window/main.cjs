@@ -1,5 +1,5 @@
 // The Jarvis window: only a frame around the page voice.mjs serves. It opens without taking the keyboard, and stays
-// out of screen shares and recordings like the caption does (CAPTION_VISIBLE=1 shows it there).
+// out of screen shares and recordings (CAPTION_VISIBLE=1 shows it there).
 const { app, BrowserWindow } = require('electron')
 
 const URL = `http://127.0.0.1:${process.env.VOICE_PORT || 8790}/window`

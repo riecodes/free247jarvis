@@ -196,12 +196,13 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - It never talks over you. While it records you, while the 8 seconds are open, or for 3 seconds after you
   spoke (30 at most, in case that's a TV), every line waits in a queue and plays when you're done.
 - Can't hear it? Say "Hey Jarvis, hello, are you there?", or try the wake word twice in 20 seconds, and a
-  caption shows on screen for 10 seconds with what to check. It names what Windows can detect (muted, volume
-  at zero, no speaker, a new default output), and otherwise says to check your speaker's power and knob. It
-  also says if a line is held for your call or the orch is still working on your request. When the sound
-  is muted or fails, the line itself goes on screen; the caption appears when the orch closes or the
-  voice restarts too. It never takes focus and stays out of screen shares and recordings
-  (`CAPTION_VISIBLE=1` in `.env` shows it there). Spoken lines get no caption when all is well.
+  silent Windows notification comes up, closed with its X, with what to check. It names what Windows can detect
+  (muted, volume at zero, no speaker, a new default output), and otherwise says to check your speaker's power
+  and knob. It also says if a line is held for your call or the orch is still working on your request.
+- Answers and notes (the sound is muted or failed, the voice restarted) go in the window. Besides "are you
+  there", a notification comes only for a question nobody just asked for and never in a call, when the orch
+  closes, or for a note with no window open. **Unlike the window, a notification shows in a shared screen or
+  recording.** Windows' Do Not Disturb holds them in the notification center.
 - Whatever is playing (a video, Spotify) pauses at the wake word or when it speaks, and resumes when the exchange ends, if it was playing. A false wake resumes it at once, and a request with no reply within a minute too.
 - Pausing something also shows the orch's terminal (titled "PC Orchestrator" or "LP Orchestrator") without taking the keyboard. It goes back when the exchange ends: minimized if it was, and left up if you clicked into it.
 - In a call (another app is on the mic), it only says "I have an update", at most every 5 minutes, and

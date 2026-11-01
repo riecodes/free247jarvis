@@ -32,11 +32,20 @@ const STUB = join(TMP, 'stub.py'), STARTS = join(TMP, 'starts.txt'), LOG = join(
 rmSync(STARTS, { force: true })
 // The mic's name, then more events than the replay holds: a window that opens later must still get the name.
 writeFileSync(STUB, `import sys\nopen(${JSON.stringify(STARTS)}, "a").write("x")\nprint('{"event":"state","on":true,"mic":"Test Mic"}', flush=True)
-for _ in range(250):\n    print('{"event":"peak","word":"x","score":0.1,"level":1}', flush=True)\nfor _ in sys.stdin:\n    pass\n`)
+for _ in range(250):\n    print('{"event":"peak","word":"x","score":0.1,"level":1}', flush=True)
+print('{"event":"caption","text":"No window yet"}', flush=True)
+watching = 0
+for line in sys.stdin:
+    watching += line.strip() == "watch on"
+    if line.strip() == "watch on" and watching == 2:
+        print('{"event":"caption","text":"Plain note"}', flush=True)
+        print('{"event":"caption","text":"Are you there","looking":true}', flush=True)
+        print('{"event":"caption","text":"Needs you","remind":true}', flush=True)
+`)
 const before = readFileSync(join(HERE, 'tmp', 'voice.log'), 'utf8').length
 const start = () => spawn('node', ['voice.mjs'], {
   cwd: HERE, stdio: ['pipe', 'ignore', 'ignore'],
-  env: { ...process.env, VOICE_PORT: String(PORT), VOICE_MIC: 'off', VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG },
+  env: { ...process.env, VOICE_PORT: String(PORT), VOICE_MIC: 'off', VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG, VOICE_TOAST: 'off' },
 })
 const voice = start()
 let second
@@ -89,6 +98,15 @@ try {
   const sent = seen.split('\n').filter(l => l.startsWith('data: ')).map(l => JSON.parse(l.slice(6)))
   assert(sent.some(e => e.event === 'sent' && e.text === 'first' && e.via === 'http'), seen)
   assert(sent.some(e => e.event === 'state' && e.mic === 'Test Mic'), 'the mic name was lost from the replay')
+
+  // Notes go in the window. A notification only with no window open, for "are you there", or for a line that needs them.
+  await until('Are you there')
+  const toasts = () => readFileSync(LOG, 'utf8').split('\n').filter(l => / toast: /.test(l)).map(l => l.split(' toast: ')[1])
+  for (let i = 0; i < 25 && !toasts().includes('Needs you'); i++) await sleep(100)
+  assert.deepStrictEqual(toasts().slice(-3), ['No window yet', 'Are you there', 'Needs you'], toasts().join('|'))
+  assert(seen.includes('Plain note'), 'a note must reach the window')
+  await sleep(100)
+  assert(!seen.includes('Needs you'), 'a reminder is already in the window as the reply')
   assert.match(html, /id="mic"/)
   reader.cancel()
 

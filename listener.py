@@ -12,7 +12,8 @@ and writes one JSON event per stdout line:
             tell <text>                         news nobody asked for: a heads-up in a call, else in full; no follow-up window
   events    status {text}                       a model is loading or downloading
             state {on, trained}                 after on, off, enroll and cancel
-            caption {text, looking}             show this on screen; looking: voice.mjs adds what the user is waiting on
+            caption {text, looking, remind}     show this in the window; looking: voice.mjs adds what the user is waiting
+                                                on and a notification; remind: a notification only
             queued {text}                       the user has the floor: said once they are done
             peak {word, score, level}           how high a try at the wake word scored, fired or not, and how loud (RMS)
             wake                                heard the wake word, now recording the request
@@ -874,6 +875,8 @@ class Ears:
             title = (os.environ.get("VOICE_TITLE") or "").strip()
             text = f"{title}, I have an update." if title else "I have an update."
         listen = bool(self.followup) and asked and window and not call
+        if hold and listen:
+            emit("caption", text=text, remind=True)  # nobody prompted it and it needs them: a notification too
         samples, rate, _ = self.speech(text)
         REPLY_WAV.parent.mkdir(exist_ok=True)
         sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)

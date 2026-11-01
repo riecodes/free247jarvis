@@ -194,7 +194,7 @@ class RealtimeEars(listener.Ears):
         if (call and hold) or not self.session.open():
             return super().say(text, asked, hold, window)
         listen = bool(self.followup) and asked and window and not call
-        try:
+        try:  # any failure goes to Ears.say, which sends the notification for a line that needs one
             self.session.read_aloud(text)
             sound = self.session.audio.get(timeout=FIRST_SOUND)
         except Exception as e:
@@ -203,6 +203,8 @@ class RealtimeEars(listener.Ears):
         if sound is None:
             return super().say(text, asked, hold, window)
         listener.emit("status", text=f"Realtime: first sound {ms(self.session.sent_at)} ms after the text")
+        if hold and listen:
+            listener.emit("caption", text=text, remind=True)
         listener.emit("said", text=text)
         self.hush()
         problem = listener.output_problem()

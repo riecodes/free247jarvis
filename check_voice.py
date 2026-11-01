@@ -182,6 +182,13 @@ def looking() -> None:
     assert ("caption", {"text": "Your PC's sound is muted. I said: The news."}) in events
     _, events, _ = run(False, [], asked=False)
     assert not [ev for ev in events if ev[0] == "caption"]  # all fine: never a caption per line
+    # A line nobody prompted that needs them: a notification, but never in a call, where a client could see it.
+    _, events, _ = run(False, [], hold=True)
+    assert ("caption", {"text": "The news.", "remind": True}) in events
+    _, events, _ = run(True, [], hold=True)
+    assert not [ev for ev in events if ev[0] == "caption"]
+    _, events, _ = run(False, [])
+    assert not [ev for ev in events if ev[0] == "caption"]  # a reply they just asked for: the window has it
     events = []
     with mock.patch.object(listener, "emit", lambda event, **d: events.append((event, d))):
         e = ears()

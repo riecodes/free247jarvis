@@ -116,20 +116,25 @@ const send = (text, via) => {
   return mcp.notification({ method: 'notifications/claude/channel', params: { content: text, meta: { via } } })
 }
 
-// On screen, for when the user can't hear the voice: only when they look for it or something failed, never per line.
-// A repeat of the same words within CAPTION_GAP is dropped. Detached, to outlive this process when the boss closes.
+// For when the user can't hear the voice: a line in the window. A Windows notification only when they ask if it's
+// there, when it says something that needs them, or with no window to show it. A repeat of the same words within
+// CAPTION_GAP is dropped.
 const CAPTION_GAP = 20_000
-let caption, captioned = '', captionedAt = 0
-function showCaption(text) {
+let captioned = '', captionedAt = 0
+function showCaption(text, toast = false) {
   log(`caption: ${text}`)
   if (text === captioned && Date.now() - captionedAt < CAPTION_GAP) return
   [captioned, captionedAt] = [text, Date.now()]
-  // The whole tree: a venv's pythonw is a launcher, and the window lives in its child.
-  if (caption) spawn('taskkill', ['/pid', String(caption.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true }).on('error', () => {})
-  caption = spawn(PYTHON.replace('python.exe', 'pythonw.exe'), [join(HERE, 'caption.py'), text],
-    { cwd: HERE, env, detached: true, stdio: 'ignore', windowsHide: true })
-  caption.on('error', e => log(`caption failed: ${e.message}`))
-  caption.unref()
+  show('caption', { text })
+  if (toast || !watchers.size) showToast(text)
+}
+// Detached, to outlive this process when the boss closes.
+function showToast(text) {
+  log(`toast: ${text}`)
+  if (process.env.VOICE_TOAST === 'off') return  // in checks
+  spawn('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(HERE, 'toast.ps1')],
+    { cwd: HERE, env: { ...process.env, JARVIS_TOAST: text }, detached: true, stdio: 'ignore', windowsHide: true })
+    .on('error', e => log(`toast failed: ${e.message}`)).unref()
 }
 
 // What the user may be waiting on, for a caption shown because they are looking for the voice.
@@ -321,12 +326,15 @@ function startEars() {
   createInterface({ input: ears.stdout }).on('line', line => {
     let e
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
-    show(e.event, e)
+    if (e.event !== 'caption') show(e.event, e)
     if (e.event === 'spoken' || e.event === 'partial') return
     if (e.event === 'heard') {
       route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
         .catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
-    } else if (e.event === 'caption') showCaption(`${e.text}${e.looking && waitingOn() ? ` ${waitingOn()}` : ''}`)
+    } else if (e.event === 'caption') {
+      if (e.remind) showToast(e.text)  // the window already has this line as the reply
+      else showCaption(`${e.text}${e.looking && waitingOn() ? ` ${waitingOn()}` : ''}`, e.looking)
+    }
     else if (e.event === 'held') (held.push(e.text), log(`held for after the call: ${e.text}`))
     else if (e.event === 'peak') log(`wake peak: ${e.word} ${e.score} level ${e.level}`)
     else log(`listener ${e.event}${e.text || e.message ? `: ${e.text || e.message}` : ''}`)
@@ -411,7 +419,7 @@ server.listen(PORT, '127.0.0.1')
 // Claude Code exits by closing our stdin; the listener then sees its own stdin close and quits too.
 function quit() {
   quitting = true
-  showCaption('Jarvis is off: the orch closed, so I can\'t hear or answer you.')
+  showCaption('Jarvis is off: the orch closed, so I can\'t hear or answer you.', true)  // the window goes with it
   ears?.kill()
   process.exit(0)
 }

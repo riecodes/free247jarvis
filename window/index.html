@@ -114,6 +114,7 @@
     queued: () => $('detail').textContent = 'A line is waiting for you to finish',
     peak: e => { if (e.score < 0.5) $('detail').textContent = `Last try ${e.score}` },
     status: e => { if (/^Voice:|^Using |now on /.test(e.text)) add('Voice', e.text, 'note', e.at) },
+    caption: e => add('Note', e.text, 'note', e.at),
     error: e => add('Problem', e.message, 'fail', e.at),
   }
 
