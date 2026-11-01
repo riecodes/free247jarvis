@@ -522,7 +522,14 @@ def groq_text(clip: np.ndarray, timeout: int = 600) -> str:
 
 
 def segments_text(j: dict) -> str:
-    return " ".join(s["text"].strip() for s in j.get("segments", []) if s["avg_logprob"] > MIN_LOGPROB).strip()
+    """Whisper, given a prompt, can hear a short request again in the 5 s of quiet that end it: same words, next segment.
+    Cutting that quiet stops it but also lost words on real clips, so the repeat goes here."""
+    said: list[str] = []
+    for s in j.get("segments", []):
+        text = s["text"].strip()
+        if s["avg_logprob"] > MIN_LOGPROB and (not said or text.lower() != said[-1].lower()):
+            said.append(text)
+    return " ".join(said).strip()
 
 
 def groq_json(clip: np.ndarray, timeout: int = 600) -> dict:

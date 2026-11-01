@@ -376,6 +376,12 @@ def voice_data() -> None:
         assert terms[:len(listener.BASE_TERMS) + 1] == listener.BASE_TERMS + ["Vercel"] and len(", ".join(terms)) + 1 <= listener.PROMPT_MAX
         assert len(terms) < 400 and listener.load_terms(Path(tmp) / "none.txt") == listener.BASE_TERMS
 
+    # Whisper hearing a request again in the quiet after it, one segment on. Only the neighbour goes, and shaky ones still drop.
+    seg = lambda *texts: {"segments": [{"text": t, "avg_logprob": -0.3} for t in texts]}
+    assert listener.segments_text(seg(" Open it.", " Open it.")) == "Open it."
+    assert listener.segments_text(seg("Yes.", "Open it.", "Yes.")) == "Yes. Open it. Yes."
+    assert listener.segments_text({"segments": [{"text": "Open it.", "avg_logprob": -0.3}, {"text": "Noise.", "avg_logprob": -9}]}) == "Open it."
+
     # Whisper's prompt handed back on noise (from real answers, 2026-11-01), and what must still pass.
     for back in ["Rc, Cpd, Su, Toc, Cpd, Su, Toc", "Riecodes, wrc, crc, cpc, cpc.", "Cpd, co, ManyChat, Nakeem.", "Cpd."]:
         with mock.patch.object(listener, "emit", lambda *a, **k: heard.append(a[0])):
