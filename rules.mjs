@@ -37,6 +37,29 @@ export function asksForHeld(text) {
       /^(the )?updates?$|^go ahead$|^what is it$|^what was that$|^ano (yun|yon|iyon)$/.test(said))
 }
 
+// The notes worth sending to Haiku: all of them when they fit, else the ones sharing the most words with the question
+// (a word in a note's name counts more), then the notes those link to with [[name]], which is how graphify and
+// Obsidian tie them together. notes: [{ name, text }]. ponytail: words, not meaning, so a Taglish question can miss an
+// English note; embeddings if that shows up.
+const FIT = 8000
+export function shortlist(notes, question, fit = FIT) {
+  const all = notes.map(n => n.text).join('\n\n')
+  if (all.length <= fit) return all
+  const words = new Set(question.toLowerCase().match(/\w{3,}/g) ?? [])
+  const hits = text => (text.toLowerCase().match(/\w{3,}/g) ?? []).filter((w, i, a) => words.has(w) && a.indexOf(w) === i).length
+  const ranked = notes.map(n => [hits(n.name) * 5 + hits(n.text), n]).filter(([score]) => score).sort((a, b) => b[0] - a[0]).map(([, n]) => n)
+  const byName = new Map(notes.map(n => [n.name.toLowerCase(), n]))
+  const linked = ranked.flatMap(n => [...n.text.matchAll(/\[\[([^\]|#]+)/g)].map(m => byName.get(m[1].trim().toLowerCase()))).filter(Boolean)
+  const picked = []
+  let size = 0
+  for (const n of new Set([...ranked, ...linked])) {
+    if (size + n.text.length > fit) continue
+    picked.push(`# ${n.name}\n${n.text}`)
+    size += n.text.length
+  }
+  return picked.join('\n\n')
+}
+
 // The notes with their {placeholders} filled, then the live values themselves: a note can go stale ("no schedule yet"
 // with a webinar tonight), so they are marked as newer. A placeholder with no value stays, and the answer then passes
 // to the boss.

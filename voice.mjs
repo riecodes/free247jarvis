@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { asksForHeld, asksSomething, isAnswer, isLong, isLooking, verbFor, withFacts } from './rules.mjs'
+import { asksForHeld, asksSomething, isAnswer, isLong, isLooking, shortlist, verbFor, withFacts } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -148,13 +148,13 @@ function waitingOn() {
 const JEV_URL = 'https://api.typesafe.ai/v1/systemone'
 const JEV_MIN = 0.7 // Jev less sure than this: the boss gets it
 const HAIKU = 'claude-haiku-5-5'
-// The knowledge bank: KNOWLEDGE_DIR in .env, a folder of short .md notes, read fresh for each request. Jev only sorts
-// the words heard; the notes go to Haiku. ponytail: all of them on every such call, fine at 2.3 KB; past some tens of
-// KB add a keyword shortlist first.
+// The knowledge bank: KNOWLEDGE_DIR in .env, folders of short .md notes separated by ;, such as Obsidian vaults, read
+// fresh for each request. Jev only sorts the words heard; rules.mjs's shortlist picks the notes that go to Haiku.
+const knowledgeDirs = () => (env.KNOWLEDGE_DIR ?? '').split(';').map(d => d.trim()).filter(d => d && existsSync(d))
 function notes() {
-  const dir = env.KNOWLEDGE_DIR
-  if (!dir || !existsSync(dir)) return ''
-  return readdirSync(dir).filter(f => f.endsWith('.md')).map(f => readFileSync(join(dir, f), 'utf8').trim()).join('\n\n')
+  return knowledgeDirs().flatMap(dir => readdirSync(dir, { recursive: true }).map(String)
+    .filter(f => f.endsWith('.md') && !f.startsWith('.obsidian'))
+    .map(f => ({ name: basename(f, '.md'), text: readFileSync(join(dir, f), 'utf8').trim() })))
 }
 // KNOWLEDGE_FACTS in .env: a URL of live values as flat JSON strings, for the notes' {placeholders}. Kept 5 minutes.
 let facts = {}, factsAt = 0
@@ -193,6 +193,9 @@ async function route(text) {
   if (isAnswer(text)) return send(text, 'mic')
   const key = secret('TYPESAFE_API_KEY')
   const bank = notes()
+  // More than one folder: Jev also hears what the others are about, by their names.
+  const dirs = knowledgeDirs()
+  const about = KNOWLEDGE + (dirs.length > 1 ? ` Also a how-to or fact from their notes on: ${dirs.map(d => basename(d)).join(', ')}.` : '')
   let kind = 'work', p = 1
   if (key) {
     const t = Date.now()
@@ -205,7 +208,7 @@ async function route(text) {
           state: { heard: text },
           questions: {
             kind: {
-              type: 'choice', criteria: bank ? { ...KINDS, knowledge: KNOWLEDGE } : KINDS,
+              type: 'choice', criteria: bank.length ? { ...KINDS, knowledge: about } : KINDS,
               instructions: 'The user said `heard` to a voice assistant that runs their Claude Code sessions (speech ' +
                 'to text, so English, Tagalog or Taglish, sometimes misheard). What kind of request is it?',
             },
@@ -225,9 +228,12 @@ async function route(text) {
   // Jev unsure: the boss decides ("Sino ang may kailangan sa akin?" scored status 0.67, and asking again was wrong).
   if (p < JEV_MIN || (kind === 'unclear' && isLong(text))) kind = 'work'
   if (kind === 'unclear') return answer(pro ? 'Sorry, ano ulit?' : 'Say that again?', true)
+  const picks = kind === 'knowledge' ? shortlist(bank, text) : ''  // none: the boss, or Haiku would answer without notes
   const quick = kind === 'status' ? status() : kind === 'chat' ? await chat(text)
-    : kind === 'knowledge' ? await chat(text, withFacts(bank, await liveFacts())) : ''
+    : picks ? await chat(text, withFacts(picks, await liveFacts())) : ''
   if (quick) return answer(quick)
+  // VOICE_ACK=on: real work takes the orch a turn, so a first word comes at once and its answer after.
+  if (/^on$/i.test(env.VOICE_ACK ?? '')) answer(pro ? 'Sige, on it.' : 'On it.')
   await send(text, 'mic')
 }
 
@@ -307,8 +313,8 @@ async function chat(text, bank = '') {
 let ears
 let quitting = false
 function startEars() {
-  // VOICE_LISTENER: a stub, in checks
-  ears = spawn(PYTHON, [process.env.VOICE_LISTENER || join(HERE, 'listener.py')], { cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  // VOICE_LISTENER: realtime.py, or a stub in checks
+  ears = spawn(PYTHON, [env.VOICE_LISTENER || join(HERE, 'listener.py')], { cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   ears.on('error', e => log(`listener failed to start: ${e.message}`))
   ears.stdin.on('error', e => log(`listener stdin: ${e.message}`))
   ears.stderr.on('data', d => appendFileSync(join(HERE, 'tmp', 'listener.log'), d))

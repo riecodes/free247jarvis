@@ -105,6 +105,30 @@ skip the boss:
 Everything else, and everything when Jev isn't sure, goes to the boss as before. To try it without
 the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
 
+## Near real-time (prototype, optional, paid)
+
+`realtime.py` swaps the slowest parts: OpenAI's Realtime API hears when you finished, instead of 5 seconds of quiet, and
+reads replies aloud as the sound arrives. The wake word stays local, and the router stays: Jev sorts, Haiku answers
+from your notes, and real work goes to the orch. Audio goes to OpenAI from the wake word to the end of each request,
+and on every line it says, the text. If it fails, the normal listener takes over for that turn.
+
+Put in `.env`, then restart the voice:
+
+```
+VOICE_LISTENER=realtime.py
+OPENAI_API_KEY=sk-...
+```
+
+`gpt-realtime-2.1-mini` is about $0.01 per minute you speak and $0.024 per minute it speaks, roughly $0.50 for 100
+exchanges (OpenAI's price list, November 2026). `OPENAI_REALTIME_MODEL=` and `OPENAI_VOICE=` change the model and the
+voice; a cloned ElevenLabs voice can't be used here. Tagalog isn't on OpenAI's list, so try your Taglish first.
+`.venv\Scripts\python realtime.py measure clip.wav` prints the real timings for 16 kHz clip, plays nothing, and costs a
+fraction of a cent.
+
+Two more, with no OpenAI key: `VOICE_ACK=on` says "On it" as soon as real work goes to the orch, then its answer
+later. `KNOWLEDGE_DIR=` takes several folders separated by `;`, such as Obsidian vaults: past 8,000 characters only the
+notes sharing words with the question go to Anthropic, plus those they `[[link]]` to.
+
 ## Window (optional)
 
 A small window shows the wake state, what it heard, how Jev sorted it, when it was passed to Claude, and the
@@ -235,6 +259,7 @@ free247jarvis/
   boss/          the boss session's folder: CLAUDE.md (routing) and .mcp.json (voice channel)
   voice.mjs      the voice channel (MCP server); runs listener.py
   listener.py    wake word, end of speech, speech to text, Kokoro voice, voice training
+  realtime.py    prototype: listener.py with OpenAI's Realtime API for ears and mouth
   words.txt      words speech to text should spell right
   mishears.py    lists likely mishears from the voice data, for review
   spawn.ps1      opens worker terminals t1 to t6 in their grid cells

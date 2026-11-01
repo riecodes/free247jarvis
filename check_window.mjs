@@ -6,12 +6,23 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
-import { withFacts } from './rules.mjs'
+import { shortlist, withFacts } from './rules.mjs'
 
 // Placeholders fill from live values, the live values come along marked newer, and an unknown one stays for the guard.
 const known = withFacts('{price} lang, {nope}', { price: '₱499' })
 assert(known.startsWith('₱499 lang, {nope}') && known.includes('price: ₱499') && known.includes('newer'), known)
 assert.strictEqual(withFacts('{price} lang', {}), '{price} lang')
+
+// Notes that fit all go, as they are. Past that: those that share words with the question, then what they link to.
+const small = [{ name: 'a', text: 'one' }, { name: 'b', text: 'two' }]
+assert.strictEqual(shortlist(small, 'anything'), 'one\n\ntwo')
+const big = [
+  { name: 'refund', text: 'Refunds in 7 days. See [[Payment methods]].' }, { name: 'Payment methods', text: 'GCash.' },
+  { name: 'filler', text: 'x'.repeat(30) }, { name: 'huge refund', text: 'refund '.repeat(10) },
+]
+const picked = shortlist(big, 'what is the refund policy', 60)
+assert(picked.includes('Refunds in 7 days') && picked.includes('GCash') && !picked.includes('xxx') && !picked.includes('refund refund'), picked)
+assert.strictEqual(shortlist(big, 'nothing matches this', 60), '')
 
 const PORT = 8797
 const HERE = fileURLToPath(new URL('.', import.meta.url))
