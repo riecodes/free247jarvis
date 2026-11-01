@@ -34,6 +34,8 @@
   body[data-mood=bad] #dot { background: var(--bad); }
   @keyframes pulse { 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { body[data-mood=listen] #dot { animation: none; } }
+  #mic { padding: 6px 16px; color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  #mic:empty { display: none; }
   #live {
     min-height: 76px; padding: 12px 16px; font-size: 18px; line-height: 1.35;
     border-bottom: 1px solid var(--line); overflow-wrap: anywhere;
@@ -55,6 +57,7 @@
   <span id="state" role="status">Connecting</span>
   <span id="detail"></span>
 </header>
+<div id="mic"></div>
 <div id="live" aria-live="polite"></div>
 <ul id="log"></ul>
 <script>
@@ -93,7 +96,11 @@
 
   let on = true
   const HANDLERS = {
-    state: e => { on = e.on; on ? state('idle', WAITING) : state('idle', 'Mic off') },
+    state: e => {
+      on = e.on
+      on ? state('idle', WAITING) : state('idle', 'Mic off')
+      $('mic').textContent = on ? `Mic: ${e.mic || 'name unknown'}` : 'Mic: none open'
+    },
     wake: () => { words(''); state('listen', 'Listening') },
     partial: e => words('', e.text),
     heard: e => { words(e.text); add('You', e.text, 'you', e.at); state('work', 'Sorting your request') },
@@ -112,7 +119,7 @@
 
   const source = new EventSource('/events')
   source.onopen = () => { log.replaceChildren(); words(''); state('idle', WAITING) } // the server replays what happened
-  source.onerror = () => state('bad', 'Jarvis is off', 'Reconnecting')
+  source.onerror = () => { state('bad', 'Jarvis is off', 'Reconnecting'); $('mic').textContent = '' }
   source.onmessage = m => {
     const e = JSON.parse(m.data)
     HANDLERS[e.event]?.(e)

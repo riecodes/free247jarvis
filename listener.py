@@ -1045,6 +1045,17 @@ def open_mic(events: queue.Queue, want: str | None = None):
     raise failure
 
 
+def mic_name(stream) -> str:
+    """The device this open stream reads, for the window: its real ID, also when it opened as Windows' default."""
+    import sounddevice as sd
+
+    try:
+        return sd.query_devices(stream.device)["name"]
+    except Exception as e:
+        emit("status", text=f"Can't name the microphone: {e}")
+        return ""
+
+
 def spare_mic(mic, events: queue.Queue):
     """The mic went silent: moves to MIC_FALLBACK and returns the new stream, or None with the old one left as it was."""
     spare = os.environ.get("MIC_FALLBACK") or ""
@@ -1082,6 +1093,10 @@ def main(commands: list[str]) -> None:
     threading.Thread(target=read_commands, daemon=True).start()
     ears = Ears()
     mic = None
+
+    def report() -> None:
+        emit("state", on=mic is not None, mic=mic_name(mic) if mic is not None else "", trained=verifier(ears.words[0]).is_file())
+
     # Nothing but exact zeros: a virtual mic whose app isn't running (Voicemod, which sends faint noise while it runs).
     zeros_since, warned = 0.0, False
     # ponytail: on the spare until the mic is turned off and on or the voice restarts; no check for the first one's return.
@@ -1098,6 +1113,7 @@ def main(commands: list[str]) -> None:
                 name = os.environ.get("MIC_FALLBACK" if on_spare else "MIC_DEVICE", "")
                 if mic is not None and not on_spare and (new := spare_mic(mic, events)):
                     mic, on_spare, zeros_since = new, True, 0.0
+                    report()
                     spare = os.environ["MIC_FALLBACK"]
                     emit("status", text=f"{name or 'The microphone'} sent pure silence for {SILENT_WARN} s; now on {spare}")
                     ears.line(f"The {name} microphone went silent, so I switched to {spare}.", asked=False, hold=True)
@@ -1149,7 +1165,7 @@ def main(commands: list[str]) -> None:
             ears.enroll()
         elif value in ("off", "cancel"):
             ears.wait_for_wake()
-        emit("state", on=mic is not None, trained=verifier(ears.words[0]).is_file())
+        report()
     if mic is not None:
         mic.close()
 

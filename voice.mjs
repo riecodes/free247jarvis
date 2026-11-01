@@ -24,8 +24,10 @@ mkdirSync(join(HERE, 'tmp'), { recursive: true })
 const log = line => appendFileSync(process.env.VOICE_LOG || join(HERE, 'tmp', 'voice.log'), `${new Date().toISOString()} ${line}\n`)
 // What the window shows (window/index.html): every step of an exchange, kept for a window that opens later.
 const shown = [], watchers = new Set()
+let lastState = '' // the mic and whether it's on: a window that opens later needs it even after 200 other events
 function show(event, data = {}) {
   const line = `data: ${JSON.stringify({ ...data, event, at: Date.now() })}\n\n`
+  if (event === 'state') lastState = line
   if (shown.push(line) > 200) shown.shift()
   for (const w of watchers) w.write(line)
 }
@@ -358,6 +360,7 @@ const server = createServer((req, res) => {
   if (here && req.method === 'GET' && req.url === '/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
     res.flushHeaders() // with nothing to replay yet, the window would otherwise wait on these until the first event
+    if (!shown.includes(lastState)) res.write(lastState)
     for (const line of shown) res.write(line)
     watchers.add(res)
     ears.stdin.write('watch on\n')

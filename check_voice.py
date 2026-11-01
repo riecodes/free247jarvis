@@ -204,6 +204,13 @@ def looking() -> None:
     assert "switched" in problem(name="Headphones (WH-1000XM4)")
 
 
+def mic_names() -> None:
+    """The window names the device the stream has open."""
+    with mock.patch("sounddevice.query_devices", side_effect={4: {"name": "Mic A"}}.__getitem__), mock.patch.object(listener, "emit", lambda *a, **k: None):
+        assert listener.mic_name(mock.Mock(device=4)) == "Mic A"
+        assert listener.mic_name(mock.Mock(device=99)) == ""  # gone: says so, and the voice goes on
+
+
 def voice_data() -> None:
     """Only wake word clips are kept, in no synced folder, not in a call, not with VOICE_DATA=off; old ones go."""
     real = Path(listener.os.environ["LOCALAPPDATA"]) / "free247jarvis" / "voicedata"
@@ -565,6 +572,7 @@ def main() -> None:
             time.sleep(0.01)
         assert shown == [("partial", {"text": "open terminal two"})], shown
     voice_data()
+    mic_names()
     print("ok")
 
 

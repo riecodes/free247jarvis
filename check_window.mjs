@@ -19,7 +19,9 @@ const TMP = join(HERE, 'tmp', 'check')
 mkdirSync(TMP, { recursive: true })
 const STUB = join(TMP, 'stub.py'), STARTS = join(TMP, 'starts.txt'), LOG = join(TMP, 'voice.log')
 rmSync(STARTS, { force: true })
-writeFileSync(STUB, `import sys\nopen(${JSON.stringify(STARTS)}, "a").write("x")\nfor _ in sys.stdin:\n    pass\n`)
+// The mic's name, then more events than the replay holds: a window that opens later must still get the name.
+writeFileSync(STUB, `import sys\nopen(${JSON.stringify(STARTS)}, "a").write("x")\nprint('{"event":"state","on":true,"mic":"Test Mic"}', flush=True)
+for _ in range(250):\n    print('{"event":"peak","word":"x","score":0.1,"level":1}', flush=True)\nfor _ in sys.stdin:\n    pass\n`)
 const before = readFileSync(join(HERE, 'tmp', 'voice.log'), 'utf8').length
 const start = () => spawn('node', ['voice.mjs'], {
   cwd: HERE, stdio: ['pipe', 'ignore', 'ignore'],
@@ -75,6 +77,8 @@ try {
   await until('"second"')
   const sent = seen.split('\n').filter(l => l.startsWith('data: ')).map(l => JSON.parse(l.slice(6)))
   assert(sent.some(e => e.event === 'sent' && e.text === 'first' && e.via === 'http'), seen)
+  assert(sent.some(e => e.event === 'state' && e.mic === 'Test Mic'), 'the mic name was lost from the replay')
+  assert.match(html, /id="mic"/)
   reader.cancel()
 
   // Another Host: a web page pointing its own domain at this machine gets neither the page nor the events.
