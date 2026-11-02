@@ -41,6 +41,7 @@ def ears() -> listener.Ears:
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.need_name = False  # name_needed tests it; the rest is about what follows the wake word
     e.closing_gap = 0  # closing_cut tests it
+    e.listen_all = False  # listen_after tests it
     e.threshold, e.peak, e.peak_word, e.peak_level, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0, 0.0, {"jarvis": "ack"}, ["jarvis"]
     e.spoken, e.played, e.queue, e.queue_since, e.last_speech, e.tries = [], [], [], 0.0, 0.0, []
     e.vad.predict = lambda *a, **k: 0.0
@@ -360,6 +361,34 @@ def name_needed() -> None:
     with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), mock.patch.object(listener, "pause_media", list):
         e.on_chunk(chunk)
     assert len(e.clip) == listener.PRE_ROLL
+
+
+def listen_after() -> None:
+    """It listens after every line it says, a status answer or news as well as a question: never in a call or room talk,
+    with the mic closed, or with the window off."""
+    def say(asked=True, hold=False, window=True, call=False, talking=False, mic_open=True, followup=100, every=True):
+        e, events = ears(), []
+        e.listen_all, e.mic_open, e.followup = every, mic_open, followup
+        if talking:
+            e.spoke.extend([True] * 200)
+        with mock.patch.object(listener, "in_call", lambda: call), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+                mock.patch("soundfile.write"), mock.patch.object(listener.os, "replace"), mock.patch.object(listener, "output_problem", lambda: ""), \
+                mock.patch.object(listener, "pause_media", list), mock.patch.object(listener, "resume_media"):
+            e.say("Three sessions are working.", asked=asked, hold=hold, window=window)
+        return ("spoken", {"listening": True}) in events and e.on_chunk == e.record_chunk, events
+
+    assert say(window=False)[0]  # the router's status answer, the "end" verb
+    assert say()[0]  # a question
+    assert say(asked=False, hold=True)[0]  # news
+    assert not say(window=False, call=True)[0]
+    assert not say(window=False, talking=True)[0]
+    assert not say(asked=False, hold=False, mic_open=False)[0]
+    assert not say(window=False, followup=0)[0]
+    # News with no question doesn't turn into a notification for it.
+    assert not [d for ev, d in say(asked=False, hold=True)[1] if d.get("remind")]
+    assert [d for ev, d in say(asked=True, hold=True)[1] if d.get("remind")]
+    # LISTEN_AFTER=asked: as it was.
+    assert not say(window=False, every=False)[0] and say(every=False)[0]
 
 
 def fixes() -> None:
@@ -948,6 +977,7 @@ def main() -> None:
         assert shown == [("partial", {"text": "open terminal two"})], shown
     voice_data()
     name_needed()
+    listen_after()
     fixes()
     greeting()
     closing_cut()

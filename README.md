@@ -213,10 +213,9 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   chime. `GREETING=off` for the chime always.
 - You can say "Hey Jarvis" again while it works on your last request: it answers, and what you say next
   reaches the boss as a new message. Anything it was about to say waits until you finish.
-- After a line that asks you something, even one you didn't prompt, it keeps listening for 8 seconds,
+- After everything it says, it keeps listening for 8 seconds (`LISTEN_AFTER=asked`: only after a line that asks you something), never in a call or while people are talking,
   so you can reply ("yes", "A", "tell it to go on") without the wake word. `FOLLOWUP_SECONDS=` in `.env`
-  changes that; 0 turns it off. An acknowledgment ("Understood") or plain news (a worker finished) ends
-  there, with no listening.
+  changes that; 0 turns it off.
 - It never talks over you. While it records you, while the 8 seconds are open, or for 3 seconds after you
   spoke (30 at most, in case that's a TV), every line waits in a queue and plays when you're done.
 - Can't hear it? Say "Hey Jarvis, hello, are you there?", or try the wake word twice in 20 seconds, and a

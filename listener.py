@@ -800,6 +800,7 @@ class Ears:
     need_name = True  # speech to text must hear "Jarvis" before it wakes; WAKE_NAME=off leaves it to the score alone
     cap = MAX_CLIP  # chunks the clip being recorded may reach
     lead, said, words_end = LISTEN_LEAD, "", 0.0  # the reply last spoken, and when its last word reached the mic
+    listen_all, mic_open = True, True  # listen_all: a window after every line (LISTEN_AFTER=asked: only after a question)
     closing_gap, next_closing, voiced_at = round(CLOSING_GAP / 0.08), 0.0, 0  # voiced_at: chunks in when the speech last was
     greetings, greetings_at, greeted, last_greeting = (), {}, 0.0, ""  # all rendered; greetings is empty with GREETING=off
     strict, talk_share = WAKE_STRICT, TALK_SHARE
@@ -818,6 +819,7 @@ class Ears:
         self.talk_share = float(os.environ.get("TALK_SHARE") or TALK_SHARE)
         self.need_name = os.environ.get("WAKE_NAME", "").lower() != "off"
         self.lead = float(os.environ.get("LISTEN_LEAD") or LISTEN_LEAD)
+        self.listen_all = os.environ.get("LISTEN_AFTER", "").lower() != "asked"
         # 0 chunks: no cut-off.
         self.closing_gap = 0 if os.environ.get("CLOSING_CUT", "").lower() == "off" else round(float(os.environ.get("CLOSING_GAP") or CLOSING_GAP) / 0.08)
         self.spoke: deque[bool] = deque(maxlen=TALK_CHUNKS)
@@ -1149,6 +1151,7 @@ class Ears:
         listen = bool(self.followup) and asked and window and not call
         if hold and listen:
             emit("caption", text=text, remind=True)  # nobody prompted it and it needs them: a notification too
+        listen = listen or (self.listen_all and bool(self.followup) and self.mic_open and not call)  # never in a call or room talk
         samples, rate, _ = self.speech(text)
         REPLY_WAV.parent.mkdir(exist_ok=True)
         sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
@@ -1431,6 +1434,7 @@ def main(commands: list[str]) -> None:
         if value.startswith(("say ", "end ", "late ", "tell ")):
             verb, text = value.split(" ", 1)
             # With the mic closed no window can open or end, and paused media would never resume.
+            ears.mic_open = mic is not None
             ears.line(text, asked=verb != "tell" and mic is not None, hold=verb in ("late", "tell"), window=verb != "end")
             continue
         if value in ("on", "off"):
