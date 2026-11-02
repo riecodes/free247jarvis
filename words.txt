@@ -1,5 +1,12 @@
-# Words speech to text should spell right, one per line. Read when the voice starts. Never a sentence or a command:
+# Words speech to text should spell right, one per line. "# also: a, b" after one: what it's often heard as, put right
+# in what the window and the boss get. Read when the voice starts. Never a sentence or a command:
 # on a noisy clip Whisper can hand these back. mishears.py suggests what to add here.
+grep
+Jev
+Dentaria  # also: Dent area, Dentara
+Claude Code  # also: cloud code, clawed code, clawde code
+Claude  # also: Clawed, Clawde, Claudco
+Artifact  # also: Artif
 riecodes
 wrc
 crc

@@ -362,6 +362,26 @@ def name_needed() -> None:
     assert len(e.clip) == listener.PRE_ROLL
 
 
+def fixes() -> None:
+    """Words the user's terms are often heard as get put right, from the list in words.txt and nothing else."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "words.txt"
+        path.write_text("# comment\nClaude Code  # also: cloud code\nClaude  # also: Clawed, Clawde\nJev\n", encoding="utf-8")
+        got = listener.load_fixes(path)
+        terms = listener.load_terms(path)
+    assert "Claude Code" in terms and "Jev" in terms and not any("also" in t for t in terms), terms
+    with mock.patch.object(listener, "FIXES", got):
+        assert listener.fix_words("Ask clawed about cloud code using it") == "Ask Claude about Claude Code using it"
+        assert listener.fix_words("clawedback") == "clawedback"
+        e, events = ears(), []
+        with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+                mock.patch.object(listener, "transcribe", lambda c: "open clawed"):
+            e.request_done(np.ones(listener.RATE, np.int16))
+        assert ("heard", {"text": "open Claude", "raw": "open clawed"}) in events
+    for term in ("grep", "Jev", "Dentaria"):
+        assert term in listener.TERMS, term
+
+
 def greeting() -> None:
     """Waking says a few words, not the same ones twice running, and never in a call or over the request."""
     chunk = np.ones(listener.CHUNK, np.int16)
@@ -928,6 +948,7 @@ def main() -> None:
         assert shown == [("partial", {"text": "open terminal two"})], shown
     voice_data()
     name_needed()
+    fixes()
     greeting()
     closing_cut()
     echo()

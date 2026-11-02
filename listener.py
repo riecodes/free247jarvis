@@ -89,6 +89,27 @@ def load_terms(path: Path = HERE / "words.txt") -> list[str]:
     return terms
 
 
+def load_fixes(path: Path = HERE / "words.txt") -> list[tuple[re.Pattern, str]]:
+    """What a term is often heard as, from "Claude  # also: Clawed, Clawde" in words.txt. Explicit lists only: a guess at any
+    close word turned "using" into "yung" on real requests."""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    fixes = []
+    for line in lines:
+        term, _, also = line.partition("# also:")
+        fixes += [(re.compile(rf"\b{re.escape(w.strip())}\b", re.IGNORECASE), term.strip())
+                  for w in also.split(",") if w.strip() and term.strip()]
+    return fixes
+
+
+FIXES = load_fixes()
+
+
+def fix_words(text: str) -> str:
+    for wrong, right in FIXES:
+        text = wrong.sub(right, text)
+    return text
+
+
 TERMS = load_terms()
 VOCAB = ", ".join(TERMS) + "."
 FEATURES = {
@@ -726,7 +747,7 @@ class ScribeLive:
                 if self.stopped:
                     return
                 if kind == "partial_transcript":
-                    emit("partial", text=strip_wake(event.get("text", "")))
+                    emit("partial", text=fix_words(strip_wake(event.get("text", ""))))
                 elif kind.endswith(("error", "exceeded", "limited", "terms")):
                     emit("status", text=f"Live words: {kind}")
         except Exception:  # closed: run says why, if it matters
@@ -755,7 +776,7 @@ class GroqLive:
         try:
             text = strip_wake(groq_text(clip, timeout=10))
             if text and not self.stopped and " ".join(re.findall(r"\w+", text.lower())) not in HALLUCINATIONS:
-                emit("partial", text=text)
+                emit("partial", text=fix_words(text))
         except Exception as e:  # such as the rate limit: the next try may pass, and the request's own text is apart
             emit("status", text=f"Live words skipped: {e}")
         finally:
@@ -1075,7 +1096,8 @@ class Ears:
             self.spoke.clear()  # that was the user talking to it, not people talking
             self.tries = []
             self.reply_by = time.monotonic() + REPLY_HOLD
-            emit("heard", text=text)
+            fixed = fix_words(text)
+            emit("heard", text=fixed, **({"raw": text} if fixed != text else {}))  # raw: for the window, as heard
         else:
             self.release()  # a false wake: the video is back at once
             emit("nothing")
