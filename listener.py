@@ -3,7 +3,7 @@
 voice.mjs (the channel server) starts this and talks to it over pipes. It reads one command per stdin line
 and writes one JSON event per stdout line:
 
-  commands  on | off | enroll | cancel | listen (record without the wake word) | set NAME value | quit
+  commands  on | off | enroll | cancel | listen (record without the wake word) | set NAME value | bank LINE | waiting JSON | quit
             watch on | watch off                the window opened or closed: live words only while it is open
             looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
@@ -52,6 +52,7 @@ import tempfile
 import threading
 import time
 import wave
+import zlib
 from collections import deque
 from pathlib import Path
 
@@ -161,6 +162,7 @@ GREETINGS = ["Yes", "I'm here", "Right here", "Listening", "Go on", "I'm listeni
              "Ready", "What's up", "Yes, I'm here", "With you", "Hello"]
 GREETINGS_AT = {"Morning": range(4, 12), "Good day": range(12, 18), "Evening": (18, 19, 20, 21, 22, 23, 0, 1, 2, 3)}
 GREETING_MAX, GREETING_AWAY, GREETING_SPEED = 1.0, 30 * 60, 1.2
+REMIND_EVERY = 30 * 60  # seconds before the same waiting item can follow a greeting again
 CLOSING_TAIL = 75  # chunks before the pause: 6 s, plenty for the words and quick to send
 CLOSING_EVERY = 4  # seconds between checks, to stay under Groq's 20 requests a minute
 CLOSING_TIMEOUT = 3
@@ -800,6 +802,10 @@ class Ears:
     need_name = True  # speech to text must hear "Jarvis" before it wakes; WAKE_NAME=off leaves it to the score alone
     cap = MAX_CLIP  # chunks the clip being recorded may reach
     lead, said, words_end = LISTEN_LEAD, "", 0.0  # the reply last spoken, and when its last word reached the mic
+    banked: dict = {}  # lines rendered ahead, by their words
+    waiting: list = []  # lines about something that waits on the user
+    reminded: dict = {}  # when each of them last followed a greeting
+    reminders = True  # REMINDERS=off: never
     idle_window = False  # the window now open follows a line that asked nothing
     sounds = True  # False: no chimes, whatever the files say (SOUNDS=off)
     listen_all, mic_open = True, True  # listen_all: a window after every line (LISTEN_AFTER=asked: only after a question)
@@ -821,6 +827,7 @@ class Ears:
         self.talk_share = float(os.environ.get("TALK_SHARE") or TALK_SHARE)
         self.need_name = os.environ.get("WAKE_NAME", "").lower() != "off"
         self.lead = float(os.environ.get("LISTEN_LEAD") or LISTEN_LEAD)
+        self.banked, self.waiting, self.reminded = {}, [], {}
         self.spoke: deque[bool] = deque(maxlen=TALK_CHUNKS)
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
         self.vad_boost = float(os.environ.get("VAD_BOOST") or 1)  # the wake word and speech to text cope without it
@@ -951,6 +958,7 @@ class Ears:
         """What the window's settings can change, from the environment: at the start, and on `set` with no restart."""
         env = os.environ
         self.sounds = env.get("SOUNDS", "").lower() != "off"
+        self.reminders = env.get("REMINDERS", "").lower() != "off"
         self.listen_all = env.get("LISTEN_AFTER", "").lower() != "asked"
         self.followup = round(float(env.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         # 0 chunks: no cut-off.
@@ -998,7 +1006,14 @@ class Ears:
         self.greeted, self.last_greeting = now, text
         emit("greeting", text=text)
         self.play(samples, rate)
-        self.said, self.words_end = text, time.monotonic() - 0.07
+        # One thing that waits on the user, at most, and not the same one again soon. None in a call: that's the chime above.
+        extra = next((w for w in self.waiting if self.reminders and w in self.banked
+                      and now - self.reminded.get(w, -REMIND_EVERY) >= REMIND_EVERY), None)
+        if extra:
+            self.reminded[extra] = now
+            emit("reminder", text=extra)
+            self.play(*self.banked[extra])
+        self.said, self.words_end = f"{text} {extra}" if extra else text, time.monotonic() - 0.07
         self.deaf_until = now
 
     def tried(self, stray: bool = False) -> None:
@@ -1215,6 +1230,8 @@ class Ears:
         import soundfile as sf
 
         name = re.sub(r"\W", "", text.lower()) + (f"_{speed}" if speed != 1 else "")
+        if len(name) > 60:  # a whole progress line: too long for a file name
+            name = f"{name[:40]}{zlib.crc32(name.encode()):08x}"
         path = HERE / "tmp" / f"{name}_{voice_key()}.wav"
         if not path.is_file():
             samples, rate, used = self.speech(text, speed)
@@ -1225,7 +1242,14 @@ class Ears:
 
     def speech(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int, str]:
         """The reply as audio, plus the voice_key() that said it: the ElevenLabs voice when set up, else (or when it
-        fails) Kokoro."""
+        fails) Kokoro. A line rendered ahead, with an age after it that is too, needs neither."""
+        for line, (samples, rate) in self.banked.items():
+            rest = text[len(line):].strip() if text.startswith(line) else None
+            if rest == "":
+                return samples, rate, voice_key()
+            if rest and rest in self.banked and self.banked[rest][1] == rate:
+                pause = np.zeros(rate // 8, np.float32)
+                return np.concatenate([samples.astype(np.float32), pause, self.banked[rest][0].astype(np.float32)]), rate, voice_key()
         engine, _, voice = voice_key().partition("_")
         if engine == "elevenlabs":
             import requests
@@ -1437,6 +1461,15 @@ def main(commands: list[str]) -> None:
             continue
         if value == "quit":
             break
+        if value.startswith("bank "):  # a line to have ready, from the status bank; a failure just means live speech later
+            try:
+                ears.banked[value[5:]] = ears.load_ack(value[5:])
+            except Exception as e:
+                emit("status", text=f"Not rendered ahead: {e}")
+            continue
+        if value.startswith("waiting "):  # what may follow a greeting: "waiting" the whole list, as JSON
+            ears.waiting = json.loads(value[8:])
+            continue
         if value.startswith("set "):  # from the window's settings; voice.mjs checks the name and value, and saves them
             _, key, *rest = value.split(" ", 2)
             os.environ[key] = rest[0] if rest else ""

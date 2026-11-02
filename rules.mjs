@@ -68,3 +68,53 @@ export function withFacts(notes, facts) {
   const lines = Object.entries(facts).map(([k, v]) => `${k}: ${v}`).join('\n')
   return lines ? `${filled}\n\nLive values, newer than the notes above; they win where the two differ:\n${lines}` : filled
 }
+
+// The status bank: workers' spoken progress lines (progress.mjs), one file per machine in the folder the PCs sync.
+const BANK_HOURS = 12 // an older line isn't news
+const NOT_TOPIC = new Set(`status update progress how hows what whats is are the a an of on with to for and it its going doing
+  done finished ready yet still now so far about any news tell me give say please jarvis sir ba na yung ang sa ng po ano kumusta
+  tapos naba do does did can you your my our that this there`.split(/\s+/))
+const topicWords = text => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(w => !NOT_TOPIC.has(w))
+const sameWord = (a, b) => a === b || (Math.min(a.length, b.length) >= 4 && (a.startsWith(b) || b.startsWith(a)))
+
+export const bankFile = (shared, host, here, exists) => exists(shared) ? `${shared}/${host}/status.jsonl` : `${here}/tmp/status.jsonl`
+
+// The newest line per topic across the machines' files' text.
+export function latestLines(files, now = Date.now()) {
+  const latest = new Map()
+  for (const text of files) {
+    for (const line of text.split('\n')) {
+      let e
+      try { e = JSON.parse(line) } catch { continue }
+      const at = Date.parse(e.at)
+      if (!e.topic || !e.text || !at || now - at > BANK_HOURS * 3600_000) continue
+      if (!latest.has(e.topic) || latest.get(e.topic).at < at) latest.set(e.topic, { ...e, at })
+    }
+  }
+  return [...latest.values()]
+}
+
+// The line this question is about: a word of its topic, or two of its words. Otherwise none, and the orch answers.
+export function matchLine(lines, said) {
+  const asked = topicWords(said)
+  let best = null, bestScore = 0
+  for (const e of lines) {
+    const hit = list => list.filter(w => asked.some(a => sameWord(a, w))).length
+    const inTopic = hit(topicWords(e.topic)), score = inTopic * 2 + hit(topicWords(e.text))
+    if ((inTopic || score >= 2) && (score > bestScore || (score === bestScore && e.at > best.at))) [best, bestScore] = [e, score]
+  }
+  return best
+}
+
+// Every age it can say, so they can all be rendered ahead.
+const AGE_STEPS = [[2, 'two minutes'], [3, 'three minutes'], [5, 'five minutes'], [10, 'ten minutes'], [15, 'fifteen minutes'],
+  [20, 'twenty minutes'], [30, 'thirty minutes'], [45, 'forty-five minutes'], [60, 'an hour'], [120, 'two hours'], [180, 'three hours'],
+  [360, 'six hours']]
+const JUST_NOW = 'As of just now.', ONE_MINUTE = 'As of a minute ago.'
+export const AGES = [JUST_NOW, ONE_MINUTE, ...AGE_STEPS.map(([, w]) => `As of ${w} ago.`)]
+export function ageWords(ms) {
+  const minutes = ms / 60_000
+  if (minutes < 1) return JUST_NOW
+  if (minutes < 2) return ONE_MINUTE
+  return `As of ${AGE_STEPS.filter(([m]) => m <= minutes).at(-1)[1]} ago.`
+}

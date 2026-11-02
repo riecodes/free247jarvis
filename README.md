@@ -133,8 +133,8 @@ notes sharing words with the question go to Anthropic, plus those they `[[link]]
 
 ## Window (optional)
 
-A small window shows the wake state, what it heard, how Jev sorted it, when it was passed to Claude, and the
-reply. Electron is about 250 MB on disk and the open window uses about 140 MB of RAM of its own, so it is not
+A small window is a chat of what it heard and what it answered, with its state, your words as you speak, and a Settings
+panel for its switches, which saves them in `.env`. Electron is about 250 MB on disk and the open window uses about 140 MB of RAM of its own, so it is not
 installed by default:
 
 ```
@@ -211,6 +211,11 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - On waking it says a short line, different each time, and the time of day when it's been a while. They're rendered once
   per voice, so they play at once with no turn of the boss, and you can talk over them. While you're with someone: only the
   chime. `GREETING=off` for the chime always.
+- Workers can leave a spoken progress line: `node progress.mjs vlog "The vlog is rendering, five minutes left."` It's
+  rendered ahead, so "how's the vlog?" plays it at once with its age ("as of two minutes ago"), with no turn of the boss
+  (needs `TYPESAFE_API_KEY`, which sorts the question). A line older than 12 hours is ignored, and a question it has no
+  line for goes to the boss. With `--waiting`, one such line may follow a greeting, the same one at most every 30 minutes
+  and never in a call (`REMINDERS=off`). With `VOICE_SHARED=`, both PCs' lines count.
 - You can say "Hey Jarvis" again while it works on your last request: it answers, and what you say next
   reaches the boss as a new message. Anything it was about to say waits until you finish.
 - After everything it says, it keeps listening for 8 seconds (`LISTEN_AFTER=asked`: only after a line that asks you something), never in a call or while people are talking,

@@ -1,14 +1,14 @@
 // Runs voice.mjs on a spare port and checks what the window gets. A stub stands in for the listener, so there is no
 // sound and no mic, and nothing reaches the live voice or its log.
 // node check_window.mjs
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
-import { shortlist, withFacts } from './rules.mjs'
+import { AGES, ageWords, latestLines, matchLine, shortlist, withFacts } from './rules.mjs'
 
 // Placeholders fill from live values, the live values come along marked newer, and an unknown one stays for the guard.
 const known = withFacts('{price} lang, {nope}', { price: '₱499' })
@@ -25,6 +25,20 @@ const big = [
 const picked = shortlist(big, 'what is the refund policy', 60)
 assert(picked.includes('Refunds in 7 days') && picked.includes('GCash') && !picked.includes('xxx') && !picked.includes('refund refund'), picked)
 assert.strictEqual(shortlist(big, 'nothing matches this', 60), '')
+
+// The status bank: the newest line per topic across both machines' files, old ones out, and bad lines skipped.
+const at = ago => new Date(Date.now() - ago * 60_000).toISOString()
+const row = (topic, text, ago, waiting = false) => JSON.stringify({ topic, text, at: at(ago), waiting })
+const lines = latestLines([`${row('vlog', 'Old vlog line.', 30)}\nnot json\n${row('course', 'The course tests pass.', 5)}`, `${row('vlog', 'The vlog is rendering.', 2)}\n${row('ancient', 'Too old.', 13 * 60)}`])
+assert.deepStrictEqual(lines.map(e => e.text).sort(), ['The course tests pass.', 'The vlog is rendering.'])
+assert.strictEqual(matchLine(lines, "How's the vlog going?")?.topic, 'vlog')
+assert.strictEqual(matchLine(lines, 'tapos na ba yung vlogs')?.topic, 'vlog')
+assert.strictEqual(matchLine(lines, "what's the status of the course")?.topic, 'course')
+for (const none of ['status', "what's the status?", 'how is the webinar going', 'are the tests fine']) assert.strictEqual(matchLine(lines, none), null, none)
+for (const [m, words] of [[0, 'As of just now.'], [1.5, 'As of a minute ago.'], [2.5, 'As of two minutes ago.'], [9, 'As of five minutes ago.'], [70, 'As of an hour ago.'], [700, 'As of six hours ago.']]) {
+  assert.strictEqual(ageWords(m * 60_000), words)
+  assert(AGES.includes(words), words)
+}
 
 const PORT = 8797
 const HERE = fileURLToPath(new URL('.', import.meta.url))
@@ -166,6 +180,60 @@ try {
   const live = readFileSync(join(HERE, 'tmp', 'voice.log'), 'utf8').slice(before)
   assert(!/heard \(http\): (first|second)/.test(live), 'check lines reached the live log')
   assert(readFileSync(LOG, 'utf8').includes('heard (http): first'))
+
+  // The router, end to end with a stand-in Jev: progress finds the worker's line, from either machine, with its age; a topic
+  // with no line, or a plain status, doesn't use the bank. Lines and ages are rendered ahead, and what waits is passed on.
+  const { createServer } = await import('node:http')
+  let jevSays = 'progress'
+  const jev = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => res.end(JSON.stringify({ answers: { kind: { choice: jevSays, probabilities: { [jevSays]: 0.95 } } } })))
+  }).listen(0, '127.0.0.1')
+  await new Promise(r => jev.once('listening', r))
+  const BANK = join(TMP, 'bankclaims'), IN = join(TMP, 'bank.in')
+  rmSync(BANK, { recursive: true, force: true })
+  mkdirSync(join(BANK, 'OtherPC'), { recursive: true })
+  rmSync(IN, { force: true })
+  writeFileSync(join(BANK, 'OtherPC', 'status.jsonl'), `${row('vlog', 'The vlog is rendering.', 2.5)}\n`)
+  const STUB2 = join(TMP, 'stub2.py')
+  writeFileSync(STUB2, `import sys\nfor line in sys.stdin:\n    open(${JSON.stringify(IN)}, "a", encoding="utf-8").write(line)\n`)
+  const port3 = PORT + 2
+  const router = spawn('node', ['voice.mjs'], {
+    cwd: HERE, stdio: ['pipe', 'ignore', 'ignore'],
+    env: { ...process.env, VOICE_PORT: String(port3), VOICE_MIC: 'off', VOICE_WINDOW: 'off', VOICE_LISTENER: STUB2, VOICE_LOG: LOG, VOICE_TOAST: 'off',
+      VOICE_SHARED: BANK, VOICE_ENV: ENV_COPY, VOICE_JEV_URL: `http://127.0.0.1:${jev.address().port}/`, TYPESAFE_API_KEY: 'stand-in', VOICE_TITLE: 'Sir' },
+  })
+  const heard = async text => {
+    for (let i = 0; i < 50; i++) {
+      try { return await fetch(`http://127.0.0.1:${port3}/heard`, { method: 'POST', body: text }) } catch { await sleep(200) }
+    }
+    throw new Error('no router')
+  }
+  const toListener = () => existsSync(IN) ? readFileSync(IN, 'utf8') : ''
+  try {
+    await heard('how is the vlog going')
+    for (let i = 0; i < 40 && !/As of/.test(toListener().replace(/bank .*\n/g, '')); i++) await sleep(100)
+    assert.match(toListener(), /^end Sir, the vlog is rendering\. As of two minutes ago\.$/m, toListener())
+    assert.match(toListener(), /^bank Sir, the vlog is rendering\.$/m)
+    assert.match(toListener(), /^bank As of forty-five minutes ago\.$/m)
+    // Your own machine's line, marked waiting, arrives within a few seconds, ready to follow a greeting.
+    assert.strictEqual(spawnSync('node', ['progress.mjs', '--waiting', 'draft', 'The draft is ready'], { cwd: HERE, env: { ...process.env, VOICE_SHARED: BANK } }).status, 0)
+    for (let i = 0; i < 70 && !/^waiting /m.test(toListener()); i++) await sleep(100)
+    assert.match(toListener(), /^waiting \["Sir, the draft is ready\."\]$/m, toListener())
+    assert.match(toListener(), /^bank Sir, the draft is ready\.$/m)
+    const before2 = toListener().length
+    await heard('how is the webinar going')  // nothing on it: the orch
+    await sleep(300)
+    assert(!/^(end|say) /m.test(toListener().slice(before2)), toListener().slice(before2))
+    jevSays = 'status'
+    await heard("what's the status")  // no topic: the sessions' own summary as before
+    await sleep(300)
+    assert(!/vlog/.test(toListener().slice(before2).replace(/^bank .*$/gm, '')), toListener().slice(before2))
+  } finally {
+    router.stdin.end()
+    router.kill()
+    jev.close()
+  }
 
   // One voice across two PCs. The latest claim holds it, and an old one still counts: a PC booting late must not speak.
   const claimBy = (host, when) => {

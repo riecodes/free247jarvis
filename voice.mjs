@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { asksForHeld, asksSomething, isAnswer, isLong, isLooking, shortlist, verbFor, withFacts } from './rules.mjs'
+import { AGES, ageWords, asksForHeld, asksSomething, bankFile, isAnswer, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, withFacts } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -156,7 +156,7 @@ function waitingOn() {
 // quick ones are answered here, about a second after they're heard, without a turn of the boss: the sessions'
 // status, small talk (Claude Haiku, with ANTHROPIC_API_KEY), and speech that isn't a clear request ("Say that
 // again?"). Everything else, and everything without a key, goes to the boss as before.
-const JEV_URL = 'https://api.typesafe.ai/v1/systemone'
+const JEV_URL = process.env.VOICE_JEV_URL || 'https://api.typesafe.ai/v1/systemone'  // VOICE_JEV_URL: a stand-in, in checks
 const JEV_MIN = 0.7 // Jev less sure than this: the boss gets it
 const HAIKU = 'claude-haiku-5-5'
 // The knowledge bank: KNOWLEDGE_DIR in .env, folders of short .md notes separated by ;, such as Obsidian vaults, read
@@ -186,6 +186,8 @@ const KNOWLEDGE = "A question the user's own notes answer: their course or webin
 const KINDS = {
   status: 'Asks how the Claude Code sessions or terminals are doing overall: status, who is busy or idle, what ' +
     'finished, who or what needs the user. Not a request about one named session.',
+  progress: 'Asks how one particular piece of work, session or project is going, or whether it is done ("how is the vlog", ' +
+    '"tapos na ba yung course"). Not about all the sessions overall, and not asking for anything to be done.',
   chat: 'Small talk or a quick question that needs no session and no action on the computer: a greeting, ' +
     'thanks, how are you, a joke, the time or date, a general fact.',
   unclear: 'Not a clear request: cut off mid-sentence, garbled words, or speech not meant for the assistant ' +
@@ -239,6 +241,13 @@ async function route(text) {
   // Jev unsure: the boss decides ("Sino ang may kailangan sa akin?" scored status 0.67, and asking again was wrong).
   if (p < JEV_MIN || (kind === 'unclear' && isLong(text))) kind = 'work'
   if (kind === 'unclear') return answer(pro ? 'Sorry, ano ulit?' : 'Say that again?', true)
+  // The status bank: a worker's own line, ready to play, with its age. Nothing about that topic: the orch answers.
+  if (kind === 'status' || kind === 'progress') {
+    const line = matchLine(bankLines(), text)
+    log(`router: bank ${line ? `found ${line.topic}` : 'has nothing on it'}`)
+    if (line) return answer(`${titled(line.text)} ${ageWords(Date.now() - line.at)}`)
+    if (kind === 'progress') kind = 'work'
+  }
   const picks = kind === 'knowledge' ? shortlist(bank, text) : ''  // none: the boss, or Haiku would answer without notes
   const quick = kind === 'status' ? status() : kind === 'chat' ? await chat(text)
     : picks ? await chat(text, withFacts(picks, await liveFacts())) : ''
@@ -321,6 +330,27 @@ async function chat(text, bank = '') {
   }
 }
 
+// The status bank (progress.mjs): both machines' lines, through the synced folder. Rendered as they arrive, here on each
+// machine (audio isn't synced), so they play at once; each voice only once, in tmp/.
+const bankFiles = () => {
+  const local = bankFile(SHARED, hostname(), HERE, existsSync)
+  try {
+    if (!local.startsWith(SHARED)) return [local]
+    return readdirSync(SHARED).map(host => join(SHARED, host, 'status.jsonl'))
+  } catch { return [local] }
+}
+const bankLines = () => latestLines(bankFiles().flatMap(f => { try { return [readFileSync(f, 'utf8')] } catch { return [] } }))
+let bankSent = new Set(), waitingSent = '[]'
+function syncBank() {
+  if (!ears) return
+  const lines = bankLines()
+  for (const text of [...AGES, ...lines.map(e => titled(e.text))]) {
+    if (!bankSent.has(text)) (bankSent.add(text), ears.stdin.write(`bank ${text}\n`))
+  }
+  const waitingNow = JSON.stringify(lines.filter(e => e.waiting).map(e => titled(e.text)))
+  if (waitingNow !== waitingSent) (waitingSent = waitingNow, ears.stdin.write(`waiting ${waitingNow}\n`))
+}
+
 // The listener: commands in on stdin, one JSON event per stdout line. It restarts if it dies.
 let ears
 let quitting = false
@@ -355,7 +385,11 @@ function startEars() {
   })
   if (mic) ears.stdin.write('on\n')
   if (watchers.size) ears.stdin.write('watch on\n')
+  bankSent = new Set()
+  waitingSent = '[]'
+  syncBank()
 }
+setInterval(() => { try { syncBank() } catch (e) { log(`bank: ${e.message}`) } }, 5000).unref()
 // Two PCs that sync a folder, one voice. Each writes only its own <folder>/<host>/jarvis.json when the user turns the
 // mic on, and the latest claim holds the voice. It doesn't expire, so a PC that boots with old news still knows: no
 // heartbeat to wait for, and nothing to ask. VOICE_SHARED, else the folder next to this one if the user has it; with

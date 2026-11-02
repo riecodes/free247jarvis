@@ -426,6 +426,64 @@ def settings() -> None:
         assert play.called
 
 
+def bank() -> None:
+    """Lines rendered ahead play without the voice, with their age, and a reminder follows a greeting only now and then."""
+    e = ears()
+    line, age = (np.ones(10, np.float32), RATE), (np.ones(5, np.float32) * 2, RATE)
+    e.banked = {"Sir, the vlog is rendering.": line, "As of two minutes ago.": age}
+    e.tts = mock.Mock()
+    with mock.patch.dict(listener.os.environ, {"VOICE_ENGINE": ""}):
+        samples, rate, _ = listener.Ears.speech(e, "Sir, the vlog is rendering. As of two minutes ago.")
+        assert rate == RATE and len(samples) == 10 + RATE // 8 + 5 and not e.tts.create.called
+        assert len(listener.Ears.speech(e, "Sir, the vlog is rendering.")[0]) == 10 and not e.tts.create.called
+        # Anything else is said live.
+        e.tts.create.return_value = (np.ones(3, np.float32), RATE)
+        assert len(listener.Ears.speech(e, "Sir, something else.")[0]) == 3
+        assert len(listener.Ears.speech(e, "Sir, the vlog is rendering. As of a year ago.")[0]) == 3
+
+    chunk = np.ones(listener.CHUNK, np.int16)
+    hello = ("Yes, sir.", np.ones(RATE // 2, np.float32), RATE)
+    review = "Sir, the draft is ready for your review."
+
+    def wake(e, call=False):
+        got = []
+        e.greetings, e.greetings_at, e.greeted = [hello], {}, time.monotonic()
+        with mock.patch.object(listener, "in_call", lambda: call), mock.patch.object(listener, "emit", lambda ev, **d: got.append((ev, d))), \
+                mock.patch.object(listener, "pause_media", list):
+            e.oww.predict = lambda _: {"jarvis": 0.9}
+            e.on_chunk(chunk)
+            e.wait_for_wake()
+        return [d["text"] for ev, d in got if ev == "reminder"]
+
+    def ready():
+        e = ears()
+        e.banked, e.waiting, e.reminded = {review: (np.ones(RATE // 2, np.float32), RATE)}, [review], {}
+        return e
+
+    e = ready()
+    assert wake(e) == [review] and e.said == f"Yes, sir. {review}"  # what the mic hears of it stays out of the request
+    assert wake(e) == []  # not again soon
+    e.reminded[review] -= listener.REMIND_EVERY + 1
+    assert wake(e) == [review]
+    # Nothing waiting, not rendered yet, switched off, or in a call: nothing. Two waiting: one per greeting.
+    e = ready()
+    e.waiting = []
+    assert wake(e) == []
+    e = ready()
+    e.banked = {}
+    assert wake(e) == []
+    e = ready()
+    e.reminders = False
+    assert wake(e) == []
+    e = ready()
+    assert wake(e, call=True) == []
+    e = ready()
+    other = "Sir, the build needs you."
+    e.banked[other] = e.banked[review]
+    e.waiting = [review, other]
+    assert wake(e) == [review] and wake(e) == [other] and wake(e) == []
+
+
 def fixes() -> None:
     """Words the user's terms are often heard as get put right, from the list in words.txt and nothing else."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -1014,6 +1072,7 @@ def main() -> None:
     name_needed()
     listen_after()
     settings()
+    bank()
     fixes()
     greeting()
     closing_cut()

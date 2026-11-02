@@ -166,6 +166,7 @@
     },
     wake: () => { hide(dots); listening(); state('listen', 'Listening') },
     greeting: e => add('msg me hello', e.text, e.at),
+    reminder: e => add('msg me', e.text, e.at),
     partial: e => liveWords(e.text),
     heard: e => {
       hide(draft)
