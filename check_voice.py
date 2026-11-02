@@ -509,6 +509,93 @@ def fixes() -> None:
     assert listener.fix_words("do this, echo cpd") == "do this, reco cpd"
 
 
+def talk_over() -> None:
+    """Talking over a reply stops it, and its own echo, a video, a call or a reply that says the name don't."""
+    # The decision: speech only counts when clearly louder than the reply is at the mic.
+    def fed(chunks, ratio=2.0):
+        t = listener.TalkOver(ratio)
+        return t, [t.feed(s, l, float(i)) for i, (s, l) in enumerate(chunks)]
+    echo = [(False, 300.0)] * 30
+    assert not any(fed(echo)[1])
+    assert not any(fed(echo + [(True, 320.0)] * 40)[1])  # the echo, called speech
+    assert not any(fed(echo + [(True, 2000.0)] * 5)[1])  # a cough
+    assert not any(fed([(False, 300.0)] * 5 + [(True, 2000.0)] * 8)[1])  # too soon to know the echo
+    t, got = fed(echo + [(True, 2000.0)] * 8)
+    assert got.index(30.0) == 35 and t.peak > 2  # fires on the sixth chunk, with when it began
+    assert not any(fed(echo + [(True, 2000.0)] * 8, ratio=8)[1])  # the knob
+
+    rms = np.full(listener.CHUNK, 2000, np.int16)
+    still = np.full(listener.CHUNK, 300, np.int16)
+
+    def run(script, text="All done here", quiet=False, media=False, score=0.0, setting=True):
+        """Plays `script`, chunks of (level, speech), through listen_over; returns the ears, and how many chunks it took."""
+        e, n = ears(), {"n": 0}
+        e.talk_over, e.strict = setting, 0.7
+        flags = iter(script)
+        speech = {"on": False}
+        e.vad.predict = lambda *a, **k: 1.0 if speech["on"] else 0.0
+        e.oww.predict = lambda c: {"w": score if c[0] == 2000 else 0.0}
+
+        def playing():
+            if n["n"] >= len(script):
+                return False
+            if listener.MIC_TAP.empty():
+                chunk, speech["on"] = script[n["n"]]
+                n["n"] += 1
+                listener.MIC_TAP.put((chunk, float(n["n"])))
+            return True
+        with mock.patch.object(listener, "emit", lambda *a, **k: None), mock.patch.object(listener, "media_playing", lambda: media):
+            e.listen_over(text, quiet, playing, lambda: n.setdefault("stopped", True))
+        assert listener.MIC_TAP is None
+        return e, n
+    reply = [(still, False)] * 30 + [(rms, True)] * 10
+    e, n = run(reply)
+    assert e.barge and n.get("stopped") and n["n"] < len(reply)
+    for how in ({"quiet": True}, {"media": True}, {"setting": False}):
+        e, n = run(reply, **how)
+        assert not e.barge and "stopped" not in n, how
+    # The wake word works in a call too, but the reply's own "Jarvis" doesn't count.
+    e, n = run(reply, quiet=True, score=0.9)
+    assert e.barge and e.sure and e.woke[0] == 0.9
+    e, n = run(reply, "Sir, Jarvis is on it", quiet=True, score=0.9)
+    assert not e.barge
+
+    events = []
+    with mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), mock.patch.object(listener, "in_call", lambda: False):
+        # The whole turn: stops, records from when they began, and what it hears goes on as a request.
+        e = ears()
+        e.listen_all = True
+
+        def over_it(samples, rate=0, *a, **k):
+            if k.get("over"):
+                e.play_began, e.barge = time.monotonic() - 1, time.monotonic() - 0.3  # 1 s into its 2 s of words
+            return True
+        e.play = over_it
+        e.speech = lambda text: (np.zeros(RATE * 2, np.float32), RATE, "test")
+        e.say("One two three four five six seven eight nine ten.", asked=False)
+        assert e.on_chunk == e.record_chunk and e.on_done == e.request_done and e.cap == listener.MAX_CLIP
+        assert e.deaf_until < e.barge and e.cut_rest and ("spoken", {"listening": True}) in events
+        assert e.said.split()[-1] != "ten." and len(e.said.split()) < 10  # only what it got to
+        rest = e.cut_rest[0]
+        # Nobody was there: no words back, so the rest of the reply plays.
+        played = []
+        e.play = lambda samples, *a, **k: played.append(samples) or True
+        with mock.patch.object(listener, "transcribe", lambda c: ""):
+            e.request_done(np.ones(RATE, np.int16))
+        assert any(p is rest for p in played) and e.cut_rest is None
+        # Someone was: nothing of the old reply comes back.
+        e.cut_rest = (rest, RATE)
+        played.clear()
+        with mock.patch.object(listener, "transcribe", lambda c: "stop that one"):
+            e.request_done(np.ones(RATE, np.int16))
+        assert not any(p is rest for p in played) and e.cut_rest is None
+        assert ("heard", {"text": "stop that one"}) in events
+        # Not stopped: as before.
+        e = ears()
+        e.say("Nothing to see.", asked=False)
+        assert e.on_chunk == e.wake_chunk and not e.barge
+
+
 def cut_off() -> None:
     """Back from a stop, or a request lost: says so with where it lost the thread, not in a call, and quiet moments only."""
     now = 1_000_000.0
@@ -891,6 +978,7 @@ def main() -> None:
     looking()
     hush()
     cut_off()
+    talk_over()
 
     # Only "Hey Jarvis" wakes it, and "Claude" in a request is the user's word, not a wake word to strip.
     assert listener.wake_words() == ["hey_jarvis"]

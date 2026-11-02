@@ -17,7 +17,7 @@ answers out loud.
 - "Hey Jarvis, open Notepad and type hello."
 
 Talk in English, Tagalog, or Taglish. The free voice answers in English (its British voice only
-says English words); the pro voice answers in Taglish. When a terminal finishes, the boss tells you.
+says English words), and so does the pro voice. When a terminal finishes, the boss tells you.
 
 ## Setup (once)
 
@@ -216,6 +216,10 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   (needs `TYPESAFE_API_KEY`, which sorts the question). A line older than 12 hours is ignored, and a question it has no
   line for goes to the boss. With `--waiting`, one such line may follow a greeting, the same one at most every 30 minutes
   and never in a call (`REMINDERS=off`). With `VOICE_SHARED=`, both PCs' lines count.
+- Talk over a reply and it stops and listens, with no wake word. Your voice must beat the reply's echo at the mic
+  (`TALK_OVER_RATIO`, 2 by default), for over half a second, after the reply's first second. If no words come of it, the
+  rest of the reply plays. In a call, with people talking, or with a video it couldn't pause, only "Hey Jarvis" stops it.
+  `TALK_OVER=off` leaves only "Hey Jarvis". Not in the realtime voice.
 - If its ears stop, it says so when they're back, with the reason if it knows and the end of the last thing it heard, and
   listens again if you were talking. The same goes for a request lost to Groq's limit or a failed transcription. Held in a
   call, and off with `CUT_OFF=off`. To restart the listener without cutting anyone off: `python listener.py restart [why]`

@@ -31,14 +31,13 @@ function show(event, data = {}) {
   if (shown.push(line) > 200) shown.shift()
   for (const w of watchers) w.write(line)
 }
-// The pro voice (VOICE_ENGINE=elevenlabs, from start.ps1 -Engine or .env) speaks Filipino well, so it answers
-// in Taglish; Kokoro's British voice only says English words, so the free voice answers in plain English.
+// Both voices answer in plain English: the user wants the pro voice (VOICE_ENGINE=elevenlabs, from start.ps1 -Engine or
+// .env) British too, and Kokoro's British voice only says English words.
 // .env next to this file, first line wins as in listener.py; real environment variables win over it.
 const env = { ...process.env }
 const ENV_FILE = process.env.VOICE_ENV || join(HERE, '.env')  // VOICE_ENV: another file, in checks
 const dotenv = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
 for (const [, k, v] of dotenv.matchAll(/^([A-Z][A-Z0-9_]*)=(.*)$/gm)) env[k] ??= v.trim().replace(/^"(.*)"$/, '$1')
-const pro = /^elevenlabs$/i.test(env.VOICE_ENGINE ?? '')
 // VOICE_TITLE=Sir: every spoken line opens with it ("Sir, the course session needs you.").
 const TITLE = env.VOICE_TITLE?.trim() ?? ''
 // The listener's rising chime after a reply that asks something says the mic is open again (FOLLOWUP_SECONDS), so no spoken cue here.
@@ -47,10 +46,8 @@ const titled = text => !TITLE || !text || text.toLowerCase().startsWith(TITLE.to
 const SPEAK = (TITLE ? `Start every spoken reply with "${TITLE},". ` : '') +
   'Write times, numbers and dates as English words, the way they are said ("nine seventeen PM", "October ' +
   'twenty-six"), never in Spanish or Tagalog numbers.' +
-  (pro ? ' Whatever language the request is in, answer in everyday Taglish: an English sentence with common ' +
-    'Tagalog words mixed in ("Sige, sent ko na sa course session"), never deep or formal Tagalog.'
-    : ' Whatever language the request is in, answer in plain English only, with no Tagalog or Taglish ' +
-    'words at all (not even "na", "po" or "sige"): the voice can only say English.')
+  ' Whatever language the request is in, answer in plain English only, with no Tagalog or Taglish words at all ' +
+  '(not even "na", "po" or "sige").'
 
 // A key from .env: NAME=..., or NAME_FILE= a file that holds the key alone or a NAME=... line (another app's .env).
 function secret(name) {
@@ -241,7 +238,7 @@ async function route(text) {
   }
   // Jev unsure: the boss decides ("Sino ang may kailangan sa akin?" scored status 0.67, and asking again was wrong).
   if (p < JEV_MIN || (kind === 'unclear' && isLong(text))) kind = 'work'
-  if (kind === 'unclear') return answer(pro ? 'Sorry, ano ulit?' : 'Say that again?', true)
+  if (kind === 'unclear') return answer('Say that again?', true)
   // The status bank: a worker's own line, ready to play, with its age. Nothing about that topic: the orch answers.
   if (kind === 'status' || kind === 'progress') {
     const line = matchLine(bankLines(), text)
@@ -254,7 +251,7 @@ async function route(text) {
     : picks ? await chat(text, withFacts(picks, await liveFacts())) : ''
   if (quick) return answer(quick)
   // VOICE_ACK=on: real work takes the orch a turn, so a first word comes at once and its answer after.
-  if (/^on$/i.test(env.VOICE_ACK ?? '')) answer(pro ? 'Sige, on it.' : 'On it.')
+  if (/^on$/i.test(env.VOICE_ACK ?? '')) answer('On it.')
   await send(text, 'mic')
 }
 
@@ -289,9 +286,7 @@ function status() {
     waiting.length && count(waiting.length, 'waiting')].filter(Boolean).join(', ')
   const needs = waiting.map(s => `${label(s)} needs you: ${(s.waitingFor || 'an answer').split(/\s+/).slice(0, 6).join(' ')}.`)
   const sessions = count(live.length, live.length === 1 ? 'session' : 'sessions')
-  return pro
-    ? `May ${sessions}: ${counts}. ${needs.join(' ') || 'Walang naghihintay sa yo.'}`
-    : `${sessions[0].toUpperCase() + sessions.slice(1)}: ${counts}. ${needs.join(' ') || 'Nothing needs you.'}`
+  return `${sessions[0].toUpperCase() + sessions.slice(1)}: ${counts}. ${needs.join(' ') || 'Nothing needs you.'}`
 }
 
 // With a bank, it answers only from those notes; what they don't settle goes to the boss.
@@ -461,6 +456,7 @@ const SETTINGS = [
   { key: 'FOLLOWUP_SECONDS', label: 'Listening window', hint: 'Seconds it waits for you after speaking. 0: none.', min: 0, max: 120, fallback: '8' },
   { key: 'CLOSING_CUT', label: 'Send on a closing phrase', hint: '"Do it", "go ahead", "thank you" send without the 5 s wait.', options: ['on', 'off'] },
   { key: 'REMINDERS', label: 'Reminders', hint: 'After a greeting, one thing that is waiting on you.', options: ['on', 'off'] },
+  { key: 'TALK_OVER', label: 'Talk over it to stop it', hint: 'Off: only "Hey Jarvis" stops a reply.', options: ['on', 'off'] },
   { key: 'CUT_OFF', label: 'Say when it got cut off', hint: 'After its ears stop, or a request is lost: says so, and the last thing it heard.', options: ['on', 'off'] },
 ]
 const settingValue = s => env[s.key] || s.fallback || s.options[0]
