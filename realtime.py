@@ -148,10 +148,12 @@ def transcribe(clip: np.ndarray, timeout: int = 600) -> str:
 class RealtimeEars(listener.Ears):
     streaming = False
     session: Session = None
+    closing_gap = 0  # its own session ends the turn
 
     def __init__(self) -> None:
         self.session = Session(os.environ["OPENAI_API_KEY"])
         super().__init__()
+        self.closing_gap = 0
 
     def record(self, on_done, start=(), give_up: int = listener.GIVE_UP) -> None:
         super().record(on_done, start, give_up)

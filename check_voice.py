@@ -40,6 +40,7 @@ def ears() -> listener.Ears:
     e.spoke = listener.deque(maxlen=listener.TALK_CHUNKS)
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.need_name = False  # name_needed tests it; the rest is about what follows the wake word
+    e.closing_gap = 0  # closing_cut tests it
     e.threshold, e.peak, e.peak_word, e.peak_level, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0, 0.0, {"jarvis": "ack"}, ["jarvis"]
     e.spoken, e.played, e.queue, e.queue_since, e.last_speech, e.tries = [], [], [], 0.0, 0.0, []
     e.vad.predict = lambda *a, **k: 0.0
@@ -361,6 +362,133 @@ def name_needed() -> None:
     assert len(e.clip) == listener.PRE_ROLL
 
 
+def closing_cut() -> None:
+    """A request that ends with a closing phrase goes at once. Mid-sentence, or with a failure, silence decides as before."""
+    for said in ("Do it.", "Yeah, do it.", "yeah do it", "Fix the navbar. Go ahead.", "Okay, thank you.", "Send it.", "Status. Go.",
+                 "Hey Jarvis, do it.", "Fine, thanks", "That's it.", "Fix that, then do it.", "Please send it.", "It works. Let's go.", "Yeah, let's do it."):
+        assert listener.closes(said), said
+    for said in ("How do I do it", "Can you do it", "Where did it go?", "I want to go", "I'll send it", "do it again", "Go to the page",
+                 "thank you for that", "tell them thank you", "", "Going", "Thank you."):
+        assert not listener.closes(said), said
+
+    chunk = np.ones(listener.CHUNK, np.int16)
+
+    def talk(saying, fail=False):
+        """Four chunks of speech, then quiet: how many chunks of quiet until it ended, and what it asked."""
+        e, sent, asked = ears(), [], []
+        e.closing_gap, e.next_closing = 10, 0.0
+
+        def stt(clip, timeout=600):
+            asked.append(len(clip))
+            assert timeout == listener.CLOSING_TIMEOUT
+            if fail:
+                raise RuntimeError("offline")
+            return saying
+
+        with mock.patch.object(listener, "transcribe", stt), mock.patch.object(listener, "emit", lambda *a, **k: None):
+            e.record(sent.append)
+            e.vad.predict = lambda *a, **k: 0.9
+            for _ in range(4):
+                e.on_chunk(chunk)
+            e.vad.predict = lambda *a, **k: 0.0
+            n = 0
+            while not sent and n < 200:
+                e.on_chunk(chunk)
+                n += 1
+        return n, sent, asked
+
+    n, sent, asked = talk("Fix it. Do it.")
+    assert n == 10 and len(sent) == 1 and asked == [(4 + 2) * listener.CHUNK], (n, asked)  # the words, not the quiet
+    # Not a closing, or speech to text down: only silence ends it, after one check.
+    for kw in ({"saying": "Fix the navbar"}, {"saying": "Do it.", "fail": True}):
+        n, sent, asked = talk(**kw)
+        assert n == listener.END_QUIET and len(sent) == 1 and len(asked) == 1, (kw, n)
+    # Going on after the pause: another pause checks again, but not within CLOSING_EVERY, for Groq's limit.
+    e, sent, asked = ears(), [], []
+    e.closing_gap = 2
+    with mock.patch.object(listener, "transcribe", lambda clip, timeout=600: asked.append(1) or "go on"), mock.patch.object(listener, "emit", lambda *a, **k: None):
+        e.record(sent.append)
+        for _ in range(3):
+            e.vad.predict = lambda *a, **k: 0.9
+            for _ in range(4):
+                e.on_chunk(chunk)
+            e.vad.predict = lambda *a, **k: 0.0
+            for _ in range(3):
+                e.on_chunk(chunk)
+    assert len(asked) == 1 and not sent, asked
+    # Near Groq's limit the nice-to-haves step aside, the closing check before what the user said.
+    with mock.patch.object(listener, "groq_calls", listener.deque([time.monotonic()] * 12, maxlen=20)):
+        assert not listener.groq_room(listener.LIVE_SPARE) and listener.groq_room(listener.CLOSING_SPARE)
+        live = listener.GroqLive()
+        live.waiting = listener.LIVE_EVERY
+        live.feed(chunk)
+        assert not live.busy
+    with mock.patch.object(listener, "groq_calls", listener.deque([time.monotonic()] * 16, maxlen=20)):
+        e = ears()
+        e.closing_gap = 5
+        e.record(sent.append)
+        assert not listener.groq_room(listener.CLOSING_SPARE) and not e.said_closing()
+    # Off, and voice training never checks.
+    e = ears()
+    assert e.closing_gap == 0
+    e.record(sent.append)
+    assert not e.said_closing()
+    e = ears()
+    e.closing_gap, e.on_done = 5, e.take_done
+    assert not e.said_closing()
+
+
+def echo() -> None:
+    """The mic opens before a reply ends, by when the words reached the mic. Its echo never reaches the boss."""
+    said = "Sir, the vlog is ready, so tell me when to post it. Is that okay?"
+    strip = listener.strip_echo
+    assert strip("Is that okay?", said, late=False) == ""  # all echo
+    assert strip("Post it. Is that okay?", said, late=True) == ""
+    assert strip("Is that okay? Yes, post it now.", said, late=True) == "Yes, post it now."  # talking over the end
+    assert strip("Uh, that okay? Yes.", said, late=True) == "Yes."  # one garbled word first
+    assert strip("Okay", said, late=False) == ""  # the last word and no speech past it
+    assert strip("Okay", said, late=True) == "Okay"  # the user's answer
+    assert strip("Yes, please post it to the first page.", said, late=True) == "Yes, please post it to the first page."
+    assert strip("Tell me a joke", said, late=True) == "Tell me a joke"
+    assert strip("anything", "", late=False) == "anything"
+    # As Whisper did with a reply mixed in at 130 to 2000 RMS before a real request (nothing played).
+    long = "Sir, the vlog is ready, so tell me when you want it posted to the first page on the list."
+    assert strip("When you want it posted to the first page on the list. So, there should be a", long, late=True) == "So, there should be a"
+
+    def say(e, text):
+        with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), mock.patch("soundfile.write"), \
+                mock.patch.object(listener.os, "replace"), mock.patch.object(listener, "output_problem", lambda: ""), \
+                mock.patch.object(listener, "pause_media", list), mock.patch.object(listener, "resume_media"), mock.patch.object(listener.time, "monotonic", lambda: 1000.0):
+            e.say(text)
+
+    # The timing: a chunk from a second before the last word counts, and one before that doesn't.
+    e = ears()
+    e.lead, e.followup = 1.0, 0
+    say(e, "Hello there.")
+    assert e.said == "Hello there." and abs(e.words_end - 999.93) < 1e-6 and abs(e.deaf_until - 998.93) < 1e-6
+    # With a window, the pad and chime after the words don't count.
+    e = ears()
+    e.lead = 0.5
+    e.speech = lambda text: (np.zeros(RATE, np.float32), RATE, "test")
+    say(e, "Do you want it?")
+    pad = (RATE * 6 // 10 + len(listener.CHIME_UP[0])) / RATE
+    assert abs(e.words_end - (1000 - pad - 0.07)) < 1e-6 and abs(e.deaf_until - (e.words_end - 0.5)) < 1e-6
+    assert e.on_chunk == e.record_chunk
+
+    clip = np.ones(listener.RATE, np.int16)
+
+    def heard(words_end):
+        e, events = ears(), []
+        e.said, e.words_end = "Do you want it?", words_end
+        with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+                mock.patch.object(listener, "transcribe", lambda c: "you want it"):
+            e.request_done(clip)
+        return [d["text"] for ev, d in events if ev == "heard"]
+
+    assert heard(time.monotonic()) == []  # the clip reaching the boss loses the echo
+    assert heard(time.monotonic() - 60) == ["you want it"]  # long after the reply, it isn't compared at all
+
+
 def voice_data() -> None:
     """Only wake word clips are kept, only by choice, in no synced folder, not in a call; old ones go unless forever."""
     real = Path(listener.os.environ["LOCALAPPDATA"]) / "free247jarvis" / "voicedata"
@@ -585,7 +713,8 @@ def main() -> None:
 
     # The tick against the three sounds the user knows.
     known = [pitch(s) for s in (listener.CHIME_UP, listener.CHIME_DOWN, listener.CHIME_CLOSE)]
-    assert pitch(listener.CHIME_NEAR) > 1.5 * max(known), known
+    # Silent files in sounds/local, the user's choice, have no pitch to compare.
+    assert not max(known) or pitch(listener.CHIME_NEAR) > 1.5 * max(known), known
 
     subprocess.run(["node", "--input-type=module", "-e", """
         import assert from 'node:assert'
@@ -735,6 +864,8 @@ def main() -> None:
         assert shown == [("partial", {"text": "open terminal two"})], shown
     voice_data()
     name_needed()
+    closing_cut()
+    echo()
     mic_names()
     staying_quiet()
     print("ok")

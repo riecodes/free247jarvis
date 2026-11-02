@@ -40,6 +40,7 @@ download the models ahead of time.
 """
 import asyncio
 import base64
+import difflib
 import io
 import json
 import os
@@ -121,7 +122,23 @@ SHORT_CLIP = 1125  # 90 s cap, thrown away unsent: a listening window or a quiet
 GRACE = 5  # speech within this many chunks of the wake is one breath ("Hey Jarvis, status"): no "Jarvis here"
 MIN_VOICED = 3  # less speech than this is a click or a cough, not a request
 END_QUIET = 62  # about 5s of quiet ends a request (1s cut people off mid-sentence, 2s still cut thinking pauses)
-ECHO = 1.0  # seconds the mic stays deaf after a reply: the room's echo, and a moment before the next "Hey Jarvis"
+ECHO = 1.0  # seconds the mic stays deaf after a sound, unless the caller says otherwise
+# How long before a reply's last word the mic counts again (LISTEN_LEAD in .env; 0: at the last word, less: after it). Sound
+# recorded while it speaks waits in the queue, so this keeps what the user said over the end, with no echo canceller. A
+# USB mic with the speakers on: the reply stayed about at the room's noise, and the speech detector called 0-8% of it speech.
+LISTEN_LEAD = 1.0
+ECHO_ROOM = 0.3  # speech this long past the last word is the user's, not the speaker's or the room's
+ECHO_WORDS = 12  # how far back from a reply's end its echo can reach into a clip
+# Words at the end of a request that end it at once (CLOSING_CUT=off in .env turns it off). After CLOSING_GAP of quiet (.env)
+# the words so far go to speech to text; silence stays the fallback for everything else.
+CLOSING_GAP = 0.8
+CLOSING_TAIL = 75  # chunks before the pause: 6 s, plenty for the words and quick to send
+CLOSING_EVERY = 4  # seconds between checks, to stay under Groq's 20 requests a minute
+CLOSING_TIMEOUT = 3
+# After the start of the words or a clause: "how do I do it" and "where did it go" are no closing. A cut here costs a late
+# word, sent as its own request. Whisper invents "Thank you" over long quiet, so only the words before the quiet go.
+CLOSING = re.compile(r"(?:^|[.!?,]\s+)(?:(?:yeah|yes|okay|ok|so|then|please|just|and)\W+)*"
+                     r"(?:do it|let's do it|go ahead|go for it|go|let's go|send it|thank you|thanks|that's it)\W*$", re.IGNORECASE)
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
 PEAK_FLOOR = 0.03  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
 NEAR_MISS = 0.12  # a peak from here up to the threshold gets the near-miss tick
@@ -147,6 +164,7 @@ GIVE_UP = 62  # about 5s without speech after waking: nobody is talking
 MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV tops Groq's free 25 MB at 13 min)
 # Free voice's live words, in chunks: every 4 s is 15 requests a minute, leaving room in Groq's 20 for the request itself.
 LIVE_EVERY = 50
+LIVE_SPARE, CLOSING_SPARE = 8, 4  # requests a minute kept free for wake checks and requests, when these two ask
 LIVE_CLIP = 188  # the last 15 s
 DATA_DAYS = 30  # voice data older than this is deleted
 DATA_MAX = 2 * 1024 ** 3  # and past this many bytes of clips, the oldest go first
@@ -424,6 +442,28 @@ def name_check(clip: np.ndarray) -> tuple[bool, str]:
     return bool(re.search(rf"\b{NAMES}\b", said, re.IGNORECASE)), said
 
 
+def closes(said: str) -> bool:
+    """A lone "Thank you." isn't one: it's what Whisper makes of faint sound, and there is no request to send anyway."""
+    said = strip_wake(said)
+    return bool(CLOSING.search(said)) and " ".join(re.findall(r"\w+", said.lower())) not in HALLUCINATIONS
+
+
+def strip_echo(heard: str, said: str, late: bool) -> str:
+    """What a clip heard without the end of the reply just spoken, which can open it now the mic opens before the reply
+    ends. `late`: there was speech after the reply's end, so a lone last word may be the user's ("Yes or no?" "No.")."""
+    spans = list(re.finditer(r"[\w']+", heard.lower()))
+    words = [m.group() for m in spans]
+    tail = re.findall(r"[\w']+", said.lower())[-ECHO_WORDS:]
+    if not words or not tail:
+        return heard
+    m = difflib.SequenceMatcher(None, tail, words, autojunk=False).find_longest_match(0, len(tail), 0, len(words))
+    if m.size == len(words) and (m.size >= 3 or not late):  # all of it is the reply's words
+        return ""
+    if m.size >= 2 and m.b <= 1 and m.a + m.size >= len(tail) - 1:  # it starts with the reply's last words; the rest is the user
+        return heard[spans[m.b + m.size - 1].end():].lstrip(" ,.!?;:-")
+    return heard
+
+
 def wake_words() -> list[str]:
     return list(WAKES)
 
@@ -544,9 +584,21 @@ def segments_text(j: dict) -> str:
     return " ".join(said).strip()
 
 
+GROQ_LIMIT = 20  # requests a minute on Groq's free tier, from its error and headers
+groq_calls: deque[float] = deque(maxlen=GROQ_LIMIT)  # when this listener last called it
+
+
+def groq_room(spare: int) -> bool:
+    """Whether a nice-to-have request fits, leaving `spare` of the minute's requests for what the user said. Only this
+    listener's own calls count."""
+    now = time.monotonic()
+    return sum(now - t < 60 for t in groq_calls) < GROQ_LIMIT - spare
+
+
 def groq_json(clip: np.ndarray, timeout: int = 600) -> dict:
     import requests
 
+    groq_calls.append(time.monotonic())
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
         raise RuntimeError("GROQ_API_KEY is missing: put it in .env (free at https://console.groq.com/keys)")
@@ -554,6 +606,12 @@ def groq_json(clip: np.ndarray, timeout: int = 600) -> dict:
                       files={"file": audio_file(clip)},
                       data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "prompt": VOCAB},
                       timeout=timeout)
+    if r.status_code == 429 and timeout > 10:  # a request's own words are worth a short wait; checks and live words aren't
+        time.sleep(min(5, float(r.headers.get("retry-after") or 3)))
+        r = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"},
+                          files={"file": audio_file(clip)},
+                          data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "prompt": VOCAB},
+                          timeout=timeout)
     r.raise_for_status()
     return r.json()
 
@@ -674,7 +732,7 @@ class GroqLive:
     def feed(self, chunk: np.ndarray) -> None:
         self.clip.append(chunk)
         self.waiting += 1
-        if self.waiting >= LIVE_EVERY and not self.busy:
+        if self.waiting >= LIVE_EVERY and not self.busy and groq_room(LIVE_SPARE):
             self.waiting, self.busy = 0, True
             threading.Thread(target=self.ask, args=(np.concatenate(self.clip),), daemon=True).start()
 
@@ -708,6 +766,8 @@ class Ears:
     sure = False  # it woke while staying quiet: a shorter clip, none of it kept
     need_name = True  # speech to text must hear "Jarvis" before it wakes; WAKE_NAME=off leaves it to the score alone
     cap = MAX_CLIP  # chunks the clip being recorded may reach
+    lead, said, words_end = LISTEN_LEAD, "", 0.0  # the reply last spoken, and when its last word reached the mic
+    closing_gap, next_closing, voiced_at = round(CLOSING_GAP / 0.08), 0.0, 0  # voiced_at: chunks in when the speech last was
     strict, talk_share = WAKE_STRICT, TALK_SHARE
     quiet_why, next_quiet = "", 0.0
 
@@ -723,6 +783,9 @@ class Ears:
         self.strict = max(self.threshold, float(os.environ.get("WAKE_STRICT") or WAKE_STRICT))
         self.talk_share = float(os.environ.get("TALK_SHARE") or TALK_SHARE)
         self.need_name = os.environ.get("WAKE_NAME", "").lower() != "off"
+        self.lead = float(os.environ.get("LISTEN_LEAD") or LISTEN_LEAD)
+        # 0 chunks: no cut-off.
+        self.closing_gap = 0 if os.environ.get("CLOSING_CUT", "").lower() == "off" else round(float(os.environ.get("CLOSING_GAP") or CLOSING_GAP) / 0.08)
         self.spoke: deque[bool] = deque(maxlen=TALK_CHUNKS)
         self.followup = round(float(os.environ.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
@@ -885,6 +948,7 @@ class Ears:
         self.stop_live()
         self.vad.reset_states()
         self.clip, self.voiced, self.quiet, self.on_done, self.give_up = list(start), 0, 0, on_done, give_up
+        self.voiced_at = 0
         self.cap = MAX_CLIP if self.woke and not self.sure else SHORT_CLIP
         self.on_chunk = self.record_chunk
 
@@ -892,6 +956,7 @@ class Ears:
         self.clip.append(chunk)
         if self.is_speech(chunk):
             self.voiced, self.quiet = self.voiced + 1, 0
+            self.voiced_at = len(self.clip)
             self.last_speech = time.monotonic()
             # From the first speech, so a false wake or an unused follow-up window costs nothing. Not voice training.
             if self.voiced == 1 and self.watching and not self.live and self.on_done != self.take_done:
@@ -908,16 +973,43 @@ class Ears:
             emit("status", text="Too long for a reply: dropped unsent")
             self.wait_for_wake()
             return
-        if (spoke and self.quiet >= END_QUIET) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP:
+        if (spoke and self.quiet >= END_QUIET) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP \
+                or (spoke and self.quiet == self.closing_gap and self.said_closing()):
             self.stop_live()
             self.on_done(np.concatenate(self.clip) if spoke else None)
 
+    def said_closing(self) -> bool:
+        """The speech so far ends with a closing phrase. Blocks for a moment; the mic's chunks wait in the queue, so if the
+        user goes on, nothing is lost and the next pause checks again. Any failure leaves it to silence."""
+        now = time.monotonic()
+        if not self.closing_gap or self.on_done == self.take_done or now < self.next_closing or not groq_room(CLOSING_SPARE):
+            return False
+        self.next_closing = now + CLOSING_EVERY
+        if self.live:
+            self.live.waiting = 0  # this request takes the live words' turn, for Groq's limit
+        try:
+            said = transcribe(np.concatenate(self.clip[max(0, self.voiced_at - CLOSING_TAIL):self.voiced_at + 2]), CLOSING_TIMEOUT)
+        except Exception as e:
+            emit("status", text=f"Closing phrase not checked: {e}")
+            return False
+        if not closes(said):
+            return False
+        emit("status", text="Closing phrase: sent without waiting for the silence")
+        return True
+
     def request_done(self, clip: np.ndarray | None) -> None:
+        began = time.monotonic() - len(clip) / RATE if clip is not None else 0.0
+        late = began + self.voiced_at * CHUNK / RATE > self.words_end + ECHO_ROOM
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
         woke, sure = self.woke, self.sure
         self.wait_for_wake(keep=clip is not None)  # first, so a failed transcription still leaves the ears listening
         transcript = transcribe(clip) if clip is not None else ""
         text = strip_wake(transcript)
+        if clip is not None and self.said and began < self.words_end + 2:  # 2: the queue can run behind
+            clean = strip_echo(text, self.said, late)
+            if clean != text:
+                emit("status", text="Took out what it heard of its own reply")
+            text = clean
         words = re.findall(r"\w+", text.lower())
         if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS or handed_back(text):
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
@@ -984,6 +1076,7 @@ class Ears:
         sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
         os.replace(REPLY_WAV.with_suffix(".partial.wav"), REPLY_WAV)
         emit("said", wav=str(REPLY_WAV), text=text)
+        words_len = len(samples)
         if listen and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
             samples = np.concatenate([samples.astype(np.float32), np.zeros(rate * 6 // 10, np.float32), CHIME_UP[0]])  # 0.7 s after the last word
         self.hush()
@@ -992,10 +1085,15 @@ class Ears:
             emit("caption", text=f"{problem} I said: {text}")
         if not self.play(samples, rate) and not problem:
             emit("caption", text=f"I can't play sound. {CANT_HEAR} I said: {text}")
+        # Measured at the mic: the last word arrives about 0.07 s before play() returns (DRAIN, less what the speaker holds back).
+        self.said, self.words_end = text, time.monotonic() - (len(samples) - words_len) / rate - 0.07
+        opened = self.words_end - self.lead
+        self.deaf_until = opened
         emit("spoken", listening=listen)
         if listen:  # the user may answer without the wake word for a few seconds, then it waits for it again
             if rate != CHIME_UP[1]:
                 self.play(*CHIME_UP, tail=0.15)  # the mic is open again
+                self.deaf_until = opened
             self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
                         give_up=self.followup)
         else:
