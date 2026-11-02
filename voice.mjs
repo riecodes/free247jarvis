@@ -94,14 +94,15 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   if (req.params.name !== 'reply') throw new Error(`unknown tool: ${req.params.name}`)
-  const text = titled(String(req.params.arguments?.text ?? '').replace(/\s+/g, ' ').trim())
+  const written = String(req.params.arguments?.text ?? '').trim()
+  const text = titled(written.replace(/\s+/g, ' '))  // one line for the listener; the window keeps the lines
   if (heldElsewhere) {
     log(`not said, the voice is on ${heldElsewhere}: ${text}`)
     return { content: [{ type: 'text', text: `Not spoken: Jarvis is on ${heldElsewhere}. Make no reply calls here until the user says "jarvis on" here.` }] }
   }
   log(`reply: ${text}`)
   if (text && ears) {
-    show('reply', { text, by: 'claude' })
+    show('reply', { text: written, by: 'claude' })
     ears.stdin.write(`${verbFor(askedAt, req.params.arguments?.listen ?? asksSomething(text))} ${text}\n`)
     askedAt = 0 // one reply answers the request; later lines are the boss's own news
   }

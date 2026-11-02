@@ -93,6 +93,34 @@ try {
   const html = await page.text()
   assert.match(html, /EventSource\('\/events'\)/)
   assert(!/<audio|new Audio|AudioContext|speechSynthesis/.test(html), 'the window must never make a sound')
+  assert(!/innerHTML/.test(html), 'words from speech and other sessions never go in as HTML')
+
+  // How the window lays out a message, and keeps live words past the 15 s each batch covers.
+  const [, format] = html.match(/\/\/ format:start[^\n]*\n([\s\S]*?)\/\/ format:end/)
+  const { stitch, parse, spokenChoices } = new Function(`${format}; return { stitch, parse, spokenChoices }`)()
+  assert.strictEqual(stitch('', 'one two'), 'one two')
+  assert.strictEqual(stitch('one two three four five', 'three four five six seven'), 'one two three four five six seven')
+  assert.strictEqual(stitch('tell the course session to', 'The course session, to fix it'), 'tell the course session to fix it')
+  assert.strictEqual(stitch('one two three', 'two three'), 'one two three')  // nothing new: nothing lost
+  assert.strictEqual(stitch('one two', 'nine ten eleven'), 'one two nine ten eleven')
+  let grown = ''
+  const speech = Array.from({ length: 400 }, (_, i) => `w${i}`)
+  for (let end = 40; end <= 400; end += 13) grown = stitch(grown, speech.slice(Math.max(0, end - 40), end).join(' '))
+  grown = stitch(grown, speech.slice(-40).join(' '))
+  assert.strictEqual(grown.split(' ').length, 400, 'a long request keeps all its words')
+
+  const rows = spokenChoices('Ship it now? A yes, or B not yet.')
+  assert.deepStrictEqual(rows, { intro: 'Ship it now?', items: [{ h: 'A', text: 'yes' }, { h: 'B', text: 'not yet.' }] })
+  assert.strictEqual(spokenChoices('Sir, one of them: A, B, or C?'), null)
+  assert.strictEqual(spokenChoices('A fix is ready and the B side passed.')?.items.length ?? 0, 2)  // ponytail: reads as choices; display only, nothing spoken changes
+  assert.strictEqual(spokenChoices('Plan A failed, so plan B it is.'), null)
+  assert.strictEqual(spokenChoices('Nothing to choose here.'), null)
+  assert.deepStrictEqual(parse('Pick one:\nA. Ship\nB. Wait\n\nC. Drop').map(b => b.t), ['p', 'choices'])
+  assert.strictEqual(parse('Pick one:\nA. Ship\nB. Wait\n\nC. Drop')[1].items.length, 3)
+  assert.deepStrictEqual(parse('A. Alone').map(b => b.t), ['p'])
+  assert.deepStrictEqual(parse('One\n\nTwo\n- a\n- b\n1. c\n```\nx | y\n```\n| h | i |\n|---|---|\n| 1 | 2 |\n# Head').map(b => b.t),
+    ['p', 'p', 'ul', 'ol', 'code', 'table', 'h'])
+  assert.deepStrictEqual(parse('| h | i |\n|---|---|\n| 1 | 2 |')[0].rows, [['h', 'i'], ['1', '2']])
 
   // With nothing to replay yet, the stream still opens at once (it hung here until the first event).
   const empty = await fetch(url('/events'), { signal: AbortSignal.timeout(3000) })
