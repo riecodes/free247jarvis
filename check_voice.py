@@ -509,6 +509,38 @@ def fixes() -> None:
     assert listener.fix_words("do this, echo cpd") == "do this, reco cpd"
 
 
+def again() -> None:
+    """A short "what?" right after a line says that line again, with no turn of the orch."""
+    for said in ("What?", "what", "Huh?", "Ha?", "Ano?", "Ulit?", "Ano ulit?", "Come again?", "Again?", "What is it? Again?", "Sorry, what?", "Sorry?",
+                 "Um, what?", "Say that again, please.", "What did you say?", "I didn't catch that.", "Pardon?", "One more time"):
+        assert listener.asks_again(said), said
+    for said in ("What's the status?", "What is the vlog doing?", "Ha ha", "Again the same problem", "Sorry", "Tell the course session again", "Yes", "Hmm."):
+        assert not listener.asks_again(said), said
+
+    def hear(words, last="Which one? A, yes. B, no.", ago=5):
+        e, events = ears(), []
+        e.last_line, e.last_line_at = last, time.monotonic() - ago
+        with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+                mock.patch.object(listener, "transcribe", lambda c: words):
+            e.request_done(np.ones(listener.RATE, np.int16))
+        return e, events
+    e, events = hear("What?")
+    assert e.queue == [("Which one? A, yes. B, no.", {"hold": True, "toast": False})]
+    assert ("again", {"text": "What?", "line": "Which one? A, yes. B, no."}) in events and not any(ev == "heard" for ev, _ in events)
+    # Too long ago, nothing said yet, or a real request: to the orch as ever.
+    for args in (("What?", "A line.", listener.REPEAT_RECENT + 1), ("What?", ""), ("Open the door",)):
+        e, events = hear(*args)
+        assert not e.queue and any(ev == "heard" for ev, _ in events), args
+    # What it says is what "what?" repeats; a line held for a call wasn't heard, so it isn't.
+    e = ears()
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"):
+        e.say("The first line.", asked=False)
+    assert e.last_line == "The first line."
+    with mock.patch.object(listener, "in_call", lambda: True), mock.patch.object(listener, "emit"):
+        e.say("Not heard.", hold=True)
+    assert e.last_line == "The first line."
+
+
 def talk_over() -> None:
     """Talking over a reply stops it, and its own echo, a video, a call or a reply that says the name don't."""
     # VOICE_TTS=kokoro: ElevenLabs goes on hearing, Kokoro speaks.
@@ -1020,6 +1052,7 @@ def main() -> None:
     hush()
     cut_off()
     talk_over()
+    again()
 
     # Only "Hey Jarvis" wakes it, and "Claude" in a request is the user's word, not a wake word to strip.
     assert listener.wake_words() == ["hey_jarvis"]

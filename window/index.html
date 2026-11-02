@@ -312,6 +312,7 @@
       state('work', 'Claude is working')
     },
     reply: e => { hide(dots); add('msg me', e.text, e.at, '', true) },
+    again: e => { hide(draft); add('msg you', e.text, e.at); add('msg me', e.line, e.at, '', true) },
     said: () => state('speak', 'Speaking'),
     spoken: e => {
       if (e.listening) {

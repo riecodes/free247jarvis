@@ -8,7 +8,10 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
-import { AGES, ageWords, latestLines, matchLine, shortlist, withFacts } from './rules.mjs'
+import { AGES, ageWords, isFiller, latestLines, matchLine, shortlist, withFacts } from './rules.mjs'
+
+for (const said of ['Hmm.', 'Mm-hmm.', 'Okay', 'Damn', 'Got it.']) assert(isFiller(said), said)
+for (const said of ['Yes', 'Go', 'Okay, send it', 'What?', 'Hello']) assert(!isFiller(said), said)
 
 // Placeholders fill from live values, the live values come along marked newer, and an unknown one stays for the guard.
 const known = withFacts('{price} lang, {nope}', { price: '₱499' })

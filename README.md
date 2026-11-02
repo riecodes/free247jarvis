@@ -219,6 +219,9 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   (needs `TYPESAFE_API_KEY`, which sorts the question). A line older than 12 hours is ignored, and a question it has no
   line for goes to the boss. With `--waiting`, one such line may follow a greeting, the same one at most every 30 minutes
   and never in a call (`REMINDERS=off`). With `VOICE_SHARED=`, both PCs' lines count.
+- Say "what?", "huh?", "ha?", "ano?", "again?" or "come again?" within a minute and a half of a line, and it says that line
+  again. Other short follow-ups are read as replies to what it just said, and a plain "hmm" or "okay" after a line that
+  asked nothing gets no answer.
 - Talk over a reply and it stops and listens, with no wake word. Your voice must beat the reply's echo at the mic
   (`TALK_OVER_RATIO`, 2 by default), for over half a second, after the reply's first second. If no words come of it, the
   rest of the reply plays. In a call, with people talking, or with a video it couldn't pause, only "Hey Jarvis" stops it.

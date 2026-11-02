@@ -20,7 +20,8 @@ and writes one JSON event per stdout line:
             partial {text}                      live words of the request so far, for show only
             heard {text}                        the request as text
             nothing                             woke up, but no request followed
-            cut_off {text}, lost {text}         back from a stop, or a request's words never came: a line for the boss to know too
+            again {text, line}                  they asked to hear the last line again, and it's said again: nothing for the boss
+            cut_off {text}, lost {text}       back from a stop, or a request's words never came: a line for the boss to know too
             said {wav}                          a reply is about to play (saved to wav)
             spoken {listening}                  it has played; listening: the follow-up window is open
             held {text}                         a call is on: not said, kept by voice.mjs until the user asks for it
@@ -155,6 +156,9 @@ ECHO = 1.0  # seconds the mic stays deaf after a sound, unless the caller says o
 LISTEN_LEAD = 0.5  # 1 let whole last phrases in ("A, yes, recommended. B, no."), and talking over a longer stretch now stops the reply
 ECHO_ROOM = 0.3  # speech this long past the last word is the user's, not the speaker's or the room's
 ECHO_WORDS = 12  # how far back from a reply's end its echo can reach into a clip
+REPEAT_RECENT = 90  # seconds after a line that "what?" still means that line; later it goes to the orch like anything else
+ASK_AGAIN = re.compile(r"(sorry )?(what|huh|ha+|ano|ano yun|pardon( me)?|again|come again|what again|what is it again|what was that|what did you say"
+                       r"|say (that|it) again|repeat( that| it)?|one more time|once more|i didn't (hear|catch) (that|you))")
 LETTER_NAMES = {"ay": "a", "eh": "a", "be": "b", "bee": "b", "see": "c", "sea": "c", "dee": "d", "ee": "e", "eff": "f", "gee": "g", "aitch": "h"}
 # Words at the end of a request that end it at once (CLOSING_CUT=off in .env turns it off). After CLOSING_GAP of quiet (.env)
 # the words so far go to speech to text; silence stays the fallback for everything else.
@@ -592,6 +596,12 @@ class TalkOver:
         return speaking[0][2] if ratio >= self.ratio else 0.0
 
 
+def asks_again(heard: str) -> bool:
+    """A short "what?", as anyone says it to someone who just spoke: not a request, and nothing to ask the orch."""
+    said = " ".join(w for w in re.findall(r"[\w']+", heard.lower()) if w not in ("um", "uh", "sir", "please", "jarvis", "ulit"))
+    return bool(ASK_AGAIN.fullmatch(said)) or (not said and "ulit" in heard.lower()) or heard.strip().lower() == "sorry?"
+
+
 def sounds_like(heard: str, said: str) -> bool:
     """Speech to text spells an echo its own way: "B, no" came back as "Be no", "naghihintay" as "Iihintay"."""
     return heard == said or LETTER_NAMES.get(heard) == said or difflib.SequenceMatcher(None, heard, said).ratio() >= 0.6
@@ -955,6 +965,7 @@ class Ears:
     coming_back = None  # (line, listen after it) until the mic opens
     saved_phase, saved_at = "", 0.0
     talk_over, over_ratio = True, TALK_OVER_RATIO  # TALK_OVER=off: only the wake word stops a reply
+    last_line, last_line_at = "", 0.0  # the line last spoken in full, for "what?"
     window_from = 0.0  # when the clip being recorded began, if it follows a reply: from the mic, not worked out from its length
     barge, play_began, cut_rest = 0.0, 0.0, None  # when someone began talking over the reply; what's left of it, if it was nobody
 
@@ -1332,6 +1343,10 @@ class Ears:
             self.spoke.clear()  # that was the user talking to it, not people talking
             self.tries = []
             self.reply_by = time.monotonic() + REPLY_HOLD
+            if self.last_line and time.monotonic() - self.last_line_at < REPEAT_RECENT and asks_again(text):
+                emit("again", text=text, line=self.last_line)
+                self.line(self.last_line, hold=True, toast=False)
+                return
             fixed = fix_words(text)
             self.cut_rest = None
             self.heard_last, self.heard_at, self.saved_at = fixed, time.time(), 0.0  # saved_at: on disk right away
@@ -1392,6 +1407,7 @@ class Ears:
         listen = bool(self.followup) and asked and window and not call
         if hold and listen and toast:
             emit("caption", text=text, remind=True)  # nobody prompted it and it needs them: a notification too
+        self.last_line, self.last_line_at = text, time.monotonic()
         wanted = listen
         listen = listen or (self.listen_all and bool(self.followup) and self.mic_open and not call)  # never in a call or room talk
         samples, rate, _ = self.speech(text)

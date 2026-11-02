@@ -26,6 +26,10 @@ export function isLooking(text) {
 // Too long to be a cut-off fragment: never "Say that again?", the boss decides.
 export const isLong = text => text.trim().split(/\s+/).length >= 6
 
+// A sound of listening, right after a line that asked nothing: people don't answer those, and "Say that again?" was wrong.
+export const isFiller = text => /^(hm+|mm+|mm hmm|mhm|uh huh|uh+|um+|ah+|oh+|okay|ok|alright|all right|right|damn|wow|nice|i see|got it)$/
+  .test(text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim())
+
 // By default only a line that asks something opens the window: an acknowledgment ends the exchange.
 export const asksSomething = text => /\?|\b(say|pick|choose|tell me)\b/i.test(text)
 
