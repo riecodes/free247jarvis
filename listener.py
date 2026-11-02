@@ -96,6 +96,8 @@ def load_fixes(path: Path = HERE / "words.txt") -> list[tuple[re.Pattern, str]]:
     lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
     fixes = []
     for line in lines:
+        if line.lstrip().startswith("#"):  # a comment, even one that shows the format
+            continue
         term, _, also = line.partition("# also:")
         fixes += [(re.compile(rf"\b{re.escape(w.strip())}\b", re.IGNORECASE), term.strip())
                   for w in also.split(",") if w.strip() and term.strip()]
