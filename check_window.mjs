@@ -3,7 +3,9 @@
 // node check_window.mjs
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { hostname } from 'node:os'
 import { join } from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
 import { shortlist, withFacts } from './rules.mjs'
@@ -43,12 +45,15 @@ for line in sys.stdin:
         print('{"event":"caption","text":"Needs you","remind":true}', flush=True)
 `)
 const before = readFileSync(join(HERE, 'tmp', 'voice.log'), 'utf8').length
-const start = () => spawn('node', ['voice.mjs'], {
-  cwd: HERE, stdio: ['pipe', 'ignore', 'ignore'],
-  env: { ...process.env, VOICE_PORT: String(PORT), VOICE_MIC: 'off', VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG, VOICE_TOAST: 'off' },
+const CLAIMS = join(TMP, 'claims')
+rmSync(CLAIMS, { recursive: true, force: true })
+mkdirSync(CLAIMS)
+const start = (port = PORT, mic = 'off', stdout = 'ignore') => spawn('node', ['voice.mjs'], {
+  cwd: HERE, stdio: ['pipe', stdout, 'ignore'],
+  env: { ...process.env, VOICE_PORT: String(port), VOICE_MIC: mic, VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG, VOICE_TOAST: 'off', VOICE_SHARED: CLAIMS },
 })
 const voice = start()
-let second
+let second, third
 const url = path => `http://127.0.0.1:${PORT}${path}`
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
@@ -146,9 +151,65 @@ try {
   const live = readFileSync(join(HERE, 'tmp', 'voice.log'), 'utf8').slice(before)
   assert(!/heard \(http\): (first|second)/.test(live), 'check lines reached the live log')
   assert(readFileSync(LOG, 'utf8').includes('heard (http): first'))
+
+  // One voice across two PCs. The latest claim holds it, and an old one still counts: a PC booting late must not speak.
+  const claimBy = (host, when) => {
+    mkdirSync(join(CLAIMS, host), { recursive: true })
+    writeFileSync(join(CLAIMS, host, 'jarvis.json'), JSON.stringify({ claimed: new Date(when).toISOString() }))
+  }
+  const mine = join(CLAIMS, hostname(), 'jarvis.json')
+  const port2 = PORT + 1
+  const micState = async () => (await fetch(`http://127.0.0.1:${port2}/mic`)).text()
+  const up = async () => {
+    for (let i = 0; i < 50; i++) { try { return await micState() } catch { await sleep(200) } }
+    throw new Error('no voice')
+  }
+  const stop = async () => {
+    third.stdin.end()
+    third.kill()
+    await sleep(500)
+  }
+  // Nobody has claimed it: on, and this PC holds it now.
+  third = start(port2, '')
+  assert.strictEqual(await up(), 'on')
+  assert(existsSync(mine), 'the first voice to start claims it')
+  await stop()
+  // Held elsewhere, days ago: starts closed and says nothing, by the reply tool or the router.
+  rmSync(mine)
+  claimBy('OtherPC', Date.now() - 5 * 86400_000)
+  third = start(port2, '', 'pipe')
+  assert.strictEqual(await up(), 'off')
+  assert(!existsSync(mine), 'starting must not take the voice from the other PC')
+  const replies = createInterface({ input: third.stdout })[Symbol.asyncIterator]()
+  const rpc = async (id, method, params) => {
+    third.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
+    return JSON.parse((await replies.next()).value)
+  }
+  await rpc(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'check', version: '1' } })
+  const said = await rpc(2, 'tools/call', { name: 'reply', arguments: { text: 'ghost line' } })
+  assert.match(said.result.content[0].text, /Not spoken: Jarvis is on OtherPC/)
+  assert(!readFileSync(LOG, 'utf8').includes('reply: ghost line'))
+  // "jarvis on" here moves it, even with the other PC's clock ahead; then the other PC taking it back closes the mic.
+  claimBy('OtherPC', Date.now() + 60_000)
+  await fetch(`http://127.0.0.1:${port2}/mic`, { method: 'POST', body: 'on' })
+  assert.strictEqual(await micState(), 'on')
+  assert(Date.parse(JSON.parse(readFileSync(mine, 'utf8')).claimed) > Date.now() + 59_000)
+  await sleep(3500)
+  assert.strictEqual(await micState(), 'on', 'its own claim keeps it')
+  claimBy('OtherPC', Date.now() + 120_000)
+  for (let i = 0; i < 40 && (await micState()) === 'on'; i++) await sleep(100)
+  assert.strictEqual(await micState(), 'off', 'the other PC took it, so this mic closes')
+  await stop()
+  // Holding the latest claim, it starts on as always, without claiming again.
+  const before2 = readFileSync(mine, 'utf8')
+  claimBy('OtherPC', Date.now() - 86400_000)
+  third = start(port2, '')
+  assert.strictEqual(await up(), 'on')
+  assert.strictEqual(readFileSync(mine, 'utf8'), before2)
   console.log('ok')
 } finally {
   second?.kill()
+  third?.kill()
   voice.stdin.end()
   voice.kill()
 }

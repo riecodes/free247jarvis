@@ -5,9 +5,9 @@
 // Everything it hears and says is logged to tmp/voice.log.
 // With a TypeSafe key in .env, a router answers quick requests itself, without a turn of the boss (see route).
 import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { createInterface } from 'node:readline'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -94,6 +94,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   if (req.params.name !== 'reply') throw new Error(`unknown tool: ${req.params.name}`)
   const text = titled(String(req.params.arguments?.text ?? '').replace(/\s+/g, ' ').trim())
+  if (heldElsewhere) {
+    log(`not said, the voice is on ${heldElsewhere}: ${text}`)
+    return { content: [{ type: 'text', text: `Not spoken: Jarvis is on ${heldElsewhere}. Make no reply calls here until the user says "jarvis on" here.` }] }
+  }
   log(`reply: ${text}`)
   if (text && ears) {
     show('reply', { text, by: 'claude' })
@@ -246,6 +250,7 @@ async function route(text) {
 // Says it without the boss; `listen` then records the next sentence without the wake word.
 function answer(text, listen = false) {
   text = titled(text).replace(/\s+/g, ' ').trim()  // one line: the listener takes each line as a command
+  if (heldElsewhere) return log(`not said, the voice is on ${heldElsewhere}: ${text}`)
   log(`reply (router): ${text}`)
   show('reply', { text, by: 'router' })
   ears.stdin.write(`${asksSomething(text) ? 'say' : 'end'} ${text}\n${listen ? 'listen\n' : ''}`)
@@ -350,8 +355,50 @@ function startEars() {
   if (mic) ears.stdin.write('on\n')
   if (watchers.size) ears.stdin.write('watch on\n')
 }
+// Two PCs that sync a folder, one voice. Each writes only its own <folder>/<host>/jarvis.json when the user turns the
+// mic on, and the latest claim holds the voice. It doesn't expire, so a PC that boots with old news still knows: no
+// heartbeat to wait for, and nothing to ask. VOICE_SHARED, else the folder next to this one if the user has it; with
+// neither (a public install) it does nothing.
+const SHARED = env.VOICE_SHARED || join(HERE, '..', '.leases')
+function claims() {
+  try {
+    return readdirSync(SHARED).flatMap(host => {
+      try {
+        const at = Date.parse(JSON.parse(readFileSync(join(SHARED, host, 'jarvis.json'), 'utf8')).claimed)
+        return at ? [{ host, at }] : []
+      } catch { return [] }
+    })
+  } catch { return [] }
+}
+const claimedBy = () => {
+  const [top] = claims().sort((a, b) => b.at - a.at)
+  return top && top.host.toLowerCase() !== hostname().toLowerCase() ? top.host : ''
+}
+function claim() {
+  if (!existsSync(SHARED)) return
+  mkdirSync(join(SHARED, hostname()), { recursive: true })
+  // Past every other claim, even if this PC's clock runs behind.
+  const at = Math.max(Date.now(), ...claims().map(c => c.at + 1))
+  writeFileSync(join(SHARED, hostname(), 'jarvis.json'), JSON.stringify({ claimed: new Date(at).toISOString() }))
+}
+let heldElsewhere = claimedBy()
 // VOICE_MIC=off starts with the microphone closed; POST on or off to /mic opens or closes it, no restart needed.
-let mic = process.env.VOICE_MIC !== 'off'
+let mic = process.env.VOICE_MIC !== 'off' && !heldElsewhere
+if (mic && !claims().length) claim()
+const quietHere = () => {
+  log(`the voice is on ${heldElsewhere}: mic closed, nothing said here`)
+  show('caption', { text: `Jarvis is on ${heldElsewhere}. Say "jarvis on" to this orch to move it here.` })
+}
+if (heldElsewhere) quietHere()
+// The other PC took it (ponytail: as fast as the sync; a transfer also closes this mic by POST, see the /orch skill).
+setInterval(() => {
+  const by = claimedBy()
+  if (by && !heldElsewhere) {
+    heldElsewhere = by
+    if (mic) (mic = false, ears?.stdin.write('off\n'))
+    quietHere()
+  } else heldElsewhere = by
+}, 3000).unref()
 
 // The window, once `npm install` has run in window/ (optional: Electron is about 250 MB). VOICE_WINDOW=off skips it.
 // Detached, to outlive a restart of the voice; a second copy quits by itself. No .env keys go to it.
@@ -399,6 +446,7 @@ const server = createServer((req, res) => {
     const text = body.trim()
     if (req.url === '/mic' && /^(on|off)$/.test(text)) {
       mic = text === 'on'
+      if (mic) (claim(), heldElsewhere = '')
       log(`mic ${text}`)
       ears.stdin.write(`${text}\n`)
     } else if (req.url === '/heard' && text) await route(text)

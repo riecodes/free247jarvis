@@ -198,6 +198,9 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   seconds before go to speech to text, and only if they have "Jarvis" does the pop play, usually under a second later.
   If not, nothing happens and the log says `its words had no Jarvis`. If speech to text can't answer in 4 seconds, it
   wakes anyway. If it ignores you too often, `WAKE_NAME=off` goes back to the score alone.
+- Two PCs that sync a folder: set `VOICE_SHARED=` to it on both, and only one has the voice. Turning the mic on claims it
+  (a small `<host>\jarvis.json` there), and the other PC's mic closes and its replies stop as soon as the sync brings that.
+  A PC that starts later stays closed until you turn its mic on.
 - You can say "Hey Jarvis" again while it works on your last request: the pop plays, and what you say next
   reaches the boss as a new message. Anything it was about to say waits until you finish.
 - After a line that asks you something, even one you didn't prompt, it keeps listening for 8 seconds,
