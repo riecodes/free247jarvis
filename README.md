@@ -19,6 +19,20 @@ answers out loud.
 Talk in English, Tagalog, or Taglish. The free voice answers in English (its British voice only
 says English words), and so does the pro voice. When a terminal finishes, the boss tells you.
 
+## What's new
+
+- **Talk over it to stop it.** Start talking while it speaks and it stops and listens, no wake word needed. It
+  now follows the loudness of its own words at the mic, so a laptop mic right next to the speakers no longer stops
+  it. If nobody was talking, it finishes the reply and still listens for your answer.
+- **"What?" repeats.** Say "what?", "huh?" or "come again?" and it says its last line again.
+- **Words it says right.** Add `# say:` and the sounds after a word in `words.txt` (`vlog  # say: vlˈɒɡ`) and the
+  free voice says it that way.
+- **Mix the voices.** `VOICE_TTS=kokoro` hears you with ElevenLabs and answers with the free voice.
+- **Settings in the window.** Turn its switches on and off in the optional window; they're saved in `.env`.
+- **Spoken progress.** Workers leave a short line (`node progress.mjs`), and "how's it going?" plays it at once with
+  its age.
+- **One voice across two PCs.** With `VOICE_SHARED=`, only the PC whose mic you turned on listens and speaks.
+
 ## Setup (once)
 
 ### One prompt
@@ -223,8 +237,10 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   again. Other short follow-ups are read as replies to what it just said, and a plain "hmm" or "okay" after a line that
   asked nothing gets no answer.
 - Talk over a reply and it stops and listens, with no wake word. Your voice must beat the reply's echo at the mic
-  (`TALK_OVER_RATIO`, 2 by default), for over half a second, after the reply's first second. If no words come of it, the
-  rest of the reply plays. In a call, with people talking, or with a video it couldn't pause, only "Hey Jarvis" stops it.
+  (`TALK_OVER_RATIO`, 2 by default), for over half a second, after the reply's first second. The echo it expects
+  follows the reply's own words, loud and quiet, so a laptop's mic beside its speakers doesn't stop it. Each reply
+  logs `loudest speech Nx its echo` in `tmp\voice.log`, to tune the ratio by. If no words come of it, the rest of the
+  reply plays, then it listens for your answer if it asked something. In a call, with people talking, or with a video it couldn't pause, only "Hey Jarvis" stops it.
   `TALK_OVER=off` leaves only "Hey Jarvis". Not in the realtime voice.
 - If its ears stop, it says so when they're back, with the reason if it knows and the end of the last thing it heard, and
   listens again if you were talking. The same goes for a request lost to Groq's limit or a failed transcription. Held in a
@@ -299,6 +315,10 @@ right spelling to `words.txt`, one term per line, and restart. Terms feed Whispe
 more than 896 characters, so later lines drop first) and Scribe's keyterms. Keep them to words: on a noisy
 clip Whisper can hand them back. A reply made only of these words, such as a bare "cpd" or "yes, cpd",
 counts as noise, so say it in a phrase: "cpd na".
+
+The free voice mispronounces a word? Put `# say:` and its sounds after it in `words.txt`, as espeak writes them
+(`vlog  # say: vlˈɒɡ`, one syllable where it said "vee-log"). Plurals and "-ing" follow. Print what it says now with
+`.venv\Scripts\python -c "from kokoro_onnx.tokenizer import Tokenizer; print(Tokenizer().phonemize('vlog', 'en-gb'))"`.
 
 ## Check
 
