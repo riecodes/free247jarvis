@@ -509,6 +509,98 @@ def fixes() -> None:
     assert listener.fix_words("do this, echo cpd") == "do this, reco cpd"
 
 
+def cut_off() -> None:
+    """Back from a stop, or a request lost: says so with where it lost the thread, not in a call, and quiet moments only."""
+    now = 1_000_000.0
+    state = {"at": now - 8, "phase": "idle", "heard": "remove the interview.", "heard_at": now - 60}
+    line = listener.cut_off_line
+    assert line(state, "a restart", now, "Sir") == ("Sorry sir, I got cut off by a restart. Last I heard: remove the interview.", False)
+    assert line({**state, "phase": "window"}, "", now)[1] is True
+    said, listen = line({**state, "phase": "talking"}, "", now)
+    assert listen and "I lost what you were just saying" in said and said.endswith("Go ahead.")
+    assert line({**state, "clean": True}, "", now)[0] == "" and line({}, "", now)[0] == ""
+    assert line({**state, "at": now - listener.CUT_RECENT - 1}, "", now)[0] == ""  # a fresh start
+    assert "Last I heard" not in line({**state, "heard_at": now - listener.HEARD_RECENT - 1}, "", now)[0]
+    long = line({**state, "heard": " ".join(map(str, range(50)))}, "", now)[0]
+    assert "Last I heard: 38 39" in long and " 37 " not in long  # the end of it, never a read-out
+    # When a restart may happen.
+    calm = {"at": now - 2, "phase": "idle", "lines": 0, "last_speech": now - listener.RESTART_QUIET}
+    assert listener.quiet_enough(calm, now)
+    for busy in ({"last_speech": now - 30}, {"phase": "talking"}, {"phase": "window"}, {"lines": 1}, {"at": now - 60}):
+        assert not listener.quiet_enough({**calm, **busy}, now), busy
+    assert not listener.quiet_enough({}, now)
+    limited = type("E", (Exception,), {"response": type("R", (), {"status_code": 429})})("429 for url")
+    assert listener.why_lost(limited) == "speech to text hit its limit" and "url" not in listener.why_lost(ValueError("url"))
+
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(listener, "EARS_STATE", Path(tmp) / "ears.json"), \
+            mock.patch.object(listener, "EARS_WHY", Path(tmp) / "ears.why"), mock.patch.object(listener, "in_call", lambda: False):
+        events = []
+        with mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))):
+            # What one listener saves, the next one says: the words survive, and a stop mid-request listens again.
+            e = ears()
+            e.heard_last, e.heard_at = "open the door", time.time()
+            e.record(e.request_done)
+            e.voiced = listener.MIN_VOICED
+            e.save_state()
+            assert listener.read_state()["phase"] == "talking" and listener.read_state()["pid"] == os.getpid()
+            listener.EARS_WHY.write_text("a crash", encoding="utf-8")
+            back = ears()
+            back.came_back()
+            assert back.heard_last == "open the door" and not listener.EARS_WHY.exists()
+            assert back.queue == []  # not before the mic opens
+            back.say_cut_off()
+            (text, how), = back.queue
+            assert "cut off by a crash" in text and "Last I heard: open the door." in text
+            assert how == {"asked": True, "hold": True, "window": True, "toast": False}
+            assert ("cut_off", {"text": text}) in events and back.user_turn()  # it listens first, in case they're talking
+            back.say_cut_off()
+            assert len(back.queue) == 1  # once
+            # A clean quit: nothing next time. Setting off: nothing at all.
+            e.save_state(clean=True)
+            quiet = ears()
+            quiet.came_back()
+            assert quiet.coming_back is None and quiet.heard_last == "open the door"  # but it still knows the words
+            e.saved_at = 0.0
+            e.save_state()
+            off = ears()
+            off.cut_off = False
+            off.came_back()
+            off.say_cut_off()
+            assert off.queue == []
+
+            # The restart command: says why, stops only a listener that's alive, and never a stale pid.
+            listener.EARS_STATE.write_text(json.dumps({"pid": 99999, "at": time.time(), "phase": "idle", "lines": 0,
+                                                       "last_speech": time.time() - listener.RESTART_QUIET}), encoding="utf-8")
+            with mock.patch.object(listener.os, "kill") as kill, mock.patch("builtins.print"):
+                assert listener.restart(["my", "update"]) == 0
+                kill.assert_called_once_with(99999, 15)
+                assert listener.EARS_WHY.read_text(encoding="utf-8") == "my update"
+                listener.EARS_WHY.unlink()
+                listener.EARS_STATE.write_text(json.dumps({"pid": 99999, "at": time.time() - 60}), encoding="utf-8")
+                assert listener.restart(["--now"]) == 1 and kill.call_count == 1 and not listener.EARS_WHY.exists()
+
+            # A lost request: said once, listens again, and off means off.
+            events.clear()
+            e = ears()
+            e.heard_last, e.heard_at = "open the door", time.time()
+            with mock.patch.object(listener, "transcribe", mock.Mock(side_effect=limited)):
+                e.request_done(np.ones(listener.RATE, np.int16))
+                (text, how), = e.queue
+                assert "I lost that: speech to text hit its limit. Last I heard: open the door. Say it again." in text
+                assert how == {"hold": True, "toast": False} and ("lost", {"text": text}) in events and e.on_chunk == e.wake_chunk
+                e.request_done(np.ones(listener.RATE, np.int16))  # again at once: no loop
+                assert len(e.queue) == 1
+                off = ears()
+                off.cut_off = False
+                off.request_done(np.ones(listener.RATE, np.int16))
+                assert off.queue == []
+            # In a call it's held, not said.
+            e.queue, e.spoken = [], []
+            with mock.patch.object(listener, "in_call", lambda: True):
+                e.say(text, hold=True, toast=False)
+            assert ("held", {"text": text}) in events and e.spoken == []
+
+
 def greeting() -> None:
     """Waking says a few words, not the same ones twice running, and never in a call or over the request."""
     chunk = np.ones(listener.CHUNK, np.int16)
@@ -798,6 +890,7 @@ def main() -> None:
     listener.raise_orch, listener.lower_orch = lambda: None, lambda raised: None
     looking()
     hush()
+    cut_off()
 
     # Only "Hey Jarvis" wakes it, and "Claude" in a request is the user's word, not a wake word to strip.
     assert listener.wake_words() == ["hey_jarvis"]

@@ -375,6 +375,11 @@ function startEars() {
     }
     else if (e.event === 'held') (held.push(e.text), log(`held for after the call: ${e.text}`))
     else if (e.event === 'peak') log(`wake peak: ${e.word} ${e.score} level ${e.level}`)
+    else if (e.event === 'cut_off' || e.event === 'lost') {
+      log(`listener ${e.event}: ${e.text}`)
+      mcp.notification({ method: 'notifications/claude/channel', params: { content: `Note from the voice, not a request: ${e.text}`, meta: { via: 'note' } } })
+        .catch(err => log(`note not sent: ${err.message}`))
+    }
     else log(`listener ${e.event}${e.text || e.message ? `: ${e.text || e.message}` : ''}`)
   })
   ears.on('exit', code => {
@@ -455,6 +460,7 @@ const SETTINGS = [
   { key: 'FOLLOWUP_SECONDS', label: 'Listening window', hint: 'Seconds it waits for you after speaking. 0: none.', min: 0, max: 120, fallback: '8' },
   { key: 'CLOSING_CUT', label: 'Send on a closing phrase', hint: '"Do it", "go ahead", "thank you" send without the 5 s wait.', options: ['on', 'off'] },
   { key: 'REMINDERS', label: 'Reminders', hint: 'After a greeting, one thing that is waiting on you.', options: ['on', 'off'] },
+  { key: 'CUT_OFF', label: 'Say when it got cut off', hint: 'After its ears stop, or a request is lost: says so, and the last thing it heard.', options: ['on', 'off'] },
 ]
 const settingValue = s => env[s.key] || s.fallback || s.options[0]
 const settingOk = (s, v) => s && (s.options ? s.options.includes(v) : /^\d{1,3}$/.test(v) && +v >= s.min && +v <= s.max)

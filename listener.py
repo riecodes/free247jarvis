@@ -20,6 +20,7 @@ and writes one JSON event per stdout line:
             partial {text}                      live words of the request so far, for show only
             heard {text}                        the request as text
             nothing                             woke up, but no request followed
+            cut_off {text}, lost {text}         back from a stop, or a request's words never came: a line for the boss to know too
             said {wav}                          a reply is about to play (saved to wav)
             spoken {listening}                  it has played; listening: the follow-up window is open
             held {text}                         a call is on: not said, kept by voice.mjs until the user asks for it
@@ -199,6 +200,15 @@ MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV 
 LIVE_EVERY = 50
 LIVE_SPARE, CLOSING_SPARE = 8, 4  # requests a minute kept free for wake checks and requests, when these two ask
 LIVE_CLIP = 188  # the last 15 s
+# What survives a stop, so it can say what it lost. Machine-local: tmp/ is neither in git nor synced.
+EARS_STATE, EARS_WHY = HERE / "tmp" / "ears.json", HERE / "tmp" / "ears.why"
+STATE_EVERY = 5  # seconds between saves, and at once when the state changes
+CUT_RECENT = 300  # stopped longer ago than this: a fresh start, nothing to pick back up
+HEARD_RECENT = 1800  # seconds "last I heard" stays worth saying
+HEARD_WORDS = 12  # the end of it, which is where to pick up from: never a long read-out
+LOST_GAP = 20  # seconds between "I lost that" lines: a window catching noise during a Groq limit must not loop on it
+RESTART_QUIET = 60  # `listener.py restart` waits for this many seconds since the last speech
+RESTART_WAIT = 30 * 60  # and gives up after this long
 DATA_DAYS = 30  # voice data older than this is deleted
 DATA_MAX = 2 * 1024 ** 3  # and past this many bytes of clips, the oldest go first
 
@@ -483,6 +493,76 @@ def closes(said: str) -> bool:
     """A lone "Thank you." isn't one: it's what Whisper makes of faint sound, and there is no request to send anyway."""
     said = strip_wake(said)
     return bool(CLOSING.search(said)) and " ".join(re.findall(r"\w+", said.lower())) not in HALLUCINATIONS
+
+
+def sorry(title: str) -> str:
+    return f"Sorry {title.lower()}," if title else "Sorry,"
+
+
+def last_heard(heard: str, heard_at: float, now: float) -> str:
+    """The sentence that tells them where it lost the thread, or "" when that's too old to help."""
+    if not heard or now - heard_at > HEARD_RECENT:
+        return ""
+    return f"Last I heard: {' '.join(heard.split()[-HEARD_WORDS:]).rstrip('.!?')}."
+
+
+def cut_off_line(state: dict, why: str, now: float, title: str = "") -> tuple[str, bool]:
+    """What to say on coming back from `state`, the file a stopped listener left, and whether to listen again after it.
+    Nothing after a clean quit or a long time off: that's a fresh start."""
+    if not state or state.get("clean") or now - state.get("at", 0) > CUT_RECENT:
+        return "", False
+    phase = state.get("phase")
+    parts = [f"{sorry(title)} I got cut off{f' by {why}' if why else ''}."]
+    if phase == "talking":
+        parts.append("I lost what you were just saying.")
+    if said := last_heard(state.get("heard", ""), state.get("heard_at", 0), now):
+        parts.append(said)
+    if phase in ("talking", "window"):
+        parts.append("Go ahead.")
+    return " ".join(parts), phase in ("talking", "window")
+
+
+def why_lost(e: Exception) -> str:
+    """In words for the speaker: never the exception's own text."""
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    if status == 429:
+        return "speech to text hit its limit"
+    return "speech to text gave an error" if status else "I couldn't reach speech to text"
+
+
+def read_state() -> dict:
+    try:
+        return json.loads(EARS_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def quiet_enough(state: dict, now: float) -> bool:
+    """A moment to stop the listener without cutting anyone off. A save this old means it's speaking or waiting on speech to
+    text, whose blocking calls hold up the saves."""
+    return (now - state.get("at", 0) <= 3 * STATE_EVERY and state.get("phase") == "idle" and not state.get("lines")
+            and now - state.get("last_speech", 0) >= RESTART_QUIET)
+
+
+def restart(args: list[str]) -> int:
+    """`listener.py restart [--now] [why]`: stops the listener at a quiet moment, for voice.mjs to start it again in a few
+    seconds, and it says why it stopped. --now doesn't wait: for testing the line. The only way to restart it."""
+    now_please = "--now" in args
+    why = " ".join(a for a in args if a != "--now") or "a restart"
+    deadline = time.time() + RESTART_WAIT
+    while not now_please and not quiet_enough(read_state(), time.time()):
+        if time.time() > deadline:
+            print(f"Not restarted: no quiet minute in {RESTART_WAIT // 60} minutes.")
+            return 1
+        time.sleep(2)
+    state = read_state()
+    if time.time() - state.get("at", 0) > 3 * STATE_EVERY:  # also guards against an old pid, now someone else's
+        print("Not restarted: the listener isn't saving its state, so it's off, or speaking right now.")
+        return 1
+    EARS_WHY.write_text(why, encoding="utf-8")
+    os.kill(state["pid"], 15)
+    print(f"Stopped the listener ({why}).")
+    return 0
 
 
 def strip_echo(heard: str, said: str, late: bool) -> str:
@@ -815,6 +895,66 @@ class Ears:
     greetings, greetings_at, greeted, last_greeting = (), {}, 0.0, ""  # all rendered; greetings is empty with GREETING=off
     strict, talk_share = WAKE_STRICT, TALK_SHARE
     quiet_why, next_quiet = "", 0.0
+    cut_off = True  # CUT_OFF=off: says nothing about a stop or a lost request
+    heard_last, heard_at, lost_at = "", 0.0, 0.0  # the last request heard, kept in EARS_STATE; when a loss was last said
+    coming_back = None  # (line, listen after it) until the mic opens
+    saved_phase, saved_at = "", 0.0
+
+    def phase(self) -> str:
+        if self.on_chunk == self.wake_chunk or self.on_done == self.take_done:
+            return "idle"
+        return "talking" if self.voiced >= MIN_VOICED else "window"
+
+    def save_state(self, clean: bool = False) -> None:
+        """What the next listener needs if this one stops: at once when it changes, else every STATE_EVERY seconds."""
+        now, phase = time.time(), self.phase()
+        if not clean and phase == self.saved_phase and now - self.saved_at < STATE_EVERY:
+            return
+        self.saved_phase, self.saved_at = phase, now
+        spoke = now - (time.monotonic() - self.last_speech) if self.last_speech else 0
+        try:
+            partial = EARS_STATE.with_suffix(".partial")
+            partial.write_text(json.dumps({"pid": os.getpid(), "at": now, "phase": phase, "clean": clean, "last_speech": spoke,
+                                           "lines": len(self.queue), "heard": self.heard_last, "heard_at": self.heard_at}), encoding="utf-8")
+            os.replace(partial, EARS_STATE)
+        except OSError:  # a moment's lock on the file: the next save makes up for it
+            self.saved_at = 0.0
+
+    def came_back(self) -> None:
+        """Reads what the last listener left. The line waits for the mic, in say_cut_off."""
+        state = read_state()
+        self.heard_last, self.heard_at = state.get("heard", ""), state.get("heard_at", 0.0)
+        try:
+            why = EARS_WHY.read_text(encoding="utf-8").strip()
+            EARS_WHY.unlink()
+        except OSError:
+            why = ""
+        text, listen = cut_off_line(state, why, time.time(), os.environ.get("VOICE_TITLE") or "")
+        self.coming_back = (text, listen) if text else None
+
+    def say_cut_off(self) -> None:
+        """A moment to hear whether the user is talking first (SPOKE_WAIT, through user_turn), since it came back blind. Held
+        in a call, like news. Only a stop during a window or a request listens again."""
+        coming_back, self.coming_back = self.coming_back, None
+        if coming_back and self.cut_off:
+            text, listen = coming_back
+            self.last_speech = time.monotonic()
+            emit("cut_off", text=text)
+            self.line(text, asked=listen, hold=True, window=listen, toast=False)
+
+    def lost(self, e: Exception) -> None:
+        """A request's words never came back: say so, rather than silence, and listen for it again."""
+        emit("error", message=f"Request lost: {e}")
+        self.release()
+        emit("nothing")
+        now = time.monotonic()
+        if self.cut_off and now - self.lost_at >= LOST_GAP:
+            self.lost_at = now
+            parts = [f"{sorry(os.environ.get('VOICE_TITLE') or '')} I lost that: {why_lost(e)}.",
+                     last_heard(self.heard_last, self.heard_at, time.time()), "Say it again."]
+            text = " ".join(p for p in parts if p)
+            emit("lost", text=text)
+            self.line(text, hold=True, toast=False)
 
     def __init__(self) -> None:
         from kokoro_onnx import Kokoro
@@ -961,6 +1101,7 @@ class Ears:
         env = os.environ
         self.sounds = env.get("SOUNDS", "").lower() != "off"
         self.reminders = env.get("REMINDERS", "").lower() != "off"
+        self.cut_off = env.get("CUT_OFF", "").lower() != "off"
         self.listen_all = env.get("LISTEN_AFTER", "").lower() != "asked"
         self.followup = round(float(env.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         # 0 chunks: no cut-off.
@@ -1109,7 +1250,10 @@ class Ears:
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
         woke, sure = self.woke, self.sure
         self.wait_for_wake(keep=clip is not None)  # first, so a failed transcription still leaves the ears listening
-        transcript = transcribe(clip) if clip is not None else ""
+        try:
+            transcript = transcribe(clip) if clip is not None else ""
+        except Exception as e:
+            return self.lost(e)
         text = strip_wake(transcript)
         if clip is not None and self.said and began < self.words_end + 2:  # 2: the queue can run behind
             clean = strip_echo(text, self.said, late)
@@ -1126,6 +1270,7 @@ class Ears:
             self.tries = []
             self.reply_by = time.monotonic() + REPLY_HOLD
             fixed = fix_words(text)
+            self.heard_last, self.heard_at, self.saved_at = fixed, time.time(), 0.0  # saved_at: on disk right away
             emit("heard", text=fixed, **({"raw": text} if fixed != text else {}))  # raw: for the window, as heard
         else:
             self.release()  # a false wake: the video is back at once
@@ -1165,7 +1310,7 @@ class Ears:
         elif self.reply_by and not self.queue and time.monotonic() >= self.reply_by and self.on_chunk == self.wake_chunk:
             self.release()  # no reply came: the boss is on something long, and its reply pauses the video again
 
-    def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True) -> None:
+    def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True, toast: bool = True) -> None:
         """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
         meanwhile. Only a line that wants an answer (asked and window) opens the follow-up window, and never while
         staying quiet, so other people's audio is not sent to speech to text. With hold, staying quiet keeps the line
@@ -1177,7 +1322,7 @@ class Ears:
             emit("held", text=text)
             return
         listen = bool(self.followup) and asked and window and not call
-        if hold and listen:
+        if hold and listen and toast:
             emit("caption", text=text, remind=True)  # nobody prompted it and it needs them: a notification too
         wanted = listen
         listen = listen or (self.listen_all and bool(self.followup) and self.mic_open and not call)  # never in a call or room talk
@@ -1419,6 +1564,7 @@ def main(commands: list[str]) -> None:
 
     threading.Thread(target=read_commands, daemon=True).start()
     ears = Ears()
+    ears.came_back()
     mic = None
 
     def report() -> None:
@@ -1460,8 +1606,10 @@ def main(commands: list[str]) -> None:
                 except Exception as e:  # one failed request or training run must not stop the listening
                     emit("error", message=str(e))
                     ears.wait_for_wake()
+                ears.save_state()
             continue
         if value == "quit":
+            ears.save_state(clean=True)  # the voice is closing on purpose: nothing to apologize for next time
             break
         if value.startswith("bank "):  # a line to have ready, from the status bank; a failure just means live speech later
             try:
@@ -1508,6 +1656,8 @@ def main(commands: list[str]) -> None:
         elif value in ("off", "cancel"):
             ears.wait_for_wake()
         report()
+        if value == "on" and mic is not None:
+            ears.say_cut_off()
     if mic is not None:
         mic.close()
 
@@ -1536,5 +1686,11 @@ if __name__ == "__main__":
         fetch()
     elif arg == "train":
         train()
+    elif arg == "restart":
+        sys.exit(restart(sys.argv[2:]))
     else:
-        main([])
+        try:
+            main([])
+        except Exception:
+            EARS_WHY.write_text("a crash", encoding="utf-8")
+            raise
