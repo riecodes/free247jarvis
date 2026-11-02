@@ -3,7 +3,7 @@
 voice.mjs (the channel server) starts this and talks to it over pipes. It reads one command per stdin line
 and writes one JSON event per stdout line:
 
-  commands  on | off | enroll | cancel | listen (record without the wake word) | quit
+  commands  on | off | enroll | cancel | listen (record without the wake word) | set NAME value | quit
             watch on | watch off                the window opened or closed: live words only while it is open
             looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
@@ -800,6 +800,8 @@ class Ears:
     need_name = True  # speech to text must hear "Jarvis" before it wakes; WAKE_NAME=off leaves it to the score alone
     cap = MAX_CLIP  # chunks the clip being recorded may reach
     lead, said, words_end = LISTEN_LEAD, "", 0.0  # the reply last spoken, and when its last word reached the mic
+    idle_window = False  # the window now open follows a line that asked nothing
+    sounds = True  # False: no chimes, whatever the files say (SOUNDS=off)
     listen_all, mic_open = True, True  # listen_all: a window after every line (LISTEN_AFTER=asked: only after a question)
     closing_gap, next_closing, voiced_at = round(CLOSING_GAP / 0.08), 0.0, 0  # voiced_at: chunks in when the speech last was
     greetings, greetings_at, greeted, last_greeting = (), {}, 0.0, ""  # all rendered; greetings is empty with GREETING=off
@@ -819,19 +821,14 @@ class Ears:
         self.talk_share = float(os.environ.get("TALK_SHARE") or TALK_SHARE)
         self.need_name = os.environ.get("WAKE_NAME", "").lower() != "off"
         self.lead = float(os.environ.get("LISTEN_LEAD") or LISTEN_LEAD)
-        self.listen_all = os.environ.get("LISTEN_AFTER", "").lower() != "asked"
-        # 0 chunks: no cut-off.
-        self.closing_gap = 0 if os.environ.get("CLOSING_CUT", "").lower() == "off" else round(float(os.environ.get("CLOSING_GAP") or CLOSING_GAP) / 0.08)
         self.spoke: deque[bool] = deque(maxlen=TALK_CHUNKS)
-        self.followup = round(float(os.environ.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
         self.vad_boost = float(os.environ.get("VAD_BOOST") or 1)  # the wake word and speech to text cope without it
         self.tts = Kokoro.from_session(kokoro_session(), str(MODELS / KOKORO[1]))  # also the fallback for ElevenLabs
         emit("status", text="Voice: ElevenLabs" if el_key() else "Voice: Groq and Kokoro")
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
         self.acks = {WAKES[w][0]: self.load_ack(WAKES[w][1]) for w in self.words}  # by model name, as scores are
-        if os.environ.get("GREETING", "").lower() != "off":
-            self.load_greetings()
+        self.read_settings()
         self.deaf_until = 0.0  # audio recorded before this moment was our own voice coming out of the speaker
         self.recent: deque[np.ndarray] = deque(maxlen=NAME_ROLL)
         self.paused: list = []  # media sessions paused for an exchange, resumed when it is over
@@ -874,7 +871,7 @@ class Ears:
 
     def wait_for_wake(self, keep: bool = False) -> None:
         self.stop_live()
-        self.woke, self.sure = None, False
+        self.woke, self.sure, self.idle_window = None, False, False
         if not keep:  # not earlier: a video's sound in the follow-up window would be recorded as a request
             self.release()
         self.oww.reset()
@@ -949,6 +946,19 @@ class Ears:
             if peak >= NEAR_MISS:
                 self.cue(CHIME_NEAR)
                 self.tried(stray=True)
+
+    def read_settings(self) -> None:
+        """What the window's settings can change, from the environment: at the start, and on `set` with no restart."""
+        env = os.environ
+        self.sounds = env.get("SOUNDS", "").lower() != "off"
+        self.listen_all = env.get("LISTEN_AFTER", "").lower() != "asked"
+        self.followup = round(float(env.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
+        # 0 chunks: no cut-off.
+        self.closing_gap = 0 if env.get("CLOSING_CUT", "").lower() == "off" else round(float(env.get("CLOSING_GAP") or CLOSING_GAP) / 0.08)
+        if env.get("GREETING", "").lower() == "off":
+            self.greetings, self.greetings_at = (), {}
+        elif not self.greetings:
+            self.load_greetings()
 
     def load_greetings(self) -> None:
         """Each greeting without its silence at the ends. A voice that fails leaves the chime, and the next start tries again."""
@@ -1113,7 +1123,8 @@ class Ears:
     def user_turn(self) -> bool:
         """The user has the floor: a recording or a follow-up window is on, or they spoke a moment ago."""
         if self.on_chunk != self.wake_chunk:
-            return True
+            # A window after a line that asked nothing, with nobody speaking into it: news doesn't wait it out.
+            return not (self.idle_window and not self.voiced)
         now = time.monotonic()
         return now - self.last_speech < SPOKE_WAIT and now - self.queue_since < HOLD_MAX
 
@@ -1151,6 +1162,7 @@ class Ears:
         listen = bool(self.followup) and asked and window and not call
         if hold and listen:
             emit("caption", text=text, remind=True)  # nobody prompted it and it needs them: a notification too
+        wanted = listen
         listen = listen or (self.listen_all and bool(self.followup) and self.mic_open and not call)  # never in a call or room talk
         samples, rate, _ = self.speech(text)
         REPLY_WAV.parent.mkdir(exist_ok=True)
@@ -1158,7 +1170,7 @@ class Ears:
         os.replace(REPLY_WAV.with_suffix(".partial.wav"), REPLY_WAV)
         emit("said", wav=str(REPLY_WAV), text=text)
         words_len = len(samples)
-        if listen and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
+        if listen and self.sounds and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
             samples = np.concatenate([samples.astype(np.float32), np.zeros(rate * 6 // 10, np.float32), CHIME_UP[0]])  # 0.7 s after the last word
         self.hush()
         problem = output_problem()  # not caught by the sound failing: a muted speaker plays along silently
@@ -1177,12 +1189,16 @@ class Ears:
                 self.deaf_until = opened
             self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
                         give_up=self.followup)
+            self.idle_window = not wanted
         else:
             self.wait_for_wake(keep=not asked and bool(self.reply_by))  # news meanwhile: the reply is still to come
 
     def play(self, samples: np.ndarray, rate: int, tail: float = ECHO, drain: bool = True) -> bool:
         """Plays it with the mic deaf until `tail` seconds after the end. False if it could not play."""
         played = True
+        if not self.sounds and any(samples is s[0] for s in (CHIME_UP, CHIME_DOWN, CHIME_CLOSE, CHIME_NEAR)):
+            self.deaf_until = time.monotonic() + min(tail, 0.05)
+            return True
         try:
             import sounddevice as sd
 
@@ -1421,6 +1437,11 @@ def main(commands: list[str]) -> None:
             continue
         if value == "quit":
             break
+        if value.startswith("set "):  # from the window's settings; voice.mjs checks the name and value, and saves them
+            _, key, *rest = value.split(" ", 2)
+            os.environ[key] = rest[0] if rest else ""
+            ears.read_settings()
+            continue
         if value == "looking":
             emit("caption", text=ears.looking(), looking=True)
             continue

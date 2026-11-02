@@ -45,12 +45,13 @@ for line in sys.stdin:
         print('{"event":"caption","text":"Needs you","remind":true}', flush=True)
 `)
 const before = readFileSync(join(HERE, 'tmp', 'voice.log'), 'utf8').length
-const CLAIMS = join(TMP, 'claims')
+const CLAIMS = join(TMP, 'claims'), ENV_COPY = join(TMP, 'env')
+writeFileSync(ENV_COPY, 'GROQ_API_KEY=secret\r\nGREETING=\r\n# a comment\r\n')
 rmSync(CLAIMS, { recursive: true, force: true })
 mkdirSync(CLAIMS)
 const start = (port = PORT, mic = 'off', stdout = 'ignore') => spawn('node', ['voice.mjs'], {
   cwd: HERE, stdio: ['pipe', stdout, 'ignore'],
-  env: { ...process.env, VOICE_PORT: String(port), VOICE_MIC: mic, VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG, VOICE_TOAST: 'off', VOICE_SHARED: CLAIMS },
+  env: { ...process.env, VOICE_PORT: String(port), VOICE_MIC: mic, VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG, VOICE_TOAST: 'off', VOICE_SHARED: CLAIMS, VOICE_ENV: ENV_COPY },
 })
 const voice = start()
 let second, third
@@ -146,6 +147,20 @@ try {
     assert.strictEqual(await post(path, { Host: 'evil.example' }), 403, path)
   }
   assert.strictEqual(await post('/', { Origin: `http://127.0.0.1:${PORT}` }), 200)
+
+  // Settings: listed with their values and never a key, saved in .env beside its other lines, and refused from a web page.
+  const settings = await (await fetch(url('/settings'))).json()
+  assert(settings.some(s => s.key === 'GREETING' && s.value === 'on') && !JSON.stringify(settings).includes('secret'))
+  const setting = (key, value, headers = {}) => fetch(url('/settings'), { method: 'POST', headers, body: JSON.stringify({ key, value }) }).then(r => r.status)
+  assert.strictEqual(await setting('GREETING', 'off'), 200)
+  assert.strictEqual(await setting('FOLLOWUP_SECONDS', '20'), 200)
+  assert.strictEqual(await setting('GROQ_API_KEY', 'stolen'), 400)
+  assert.strictEqual(await setting('GREETING', 'off\nGROQ_API_KEY=stolen'), 400)
+  assert.strictEqual(await setting('FOLLOWUP_SECONDS', '-1'), 400)
+  assert.strictEqual(await post('/settings', { Origin: 'https://evil.example' }), 403)
+  assert.strictEqual(readFileSync(ENV_COPY, 'utf8'), 'GROQ_API_KEY=secret\r\nGREETING=off\r\n# a comment\r\nFOLLOWUP_SECONDS=20\r\n')
+  assert((await (await fetch(url('/settings'))).json()).some(s => s.key === 'GREETING' && s.value === 'off'))
+  assert.match(html, /id="panel"/)
 
   // This check's lines stay out of the live log.
   const live = readFileSync(join(HERE, 'tmp', 'voice.log'), 'utf8').slice(before)

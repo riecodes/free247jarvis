@@ -5,7 +5,7 @@
 // Everything it hears and says is logged to tmp/voice.log.
 // With a TypeSafe key in .env, a router answers quick requests itself, without a turn of the boss (see route).
 import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, hostname } from 'node:os'
 import { createInterface } from 'node:readline'
@@ -35,7 +35,8 @@ function show(event, data = {}) {
 // in Taglish; Kokoro's British voice only says English words, so the free voice answers in plain English.
 // .env next to this file, first line wins as in listener.py; real environment variables win over it.
 const env = { ...process.env }
-const dotenv = existsSync(join(HERE, '.env')) ? readFileSync(join(HERE, '.env'), 'utf8') : ''
+const ENV_FILE = process.env.VOICE_ENV || join(HERE, '.env')  // VOICE_ENV: another file, in checks
+const dotenv = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
 for (const [, k, v] of dotenv.matchAll(/^([A-Z][A-Z0-9_]*)=(.*)$/gm)) env[k] ??= v.trim().replace(/^"(.*)"$/, '$1')
 const pro = /^elevenlabs$/i.test(env.VOICE_ENGINE ?? '')
 // VOICE_TITLE=Sir: every spoken line opens with it ("Sir, the course session needs you.").
@@ -411,7 +412,32 @@ if (env.VOICE_WINDOW !== 'off' && existsSync(ELECTRON)) {
   }).on('error', e => log(`window failed: ${e.message}`)).unref()
 }
 
+// The window's settings: the only names it can change, and what each may be. Saved in .env, so they last, and passed to
+// the listener at once. Never any other line of .env, and keys are never read out.
+const SETTINGS = [
+  { key: 'GREETING', label: 'Spoken greeting', hint: 'A few words when it hears its name.', options: ['on', 'off'] },
+  { key: 'SOUNDS', label: 'Sounds', hint: 'The chimes for listening, heard and done.', options: ['on', 'off'] },
+  { key: 'LISTEN_AFTER', label: 'Listen after every line', hint: 'Off: only after a line that asks you something.', options: ['all', 'asked'] },
+  { key: 'FOLLOWUP_SECONDS', label: 'Listening window', hint: 'Seconds it waits for you after speaking. 0: none.', min: 0, max: 120, fallback: '8' },
+  { key: 'CLOSING_CUT', label: 'Send on a closing phrase', hint: '"Do it", "go ahead", "thank you" send without the 5 s wait.', options: ['on', 'off'] },
+  { key: 'REMINDERS', label: 'Reminders', hint: 'After a greeting, one thing that is waiting on you.', options: ['on', 'off'] },
+]
+const settingValue = s => env[s.key] || s.fallback || s.options[0]
+const settingOk = (s, v) => s && (s.options ? s.options.includes(v) : /^\d{1,3}$/.test(v) && +v >= s.min && +v <= s.max)
+function saveSetting(key, value) {
+  const text = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
+  const line = new RegExp(`^${key}=.*$`, 'm')
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  const next = line.test(text) ? text.replace(line, `${key}=${value}`) : `${text}${text && !text.endsWith('\n') ? eol : ''}${key}=${value}${eol}`
+  writeFileSync(`${ENV_FILE}.partial`, next)
+  renameSync(`${ENV_FILE}.partial`, ENV_FILE)
+  env[key] = value
+  log(`setting: ${key}=${value}`)
+  ears?.stdin.write(`set ${key} ${value}\n`)
+}
+
 // POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /mic: on or off.
+// GET and POST /settings: the window's settings panel.
 // GET /window and /events: the window and its live events, for this address only, so a web page can't read them
 // by pointing its own domain name at this machine.
 const server = createServer((req, res) => {
@@ -432,6 +458,10 @@ const server = createServer((req, res) => {
       if (!watchers.size) ears.stdin.write('watch off\n')
     })
   }
+  if (here && req.method === 'GET' && req.url === '/settings') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+    return res.end(JSON.stringify(SETTINGS.map(s => ({ ...s, value: settingValue(s) }))))
+  }
   if (req.method === 'GET') return res.end(here && req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
   // Every POST reaches a session with permissions off, so only from this address and never from a web page: a browser
   // adds an Origin to every POST (curl and scripts send none), and the Host check stops DNS rebinding.
@@ -444,7 +474,15 @@ const server = createServer((req, res) => {
   req.on('data', d => (body += d))
   req.on('end', async () => {
     const text = body.trim()
-    if (req.url === '/mic' && /^(on|off)$/.test(text)) {
+    if (req.url === '/settings') {
+      let asked = {}
+      try { asked = JSON.parse(text) } catch {}
+      if (!settingOk(SETTINGS.find(s => s.key === asked.key), asked.value)) {
+        res.writeHead(400)
+        return res.end('no such setting or value')
+      }
+      saveSetting(asked.key, asked.value)
+    } else if (req.url === '/mic' && /^(on|off)$/.test(text)) {
       mic = text === 'on'
       if (mic) (claim(), heldElsewhere = '')
       log(`mic ${text}`)

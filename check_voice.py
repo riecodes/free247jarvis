@@ -387,8 +387,43 @@ def listen_after() -> None:
     # News with no question doesn't turn into a notification for it.
     assert not [d for ev, d in say(asked=False, hold=True)[1] if d.get("remind")]
     assert [d for ev, d in say(asked=True, hold=True)[1] if d.get("remind")]
+    # News goes out over a window that followed a plain line with nobody speaking; speech or a question holds it.
+    e = ears()
+    e.listen_all = True
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), \
+            mock.patch("soundfile.write"), mock.patch.object(listener.os, "replace"), mock.patch.object(listener, "output_problem", lambda: ""), \
+            mock.patch.object(listener, "pause_media", list), mock.patch.object(listener, "resume_media"):
+        e.say("Three sessions are working.", window=False)
+        assert e.on_chunk == e.record_chunk and e.idle_window and not e.user_turn()
+        e.voiced = 1
+        assert e.user_turn()
+        e.voiced = 0
+        e.say("Which one?")
+        assert e.on_chunk == e.record_chunk and not e.idle_window and e.user_turn()
     # LISTEN_AFTER=asked: as it was.
     assert not say(window=False, every=False)[0] and say(every=False)[0]
+
+
+def settings() -> None:
+    """The window's switches reach the running listener, and off means off."""
+    with mock.patch.dict(listener.os.environ, {"SOUNDS": "off", "GREETING": "off", "LISTEN_AFTER": "asked", "FOLLOWUP_SECONDS": "20", "CLOSING_CUT": "off"}):
+        e = ears()
+        e.greetings = [("Yes, sir.", np.ones(10, np.float32), RATE)]
+        e.read_settings()
+        assert not e.sounds and not e.greetings and not e.listen_all and e.followup == 250 and e.closing_gap == 0
+    with mock.patch.dict(listener.os.environ, {"SOUNDS": "", "GREETING": "", "LISTEN_AFTER": "", "FOLLOWUP_SECONDS": "", "CLOSING_CUT": ""}):
+        e = ears()
+        e.load_greetings = lambda: setattr(e, "greetings", ["ok"])
+        e.read_settings()
+        assert e.sounds and e.greetings == ["ok"] and e.listen_all and e.followup == 100 and e.closing_gap == 10
+    # With sounds off, no chime plays, and a spoken line still does.
+    e = listener.Ears.__new__(listener.Ears)
+    e.sounds, e.deaf_until = False, 0.0
+    with mock.patch("sounddevice.play") as play, mock.patch("sounddevice.wait"):
+        assert e.play(*listener.CHIME_UP, tail=1.0)
+        assert not play.called and e.deaf_until < time.monotonic() + 0.1
+        e.play(np.zeros(100, np.float32), RATE)
+        assert play.called
 
 
 def fixes() -> None:
@@ -978,6 +1013,7 @@ def main() -> None:
     voice_data()
     name_needed()
     listen_after()
+    settings()
     fixes()
     greeting()
     closing_cut()

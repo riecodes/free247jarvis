@@ -60,6 +60,17 @@
     border-radius: 14px; background: var(--panel); color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
   }
   #newest[hidden] { display: none; }
+  #gear { padding: 2px 8px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--dim); font: inherit; font-size: 12px; cursor: pointer; }
+  #detail { min-width: 0; }
+  #panel { position: absolute; inset: 0; overflow-y: auto; padding: 12px 16px; background: var(--bg); }
+  #panel[hidden] { display: none; }
+  .set { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .set span { flex: 1; min-width: 0; }
+  .set b { display: block; font-weight: 600; }
+  .set small { display: block; color: var(--dim); font-size: 12px; }
+  .set input[type=checkbox] { width: 18px; height: 18px; flex: none; }
+  .set input[type=number] { width: 64px; padding: 3px 6px; flex: none; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  #saved { min-height: 20px; padding-top: 8px; color: var(--dim); font-size: 12px; }
 </style>
 </head>
 <body data-mood="idle">
@@ -67,12 +78,14 @@
   <span id="dot" aria-hidden="true"></span>
   <span id="state" role="status">Connecting</span>
   <span id="detail"></span>
+  <button id="gear" type="button" aria-expanded="false">Settings</button>
 </header>
 <div id="mic"></div>
 <div id="quiet"></div>
 <div id="wrap">
   <div id="chat" role="log" aria-live="polite"></div>
   <button id="newest" type="button" hidden>Newest</button>
+  <div id="panel" hidden></div>
 </div>
 <script>
   const $ = id => document.getElementById(id)
@@ -182,6 +195,48 @@
     caption: e => add('note', e.text, e.at),
     quiet: e => $('quiet').textContent = e.on ? `Staying quiet: ${e.text}. Lines wait, and the wake word must be clear.` : '',
     error: e => add('note fail', e.message, e.at),
+  }
+
+  // Settings: every change is saved and applied by the voice at once.
+  async function saveSetting(key, value) {
+    const r = await fetch('/settings', { method: 'POST', body: JSON.stringify({ key, value }) }).catch(() => null)
+    $('saved').textContent = r?.ok ? 'Saved. It applies now.' : "Couldn't save that."
+    return r?.ok
+  }
+  async function openSettings() {
+    const list = await (await fetch('/settings')).json()
+    const panel = $('panel')
+    panel.replaceChildren(...list.map(s => {
+      const row = document.createElement('label'), words = document.createElement('span')
+      const name = document.createElement('b'), hint = document.createElement('small'), input = document.createElement('input')
+      row.className = 'set'
+      name.textContent = s.label
+      hint.textContent = s.hint
+      words.append(name, hint)
+      if (s.options) {
+        input.type = 'checkbox'
+        input.checked = s.value === s.options[0]
+        input.onchange = async () => {
+          if (!await saveSetting(s.key, input.checked ? s.options[0] : s.options[1])) input.checked = !input.checked
+        }
+      } else {
+        input.type = 'number'
+        Object.assign(input, { min: s.min, max: s.max, value: s.value })
+        input.onchange = () => saveSetting(s.key, input.value)
+      }
+      row.append(words, input)
+      return row
+    }))
+    const saved = document.createElement('div')
+    saved.id = 'saved'
+    panel.append(saved)
+  }
+  $('gear').onclick = async () => {
+    const open = $('panel').hidden
+    if (open) await openSettings()
+    $('panel').hidden = !open
+    $('gear').setAttribute('aria-expanded', open)
+    $('gear').textContent = open ? 'Chat' : 'Settings'
   }
 
   const source = new EventSource('/events')
