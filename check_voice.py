@@ -39,6 +39,7 @@ def ears() -> listener.Ears:
     e.oww, e.vad, e.vad_boost, e.recent = mock.Mock(), mock.Mock(), 1, []
     e.spoke = listener.deque(maxlen=listener.TALK_CHUNKS)
     e.on_chunk, e.voiced = e.wake_chunk, 0
+    e.need_name = False  # name_needed tests it; the rest is about what follows the wake word
     e.threshold, e.peak, e.peak_word, e.peak_level, e.next_cue, e.acks, e.words = 0.4, 0.0, "", 0, 0.0, {"jarvis": "ack"}, ["jarvis"]
     e.spoken, e.played, e.queue, e.queue_since, e.last_speech, e.tries = [], [], [], 0.0, 0.0, []
     e.vad.predict = lambda *a, **k: 0.0
@@ -221,7 +222,7 @@ def mic_names() -> None:
 
 
 def staying_quiet() -> None:
-    """A call or talk around: a stricter wake word that speech to text must also hear, no unasked line, no window."""
+    """A call or talk around: a stricter wake word, no unasked line, no window."""
     chunk = np.ones(listener.CHUNK, np.int16)
 
     def wake(e, score, said="Hey Jarvis, open notepad", call=False):
@@ -254,12 +255,11 @@ def staying_quiet() -> None:
         assert not match(other), other
 
     heard = lambda ev: [d["text"] for k, d in ev if k == "heard"]
-    # Alone, with the same weak score: wakes as before, and the wake word isn't needed in the words.
+    # Alone, with the same weak score: wakes as before.
     assert heard(wake(ears(), 0.45, "open notepad")) == ["open notepad"]
-    # In a call: too weak; strong but not heard in the words; strong and heard.
+    # In a call: too weak; strong.
     e = ears()
     assert wake(e, 0.45, call=True) and e.on_chunk == e.wake_chunk
-    assert not heard(wake(ears(), 0.95, "how much can you give", call=True))
     assert heard(wake(ears(), 0.95, call=True)) == ["open notepad"]
 
     # People talking, with no call: the same, then the state goes to the window, and a real request clears it.
@@ -306,6 +306,59 @@ def staying_quiet() -> None:
         for _ in range(listener.SHORT_CLIP + 1):
             e.record_chunk(chunk)
         assert e.on_chunk == e.record_chunk and e.cap == listener.MAX_CLIP
+
+
+def name_needed() -> None:
+    """"Hey Jarvis" or "Jarvis" wakes it. A fired score with any other words does nothing the user can notice."""
+    chunk = np.ones(listener.CHUNK, np.int16)
+
+    def fire(said, score=0.5, call=False, voice_data="", tmp=""):
+        e, events, windows = ears(), [], []
+        e.need_name = True
+        e.spoke.extend([True] * 200 if call else [])
+        e.oww.predict = lambda _: {"jarvis": score}
+        e.recent = listener.deque(maxlen=listener.NAME_ROLL)
+
+        def stt(clip, timeout=600):
+            assert timeout == listener.NAME_TIMEOUT and len(clip) == listener.CHUNK
+            if isinstance(said, Exception):
+                raise said
+            return said
+
+        with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "transcribe", stt), \
+                mock.patch.object(listener, "emit", lambda ev, **d: events.append(ev)), \
+                mock.patch.object(listener, "pause_media", lambda: windows.append(1) or []), \
+                mock.patch.dict(listener.os.environ, {"VOICE_DATA": voice_data, "LOCALAPPDATA": tmp or listener.os.environ["LOCALAPPDATA"]}):
+            e.on_chunk(chunk)
+        return e, events, windows
+
+    for said in ("Hey Jarvis", "Jarvis.", "Hey Jarvis, status", "A Jarvis status", "hey jervis"):
+        e, events, windows = fire(said)
+        assert "wake" in events and e.on_chunk == e.after_wake and is_sound(e.played, listener.CHIME_UP) and windows, said
+    for said in ("Hey.", "Hey", "", "Hey Travis.", "Hey there.", "Hey Claude", "jarvisize"):
+        e, events, windows = fire(said)
+        assert "wake" not in events and e.on_chunk == e.wake_chunk and not e.played and not windows, said
+        assert e.woke is None and "peak" in events and "heard" not in events and e.tries, said
+    # Speech to text down: it wakes rather than lose the request, and says why in the log.
+    e, events, _ = fire(RuntimeError("offline"))
+    assert "wake" in events and "status" in events
+    # A try it ignored is kept only by choice, for tuning, and not while the user is with someone.
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = Path(tmp) / "free247jarvis" / "voicedata" / "requests.jsonl"
+        fire("Hey.", voice_data="off", tmp=tmp)
+        assert not rows.exists()
+        fire("Hey.", score=0.9, call=True, voice_data="on", tmp=tmp)
+        assert not rows.exists()
+        fire("Hey.", voice_data="on", tmp=tmp)
+        row = json.loads(rows.read_text(encoding="utf-8"))
+        assert row["transcript"] == "Hey." and not row["kept"] and row["wake_score"] == 0.5
+    # The request's clip starts as before: the 1.5 s for the check stays out of it, so what came before the name isn't sent on.
+    e = ears()
+    e.recent = [chunk] * 10
+    e.oww.predict = lambda _: {"jarvis": 0.9}
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), mock.patch.object(listener, "pause_media", list):
+        e.on_chunk(chunk)
+    assert len(e.clip) == listener.PRE_ROLL
 
 
 def voice_data() -> None:
@@ -681,6 +734,7 @@ def main() -> None:
             time.sleep(0.01)
         assert shown == [("partial", {"text": "open terminal two"})], shown
     voice_data()
+    name_needed()
     mic_names()
     staying_quiet()
     print("ok")

@@ -136,10 +136,10 @@ told = None  # the words the session heard for the clip being handed over, inste
 plain_transcribe = listener.transcribe
 
 
-def transcribe(clip: np.ndarray) -> str:
+def transcribe(clip: np.ndarray, timeout: int = 600) -> str:
     global told
     if told is None:
-        return plain_transcribe(clip)
+        return plain_transcribe(clip, timeout)
     text, told = told, None
     listener.heard_how = {"engine": "openai"}
     return text

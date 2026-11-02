@@ -68,7 +68,7 @@ def main() -> None:
     with mock.patch.object(realtime, "URL", url), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
             mock.patch.object(listener, "transcribe", realtime.transcribe), mock.patch.object(listener, "in_call", lambda: False), \
             mock.patch.object(listener, "output_problem", lambda: ""), mock.patch("sounddevice.RawOutputStream", Out), \
-            mock.patch.object(realtime, "plain_transcribe", lambda clip: "from the listener"), mock.patch.object(listener, "pause_media", list):
+            mock.patch.object(realtime, "plain_transcribe", lambda clip, timeout=600: "from the listener"), mock.patch.object(listener, "pause_media", list):
         # Connecting: only the end of a turn comes back, the router decides the reply, and the mic goes up at 24 kHz.
         e = ears()
         e.record(e.request_done, [CHUNK])

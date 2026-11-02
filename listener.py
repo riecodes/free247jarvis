@@ -110,7 +110,8 @@ CHUNK = 1280  # 80 ms, the frame openWakeWord expects
 SPEECH = 0.5  # Silero VAD score that counts as speech
 # Counted in 80 ms chunks.
 PRE_ROLL = 3  # chunks from just before the wake fired, so "Hey Jarvis, tell..." said in one breath keeps its start
-SURE_ROLL = 19  # 1.5 s: while staying quiet, enough for speech to text to hear "Hey Jarvis" itself
+NAME_ROLL = 19  # 1.5 s before the score fired: enough for speech to text to hear "Hey Jarvis" itself
+NAME_TIMEOUT = 4  # seconds for that check; a real wake waits on it, typically 0.8 s, and its pop plays after
 # Staying quiet: a call, or speech around while nobody woke it. TALK_SHARE and WAKE_STRICT are read from .env in Ears.
 WAKE_STRICT = 0.7  # the wake word score needed then; tonight's real wakes went as low as 0.39, so not all the time
 TALK_SHARE = 0.4  # this share of the last 30 s was speech: people are talking
@@ -412,6 +413,17 @@ def strip_wake(text: str) -> str:
     return re.sub(rf"\b(hey|hi|hay|okay|ok)\W+{NAMES}\b\W*", "", text, flags=re.IGNORECASE).strip()
 
 
+def name_check(clip: np.ndarray) -> tuple[bool, str]:
+    """The wake word model fires on sounds like it: a bare "hey" at 0.26 on the real mic, "Hey Travis" up to 0.94 in a test
+    voice. So speech to text must hear the name too. If it can't answer, wake: a lost request is worse than a false wake."""
+    try:
+        said = transcribe(clip, NAME_TIMEOUT)
+    except Exception as e:
+        emit("status", text=f"Couldn't check the wake word's words, so waking anyway: {e}")
+        return True, ""
+    return bool(re.search(rf"\b{NAMES}\b", said, re.IGNORECASE)), said
+
+
 def wake_words() -> list[str]:
     return list(WAKES)
 
@@ -489,7 +501,7 @@ def voice_key() -> str:
     return "kokoro_" + (os.environ.get("VOICE") or "bm_george")
 
 
-def transcribe(clip: np.ndarray) -> str:
+def transcribe(clip: np.ndarray, timeout: int = 600) -> str:
     """ElevenLabs Scribe v2 when set up, else (or when it fails) Groq. Both detect English, Tagalog and Taglish.
     What the engine said about the clip stays in heard_how, for keep_clip."""
     import requests
@@ -502,7 +514,7 @@ def transcribe(clip: np.ndarray) -> str:
                               # The clip can start mid wake word; without the keyterm Scribe mishears it.
                               data={"model_id": "scribe_v2", "tag_audio_events": "false",
                                     "keyterms": [w.replace("_", " ").title() for w in wake_words()] + TERMS[:99]},
-                              timeout=600)
+                              timeout=timeout)
             r.raise_for_status()
             j = r.json()
             heard_how = {"engine": "scribe", "language": j.get("language_code"),
@@ -510,7 +522,7 @@ def transcribe(clip: np.ndarray) -> str:
             return j["text"].strip()
         except Exception as e:
             emit("error", message=f"ElevenLabs speech to text failed, trying Groq: {e}")
-    j = groq_json(clip)
+    j = groq_json(clip, timeout)
     heard_how = {"engine": "groq", "language": j.get("language"),
                  "segments": [{k: s.get(k) for k in ("text", "avg_logprob", "compression_ratio", "no_speech_prob")}
                               for s in j.get("segments", [])]}
@@ -586,7 +598,7 @@ def prune_data() -> None:
 
 
 def keep_clip(clip: np.ndarray, transcript: str, text: str, score: float, level: int) -> None:
-    """A clip that passed the wake word, and one row about it, for mishears.py. Opt-in: only with VOICE_DATA=on or
+    """A clip that passed the wake word (or fired it with no name in its words), and one row about it, for mishears.py. Opt-in: only with VOICE_DATA=on or
     forever. Not in a call, where a client could be on it. A failure here only goes to the log: the request matters more."""
     folder = data_dir()
     if not folder or os.environ.get("VOICE_DATA", "").lower() not in ("on", "forever"):
@@ -693,7 +705,8 @@ class Ears:
     watching = False  # the window is open: worth paying for live words
     live = None  # the live words of the clip being recorded
     woke = None  # (score, level) while the clip being recorded came from the wake word, not a follow-up window
-    sure = False  # it woke while staying quiet: speech to text must hear the wake word too
+    sure = False  # it woke while staying quiet: a shorter clip, none of it kept
+    need_name = True  # speech to text must hear "Jarvis" before it wakes; WAKE_NAME=off leaves it to the score alone
     cap = MAX_CLIP  # chunks the clip being recorded may reach
     strict, talk_share = WAKE_STRICT, TALK_SHARE
     quiet_why, next_quiet = "", 0.0
@@ -709,6 +722,7 @@ class Ears:
         self.threshold = float(os.environ.get("WAKE_THRESHOLD") or 0.5)  # here, not at import: .env loads later
         self.strict = max(self.threshold, float(os.environ.get("WAKE_STRICT") or WAKE_STRICT))
         self.talk_share = float(os.environ.get("TALK_SHARE") or TALK_SHARE)
+        self.need_name = os.environ.get("WAKE_NAME", "").lower() != "off"
         self.spoke: deque[bool] = deque(maxlen=TALK_CHUNKS)
         self.followup = round(float(os.environ.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
@@ -718,7 +732,7 @@ class Ears:
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
         self.acks = {WAKES[w][0]: self.load_ack(WAKES[w][1]) for w in self.words}  # by model name, as scores are
         self.deaf_until = 0.0  # audio recorded before this moment was our own voice coming out of the speaker
-        self.recent: deque[np.ndarray] = deque(maxlen=SURE_ROLL)
+        self.recent: deque[np.ndarray] = deque(maxlen=NAME_ROLL)
         self.paused: list = []  # media sessions paused for an exchange, resumed when it is over
         self.raised: tuple[int, bool] | None = None  # the orch's window, shown because that paused something
         self.reply_by = 0.0  # a request was heard: the video stays paused for its reply until this moment
@@ -806,13 +820,23 @@ class Ears:
         sure = score >= self.threshold and self.busy()
         if score >= (self.strict if sure else self.threshold):
             emit("peak", word=fired, score=round(score, 2), level=self.peak_level)
-            self.woke, self.sure = (score, self.peak_level), sure
-            self.peak_level = 0
+            level, self.peak_level = self.peak_level, 0
+            if self.need_name:
+                clip = np.concatenate(list(self.recent))
+                named, said = name_check(clip)
+                if not named:  # no sound, no pause: to the user, nothing happened
+                    emit("status", text="The wake word fired, but its words had no Jarvis: ignored")
+                    if not sure:  # staying quiet: other people may be on the clip
+                        keep_clip(clip, said, "", score, level)
+                    self.wait_for_wake(keep=True)  # keep: a video paused for an earlier request stays paused
+                    self.tried(stray=True)
+                    return
+            self.woke, self.sure = (score, level), sure
             emit("wake")  # also while the boss works on the last request: this one reaches it as a new message
             self.hush()  # first, so the video's sound stays out of the request            # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
             # start of a longer file, so the stream closing early doesn't reach it.
             self.play(*CHIME_UP, tail=0.05, drain=False)
-            self.record(self.request_done, list(self.recent)[-(SURE_ROLL if sure else PRE_ROLL):])
+            self.record(self.request_done, list(self.recent)[-PRE_ROLL:])
             self.ack, self.grace, self.on_chunk = self.acks[fired], GRACE, self.after_wake
         elif score >= PEAK_FLOOR:
             if score > self.peak:
@@ -852,8 +876,8 @@ class Ears:
         if self.voiced:
             self.on_chunk = self.record_chunk
         elif not self.grace:
-            # The wake chime already played (it replaced the spoken "Jarvis here"). Staying quiet, the wake word stays in.
-            self.record(self.request_done, self.clip if self.sure else ())
+            # The wake chime already played (it replaced the spoken "Jarvis here").
+            self.record(self.request_done)
 
     def record(self, on_done, start=(), give_up: int = GIVE_UP) -> None:
         """Collects chunks until the speaker stops, then calls on_done with the clip, or with None if nobody spoke
@@ -897,9 +921,6 @@ class Ears:
         words = re.findall(r"\w+", text.lower())
         if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS or handed_back(text):
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
-        if sure and clip is not None and not re.search(rf"\b{NAMES}\b", transcript, re.IGNORECASE):
-            text = ""  # a score can reach 1.00 on other people's words, so the name must be in them (the clip already went to speech to text)
-            emit("status", text="Woke while staying quiet, but the words had no wake word: dropped")
         if clip is not None and woke and not sure:  # staying quiet: other people may be on the clip
             keep_clip(clip, transcript, text, *woke)
         if text:

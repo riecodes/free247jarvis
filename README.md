@@ -85,7 +85,7 @@ If ElevenLabs fails (no credits, no internet), that request falls back to Groq a
 4. **Start the boss** as usual (`start.ps1`). `tmp\voice.log` says `Voice: ElevenLabs` when it is on.
    `start.ps1 -Engine elevenlabs` or `-Engine free` overrides `.env` for one run.
 
-Cost: only what follows the wake word is sent, so idle hours cost nothing. A spoken reply is about
+Cost: only a try at the wake word (1.5 seconds, to check for "Jarvis") and what follows it are sent, so idle hours cost nothing. A spoken reply is about
 70 characters and a request a few seconds of audio, both paid from your plan's credits.
 
 ## Faster answers (optional)
@@ -109,7 +109,7 @@ the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
 ## Near real-time (prototype, optional, paid)
 
 `realtime.py` swaps the slowest parts: OpenAI's Realtime API hears when you finished, instead of 5 seconds of quiet, and
-reads replies aloud as the sound arrives. The wake word stays local, and the router stays: Jev sorts, Haiku answers
+reads replies aloud as the sound arrives. The wake word stays as it is (local, then the 1.5 second check for "Jarvis"), and the router stays: Jev sorts, Haiku answers
 from your notes, and real work goes to the orch. Audio goes to OpenAI from the wake word to the end of each request and
 all through the listening window after a line that asks you something, even if nobody speaks. On every line it says, the
 text goes too. If it fails, the normal listener takes over for that turn.
@@ -191,9 +191,13 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   `bm_fable`, `bm_lewis`, or the old American `af_heart`, then restart the boss.
 - If the wake word misses you, set `WAKE_THRESHOLD=0.25` in `.env`, or train it on your voice. A faint
   high tick means it almost heard you (a score of 0.12 up to the threshold): say it again. Every try's
-  score and level are in `tmp\voice.log` as `wake peak:`, to tune the threshold by. Say the whole "Hey
-  Jarvis": "Jarvis" alone scores anywhere from 0.03 to 1. A noise gate on the mic (Voicemod's noise
-  reduction) can cut the start of it.
+  score and level are in `tmp\voice.log` as `wake peak:`, to tune the threshold by. "Hey Jarvis" scores
+  more steadily than "Jarvis" alone, which works but scores anywhere from 0.03 to 1. A noise gate on the
+  mic (Voicemod's noise reduction) can cut the start of it.
+- A score alone doesn't wake it: the model fires on sounds like the name, even a bare "hey". So when it fires, the 1.5
+  seconds before go to speech to text, and only if they have "Jarvis" does the pop play, usually under a second later.
+  If not, nothing happens and the log says `its words had no Jarvis`. If speech to text can't answer in 4 seconds, it
+  wakes anyway. If it ignores you too often, `WAKE_NAME=off` goes back to the score alone.
 - You can say "Hey Jarvis" again while it works on your last request: the pop plays, and what you say next
   reaches the boss as a new message. Anything it was about to say waits until you finish.
 - After a line that asks you something, even one you didn't prompt, it keeps listening for 8 seconds,
@@ -215,8 +219,7 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - It stays quiet by itself while you're with someone, and the window shows why: another app on the mic (a Meet in
   Chrome, Zoom), a meeting's window title, or, with neither, speech in 40% of the last 30 seconds (`TALK_SHARE=`). Then
   lines nobody just asked for wait unsaid, with no notification and no listening window. The wake word needs a score
-  of 0.7 (`WAKE_STRICT=`), and speech to text must hear "Jarvis" too, so the whole clip goes to it first, from 1.5 seconds
-  before the wake word (90 seconds at most). No audio from those clips is kept, and a request that passes is logged as
+  of 0.7 (`WAKE_STRICT=`). A request runs 90 seconds at most, no audio from it is kept, and one that passes is logged as
   text like any other. Say "Hey Jarvis, what's the update?" for the lines. A listening window that runs
   past 90 seconds is thrown away unsent. **It can't see** a call on your phone or one in another room, nor a
   conversation too quiet for the mic, and a video's voices count as talking. Chrome on the mic for anything else counts
@@ -247,7 +250,8 @@ It helps you tune how Jarvis hears you, your accent and your tone.
 | `forever` | Requests with no age or size limit, until you delete them |
 
 A kept request is what passed the wake word: the audio and one line (time, transcript, language, confidence,
-wake score) in `%LOCALAPPDATA%\free247jarvis\voicedata`, outside any synced folder and outside git. It keeps
+wake score) in `%LOCALAPPDATA%\free247jarvis\voicedata`, outside any synced folder and outside git. So is each
+1.5 second try that fired the wake word but had no "Jarvis" in its words, to see what it ignored. It keeps
 nothing while the mic is off, nothing from a follow-up window, nothing in a call, and never continuous audio.
 **Nothing here is uploaded by keeping it**, though the request itself still goes to your speech-to-text service to
 be heard. Delete that folder to erase it all. With `off` or `on`, clips already there age out under the `on`
