@@ -152,9 +152,10 @@ ECHO = 1.0  # seconds the mic stays deaf after a sound, unless the caller says o
 # How long before a reply's last word the mic counts again (LISTEN_LEAD in .env; 0: at the last word, less: after it). Sound
 # recorded while it speaks waits in the queue, so this keeps what the user said over the end, with no echo canceller. A
 # USB mic with the speakers on: the reply stayed about at the room's noise, and the speech detector called 0-8% of it speech.
-LISTEN_LEAD = 1.0
+LISTEN_LEAD = 0.5  # 1 let whole last phrases in ("A, yes, recommended. B, no."), and talking over a longer stretch now stops the reply
 ECHO_ROOM = 0.3  # speech this long past the last word is the user's, not the speaker's or the room's
 ECHO_WORDS = 12  # how far back from a reply's end its echo can reach into a clip
+LETTER_NAMES = {"ay": "a", "eh": "a", "be": "b", "bee": "b", "see": "c", "sea": "c", "dee": "d", "ee": "e", "eff": "f", "gee": "g", "aitch": "h"}
 # Words at the end of a request that end it at once (CLOSING_CUT=off in .env turns it off). After CLOSING_GAP of quiet (.env)
 # the words so far go to speech to text; silence stays the fallback for everything else.
 CLOSING_GAP = 0.8
@@ -591,19 +592,47 @@ class TalkOver:
         return speaking[0][2] if ratio >= self.ratio else 0.0
 
 
-def strip_echo(heard: str, said: str, late: bool) -> str:
+def sounds_like(heard: str, said: str) -> bool:
+    """Speech to text spells an echo its own way: "B, no" came back as "Be no", "naghihintay" as "Iihintay"."""
+    return heard == said or LETTER_NAMES.get(heard) == said or difflib.SequenceMatcher(None, heard, said).ratio() >= 0.6
+
+
+def echo_run(words: list[str], tail: list[str]) -> tuple[int, int]:
+    """How many of the first `words` follow the reply's `tail` in order, one word of it skippable, and where in the tail they
+    stop. Only from the start of the clip: the same words later on are the user quoting the reply, or reading it aloud."""
+    best = (0, 0)
+    for start in range(len(tail)):
+        n, at = 0, start
+        for word in words:
+            match = next((k for k in (at, at + 1) if k < len(tail) and sounds_like(word, tail[k])), None)
+            if match is None:
+                break
+            n, at = n + 1, match + 1
+        if n and (n, at) > best:
+            best = (n, at)
+    return best
+
+
+def strip_echo(heard: str, said: str, late: bool, overlap: bool = False) -> str:
     """What a clip heard without the end of the reply just spoken, which can open it now the mic opens before the reply
-    ends. `late`: there was speech after the reply's end, so a lone last word may be the user's ("Yes or no?" "No.")."""
+    ends. `late`: there was speech after the reply's end, so a lone last word may be the user's ("Yes or no?" "No."). `overlap`:
+    speech to text timed the clip's first word before the reply's end, so even one word that fits is the echo."""
     spans = list(re.finditer(r"[\w']+", heard.lower()))
     words = [m.group() for m in spans]
     tail = re.findall(r"[\w']+", said.lower())[-ECHO_WORDS:]
     if not words or not tail:
         return heard
-    m = difflib.SequenceMatcher(None, tail, words, autojunk=False).find_longest_match(0, len(tail), 0, len(words))
-    if m.size == len(words) and (m.size >= 3 or not late):  # all of it is the reply's words
+    n, end = echo_run(words, tail)
+    if n == len(words) and (n >= 3 or not late):  # all of it is the reply's words
         return ""
-    if m.size >= 2 and m.b <= 1 and m.a + m.size >= len(tail) - 1:  # it starts with the reply's last words; the rest is the user
-        return heard[spans[m.b + m.size - 1].end():].lstrip(" ,.!?;:-")
+    if n >= 2 and end >= len(tail) - 1:  # it starts with the reply's last words; the rest is the user
+        return heard[spans[n - 1].end():].lstrip(" ,.!?;:-")
+    n, end = echo_run(words[1:], tail)
+    if n >= 2 and end >= len(tail) - 1:  # the same, after one garbled word
+        return heard[spans[n].end():].lstrip(" ,.!?;:-")
+    n, end = echo_run(words, tail)
+    if overlap and n and end >= len(tail) - 2:  # a word or two, timed as said while the reply was still ending
+        return heard[spans[n - 1].end():].lstrip(" ,.!?;:-")
     return heard
 
 
@@ -686,10 +715,11 @@ def voice_key() -> str:
 
 def transcribe(clip: np.ndarray, timeout: int = 600) -> str:
     """ElevenLabs Scribe v2 when set up, else (or when it fails) Groq. Both detect English, Tagalog and Taglish.
-    What the engine said about the clip stays in heard_how, for keep_clip."""
+    What the engine said about the clip stays in heard_how, for keep_clip, and when its first word began in heard_first."""
     import requests
 
-    global heard_how
+    global heard_how, heard_first
+    heard_first = None
     if key := el_key():
         try:
             r = requests.post(f"{EL_URL}/speech-to-text", headers={"xi-api-key": key},
@@ -702,6 +732,7 @@ def transcribe(clip: np.ndarray, timeout: int = 600) -> str:
             j = r.json()
             heard_how = {"engine": "scribe", "language": j.get("language_code"),
                          "language_probability": j.get("language_probability")}
+            heard_first = next((w.get("start") for w in j.get("words", []) if w.get("type") == "word"), None)
             return j["text"].strip()
         except Exception as e:
             emit("error", message=f"ElevenLabs speech to text failed, trying Groq: {e}")
@@ -709,6 +740,7 @@ def transcribe(clip: np.ndarray, timeout: int = 600) -> str:
     heard_how = {"engine": "groq", "language": j.get("language"),
                  "segments": [{k: s.get(k) for k in ("text", "avg_logprob", "compression_ratio", "no_speech_prob")}
                               for s in j.get("segments", [])]}
+    heard_first = next((w.get("start") for w in j.get("words", [])), None)
     return segments_text(j)
 
 
@@ -745,21 +777,18 @@ def groq_json(clip: np.ndarray, timeout: int = 600) -> dict:
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
         raise RuntimeError("GROQ_API_KEY is missing: put it in .env (free at https://console.groq.com/keys)")
-    r = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"},
-                      files={"file": audio_file(clip)},
-                      data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "prompt": VOCAB},
-                      timeout=timeout)
+    data = {"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "prompt": VOCAB,
+            "timestamp_granularities[]": ["word", "segment"]}
+    r = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"}, files={"file": audio_file(clip)}, data=data, timeout=timeout)
     if r.status_code == 429 and timeout > 10:  # a request's own words are worth a short wait; checks and live words aren't
         time.sleep(min(5, float(r.headers.get("retry-after") or 3)))
-        r = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"},
-                          files={"file": audio_file(clip)},
-                          data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "prompt": VOCAB},
-                          timeout=timeout)
+        r = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {key}"}, files={"file": audio_file(clip)}, data=data, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
 
 heard_how: dict = {}  # what the engine said about the last request clip; only transcribe writes it, not the live words
+heard_first = None  # seconds into that clip of its first word, when the engine says
 
 
 def handed_back(text: str) -> bool:
@@ -926,6 +955,7 @@ class Ears:
     coming_back = None  # (line, listen after it) until the mic opens
     saved_phase, saved_at = "", 0.0
     talk_over, over_ratio = True, TALK_OVER_RATIO  # TALK_OVER=off: only the wake word stops a reply
+    window_from = 0.0  # when the clip being recorded began, if it follows a reply: from the mic, not worked out from its length
     barge, play_began, cut_rest = 0.0, 0.0, None  # when someone began talking over the reply; what's left of it, if it was nobody
 
     def phase(self) -> str:
@@ -1226,7 +1256,7 @@ class Ears:
         self.stop_live()
         self.vad.reset_states()
         self.clip, self.voiced, self.quiet, self.on_done, self.give_up = list(start), 0, 0, on_done, give_up
-        self.voiced_at = 0
+        self.voiced_at, self.window_from = 0, 0.0
         self.cap = MAX_CLIP if self.woke and not self.sure else SHORT_CLIP
         self.on_chunk = self.record_chunk
 
@@ -1276,7 +1306,7 @@ class Ears:
         return True
 
     def request_done(self, clip: np.ndarray | None) -> None:
-        began = time.monotonic() - len(clip) / RATE if clip is not None else 0.0
+        began = (self.window_from or time.monotonic() - len(clip) / RATE) if clip is not None else 0.0
         late = began + self.voiced_at * CHUNK / RATE > self.words_end + ECHO_ROOM
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
         woke, sure = self.woke, self.sure
@@ -1286,8 +1316,10 @@ class Ears:
         except Exception as e:
             return self.lost(e)
         text = strip_wake(transcript)
-        if clip is not None and self.said and began < self.words_end + 2:  # 2: the queue can run behind
-            clean = strip_echo(text, self.said, late)
+        first = None if heard_first is None else began + heard_first  # when the clip's first word began
+        # A first word after the reply's end means no echo at all: all of it is the user, even reading the reply aloud.
+        if clip is not None and self.said and began < self.words_end + 2 and not (first and first > self.words_end + ECHO_ROOM):
+            clean = strip_echo(text, self.said, late, overlap=first is not None)
             if clean != text:
                 emit("status", text="Took out what it heard of its own reply")
             text = clean
@@ -1390,7 +1422,7 @@ class Ears:
                 self.deaf_until = opened
             self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
                         give_up=self.followup)
-            self.idle_window = not wanted
+            self.idle_window, self.window_from = not wanted, opened
         else:
             self.wait_for_wake(keep=not asked and bool(self.reply_by))  # news meanwhile: the reply is still to come
 
@@ -1407,7 +1439,7 @@ class Ears:
         emit("status", text="Talked over: stopped speaking")
         emit("spoken", listening=True)
         self.record(self.request_done)
-        self.cap, self.idle_window = MAX_CLIP, False  # a request like any other, not an answer in a window
+        self.cap, self.idle_window, self.window_from = MAX_CLIP, False, self.deaf_until  # a request like any other, not an answer in a window
 
     def listen_over(self, text: str, quiet: bool, playing, stop) -> None:
         """Runs while a reply plays. "Hey Jarvis" always stops it, at the stricter score, unless the reply itself says the name.

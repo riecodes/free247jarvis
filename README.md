@@ -202,10 +202,12 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - Two PCs that sync a folder: set `VOICE_SHARED=` to it on both, and only one has the voice. Turning the mic on claims it
   (a small `<host>\jarvis.json` there), and the other PC's mic closes and its replies stop as soon as the sync brings that.
   A PC that starts later stays closed until you turn its mic on.
-- It listens again from a second before the end of what it says, so you can answer over its last words (`LISTEN_LEAD=` in
-  `.env`, in seconds; 0 waits for its last word, a negative number waits longer). There is no echo canceller: on a mic
-  near your mouth its voice barely registers, and what speech to text does hear of its last words is taken out of your
-  request. Loud speakers next to the mic can still open a listening window by themselves: lower `LISTEN_LEAD=` then.
+- It listens again from half a second before the end of what it says, so you can answer over its last words (`LISTEN_LEAD=`
+  in `.env`, in seconds; 0 waits for its last word, a negative number waits longer). There is no echo canceller: on a mic
+  near your mouth its voice barely registers, and what speech to text does hear of its last words is taken out of the start
+  of your request, in order and allowing for spelling ("Be no. Yes" for "B, no." comes out as "Yes"). Words timed after it
+  finished speaking are always yours, even if you read its reply aloud. Loud speakers next to the mic can still open a
+  listening window by themselves: lower `LISTEN_LEAD=` then.
 - End a request with "do it", "go", "go ahead", "send it", "let's go", "that's it" or "thank you" and it goes after 0.8
   seconds of quiet instead of 5 (`CLOSING_GAP=`, or `CLOSING_CUT=off`). At each pause the last 6 seconds go to speech to
   text, at most once every 4 seconds, and the phrase must stand on its own: "how do I do it" and "do it again" don't count.

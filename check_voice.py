@@ -848,6 +848,40 @@ def echo() -> None:
     assert strip("Yes, please post it to the first page.", said, late=True) == "Yes, please post it to the first page."
     assert strip("Tell me a joke", said, late=True) == "Tell me a joke"
     assert strip("anything", "", late=False) == "anything"
+    # What it really heard of itself on 2026-11-02, with the user's words after.
+    pick = "Send them the standard replay email? A, yes, recommended. B, no."
+    assert strip("Be no. Yes", pick, late=True) == "Yes"
+    assert strip("Yes", pick, late=True) == "Yes"
+    assert strip("Yes", pick, late=True, overlap=True) == "Yes"  # the choice, not the end of the reply
+    assert strip("A", pick, late=True) == "A"
+    assert strip("Iihintay sa'yo Um, are you interruptible?", "wala nang question na naghihintay sa'yo.", late=True) == "Um, are you interruptible?"
+    nothing = "it did not sound like a request, maybe a video or someone nearby, so I did nothing."
+    # The same words again later are the user reading the reply aloud: they stay, and the longer match there doesn't stop the cut.
+    assert strip("So I did nothing So if that's the case, it says maybe a video or someone nearby, so I did nothing", nothing, late=True) \
+        == "So if that's the case, it says maybe a video or someone nearby, so I did nothing"
+    confirmed = "A, keep it up. B, hide it until confirmed, recommended."
+    assert strip("Recommended. Hmm. Two can pair", confirmed, late=True) == "Recommended. Hmm. Two can pair"  # untimed: one word could be theirs
+    assert strip("Recommended. Hmm. Two can pair", confirmed, late=True, overlap=True) == "Hmm. Two can pair"
+    assert strip("No, wait, do this instead", pick, late=True) == "No, wait, do this instead"
+    assert strip("Be careful with that", pick, late=True) == "Be careful with that"
+    assert strip("Tell me more", "Done.", late=True, overlap=True) == "Tell me more"  # a short reply, and nothing fits
+
+    # The timing: a first word after the reply's end means nothing of it is echo, even its very words.
+    def request(said, first):
+        e, events = ears(), []
+        e.said, e.words_end, e.window_from = said, 1000.0, 999.5
+        def spoken(c):
+            listener.heard_first = first
+            return "Be no. Yes"
+        with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+                mock.patch.object(listener, "transcribe", spoken), mock.patch.object(listener.time, "monotonic", lambda: 1010.0):
+            e.voiced_at = 100
+            e.request_done(np.ones(listener.RATE, np.int16))
+        listener.heard_first = None
+        return [d["text"] for ev, d in events if ev == "heard"]
+    assert request(pick, 0.1) == ["Yes"]  # at 999.6, while it was still speaking
+    assert request(pick, None) == ["Yes"]  # no timing to go on
+    assert request(pick, 3.0) == ["Be no. Yes"]  # at 1002.5: them, whatever it sounds like
     # As Whisper did with a reply mixed in at 130 to 2000 RMS before a real request (nothing played).
     long = "Sir, the vlog is ready, so tell me when you want it posted to the first page on the list."
     assert strip("When you want it posted to the first page on the list. So, there should be a", long, late=True) == "So, there should be a"
