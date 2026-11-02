@@ -12,6 +12,7 @@ wrc
 crc
 cpd
 reco
+reco cpd  # also: echo cpd
 ManyChat
 Namecheap
 Vercel

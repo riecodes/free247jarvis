@@ -488,13 +488,14 @@ def fixes() -> None:
     """Words the user's terms are often heard as get put right, from the list in words.txt and nothing else."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "words.txt"
-        path.write_text("# comment\nClaude Code  # also: cloud code\nClaude  # also: Clawed, Clawde\nJev\n", encoding="utf-8")
+        path.write_text("# comment, with an example: # also: a, b\nClaude Code  # also: cloud code\nClaude  # also: Clawed, Clawde\nJev\n", encoding="utf-8")
         got = listener.load_fixes(path)
         terms = listener.load_terms(path)
     assert "Claude Code" in terms and "Jev" in terms and not any("also" in t for t in terms), terms
     with mock.patch.object(listener, "FIXES", got):
         assert listener.fix_words("Ask clawed about cloud code using it") == "Ask Claude about Claude Code using it"
         assert listener.fix_words("clawedback") == "clawedback"
+        assert listener.fix_words("a b") == "a b"  # the comment's example is no list
         e, events = ears(), []
         with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
                 mock.patch.object(listener, "transcribe", lambda c: "open clawed"):
@@ -502,6 +503,10 @@ def fixes() -> None:
         assert ("heard", {"text": "open Claude", "raw": "open clawed"}) in events
     for term in ("grep", "Jev", "Dentaria"):
         assert term in listener.TERMS, term
+    # The real file: comments reach neither the prompt nor the words, and a real "echo" stays.
+    assert "#" not in listener.VOCAB and not any("#" in right for _, right in listener.FIXES)
+    assert listener.fix_words("use a real echo here") == "use a real echo here"
+    assert listener.fix_words("do this, echo cpd") == "do this, reco cpd"
 
 
 def greeting() -> None:
