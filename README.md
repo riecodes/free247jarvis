@@ -52,7 +52,7 @@ to say "Hey Jarvis, open one more terminal".
    the new window asks whether you trust the folder: pick **Yes, I trust this folder** (once; "No,
    exit" closes the window). Then pick **I am using this for local development** (Claude Code asks
    every time, because the voice channel is not on its approved list yet).
-5. **Say "Hey Jarvis".** It answers "Jarvis here", then say what you want. Or say it all in one
+5. **Say "Hey Jarvis".** It answers with a few words ("Yes, sir", "I'm here"), then say what you want. Or say it all in one
    breath: "Hey Jarvis, status".
 
 Optional: `.venv\Scripts\python listener.py train` teaches the wake word your voice (five
@@ -208,7 +208,10 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - End a request with "do it", "go", "go ahead", "send it", "let's go", "that's it" or "thank you" and it goes after 0.8
   seconds of quiet instead of 5 (`CLOSING_GAP=`, or `CLOSING_CUT=off`). At each pause the last 6 seconds go to speech to
   text, at most once every 4 seconds, and the phrase must stand on its own: "how do I do it" and "do it again" don't count.
-- You can say "Hey Jarvis" again while it works on your last request: the pop plays, and what you say next
+- On waking it says a short line, different each time, and the time of day when it's been a while. They're rendered once
+  per voice, so they play at once with no turn of the boss, and you can talk over them. While you're with someone: only the
+  chime. `GREETING=off` for the chime always.
+- You can say "Hey Jarvis" again while it works on your last request: it answers, and what you say next
   reaches the boss as a new message. Anything it was about to say waits until you finish.
 - After a line that asks you something, even one you didn't prompt, it keeps listening for 8 seconds,
   so you can reply ("yes", "A", "tell it to go on") without the wake word. `FOLLOWUP_SECONDS=` in `.env`

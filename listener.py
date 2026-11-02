@@ -45,6 +45,7 @@ import io
 import json
 import os
 import queue
+import random
 import re
 import sys
 import tempfile
@@ -132,6 +133,13 @@ ECHO_WORDS = 12  # how far back from a reply's end its echo can reach into a cli
 # Words at the end of a request that end it at once (CLOSING_CUT=off in .env turns it off). After CLOSING_GAP of quiet (.env)
 # the words so far go to speech to text; silence stays the fallback for everything else.
 CLOSING_GAP = 0.8
+# Said on waking, with VOICE_TITLE after the comma. Rendered once per voice, in tmp/, so they play with no wait. Longer than
+# GREETING_MAX and it's skipped: it would talk over the request. No closing phrase, no "Jarvis", and two words or more, so
+# strip_echo can tell one when the mic hears it. After GREETING_AWAY of nothing, the time of day leads.
+GREETINGS = ["Yes", "I'm here", "Right here", "Listening", "Go on", "I'm listening", "Here", "Tell me", "Yes, what is it",
+             "Ready", "What's up", "Yes, I'm here", "With you", "Hello"]
+GREETINGS_AT = {"Morning": range(4, 12), "Good day": range(12, 18), "Evening": (18, 19, 20, 21, 22, 23, 0, 1, 2, 3)}
+GREETING_MAX, GREETING_AWAY, GREETING_SPEED = 1.0, 30 * 60, 1.2
 CLOSING_TAIL = 75  # chunks before the pause: 6 s, plenty for the words and quick to send
 CLOSING_EVERY = 4  # seconds between checks, to stay under Groq's 20 requests a minute
 CLOSING_TIMEOUT = 3
@@ -440,6 +448,10 @@ def name_check(clip: np.ndarray) -> tuple[bool, str]:
         emit("status", text=f"Couldn't check the wake word's words, so waking anyway: {e}")
         return True, ""
     return bool(re.search(rf"\b{NAMES}\b", said, re.IGNORECASE)), said
+
+
+def greeting_text(word: str, title: str) -> str:
+    return f"{word}, {title.lower()}." if title else f"{word}."
 
 
 def closes(said: str) -> bool:
@@ -768,6 +780,7 @@ class Ears:
     cap = MAX_CLIP  # chunks the clip being recorded may reach
     lead, said, words_end = LISTEN_LEAD, "", 0.0  # the reply last spoken, and when its last word reached the mic
     closing_gap, next_closing, voiced_at = round(CLOSING_GAP / 0.08), 0.0, 0  # voiced_at: chunks in when the speech last was
+    greetings, greetings_at, greeted, last_greeting = (), {}, 0.0, ""  # all rendered; greetings is empty with GREETING=off
     strict, talk_share = WAKE_STRICT, TALK_SHARE
     quiet_why, next_quiet = "", 0.0
 
@@ -794,6 +807,8 @@ class Ears:
         emit("status", text="Voice: ElevenLabs" if el_key() else "Voice: Groq and Kokoro")
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
         self.acks = {WAKES[w][0]: self.load_ack(WAKES[w][1]) for w in self.words}  # by model name, as scores are
+        if os.environ.get("GREETING", "").lower() != "off":
+            self.load_greetings()
         self.deaf_until = 0.0  # audio recorded before this moment was our own voice coming out of the speaker
         self.recent: deque[np.ndarray] = deque(maxlen=NAME_ROLL)
         self.paused: list = []  # media sessions paused for an exchange, resumed when it is over
@@ -898,7 +913,7 @@ class Ears:
             emit("wake")  # also while the boss works on the last request: this one reaches it as a new message
             self.hush()  # first, so the video's sound stays out of the request            # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
             # start of a longer file, so the stream closing early doesn't reach it.
-            self.play(*CHIME_UP, tail=0.05, drain=False)
+            self.greet(sure)
             self.record(self.request_done, list(self.recent)[-PRE_ROLL:])
             self.ack, self.grace, self.on_chunk = self.acks[fired], GRACE, self.after_wake
         elif score >= PEAK_FLOOR:
@@ -911,6 +926,47 @@ class Ears:
             if peak >= NEAR_MISS:
                 self.cue(CHIME_NEAR)
                 self.tried(stray=True)
+
+    def load_greetings(self) -> None:
+        """Each greeting without its silence at the ends. A voice that fails leaves the chime, and the next start tries again."""
+        title = (os.environ.get("VOICE_TITLE") or "").strip()
+
+        def render(word: str):
+            text = greeting_text(word, title)
+            samples, rate = self.load_ack(text, GREETING_SPEED)
+            loud = np.flatnonzero(np.abs(samples) > 0.01)
+            if not len(loud):
+                return None
+            samples = samples[max(0, loud[0] - rate // 100):loud[-1] + rate // 20]
+            return (text, samples, rate) if len(samples) / rate <= GREETING_MAX else None
+
+        try:
+            self.greetings = [g for g in map(render, GREETINGS) if g]
+            self.greetings_at = {word: g for word in GREETINGS_AT if (g := render(word))}
+            emit("status", text=f"{len(self.greetings) + len(self.greetings_at)} greetings ready")
+        except Exception as e:
+            self.greetings, self.greetings_at = (), {}
+            emit("error", message=f"No greetings, so the chime: {e}")
+
+    def greet(self, sure: bool) -> None:
+        """Lets the user know it heard: a few spoken words, different each time. While they're with someone, only the chime.
+        The mic keeps counting meanwhile, so "Hey Jarvis, status" in one breath loses nothing to it."""
+        if sure or not self.greetings:
+            self.play(*CHIME_UP, tail=0.05, drain=False)
+            return
+        now = time.monotonic()
+        hour = time.localtime().tm_hour
+        due = next((g for word, g in self.greetings_at.items() if hour in GREETINGS_AT[word]), None)
+        if due and (not self.greeted or now - self.greeted > GREETING_AWAY):
+            line = due
+        else:
+            line = random.choice([g for g in self.greetings if g[0] != self.last_greeting] or self.greetings)
+        text, samples, rate = line
+        self.greeted, self.last_greeting = now, text
+        emit("greeting", text=text)
+        self.play(samples, rate)
+        self.said, self.words_end = text, time.monotonic() - 0.07
+        self.deaf_until = now
 
     def tried(self, stray: bool = False) -> None:
         """A try at the wake word got nowhere. Repeated, the user is looking for it and may not hear its sounds. A
@@ -1113,20 +1169,20 @@ class Ears:
         self.deaf_until = time.monotonic() + tail
         return played
 
-    def load_ack(self, text: str) -> tuple[np.ndarray, int]:
+    def load_ack(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int]:
         """`text` in the current voice, rendered once per voice and cached in tmp/, so it plays the moment it's needed."""
         import soundfile as sf
 
-        name = re.sub(r"\W", "", text.lower())
+        name = re.sub(r"\W", "", text.lower()) + (f"_{speed}" if speed != 1 else "")
         path = HERE / "tmp" / f"{name}_{voice_key()}.wav"
         if not path.is_file():
-            samples, rate, used = self.speech(text)
+            samples, rate, used = self.speech(text, speed)
             path = HERE / "tmp" / f"{name}_{used}.wav"  # Kokoro's when ElevenLabs failed; it is tried again next start
             path.parent.mkdir(exist_ok=True)
             sf.write(path, samples, rate)
         return sf.read(path, dtype="float32")
 
-    def speech(self, text: str) -> tuple[np.ndarray, int, str]:
+    def speech(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int, str]:
         """The reply as audio, plus the voice_key() that said it: the ElevenLabs voice when set up, else (or when it
         fails) Kokoro."""
         engine, _, voice = voice_key().partition("_")
@@ -1136,14 +1192,15 @@ class Ears:
             try:
                 r = requests.post(f"{EL_URL}/text-to-speech/{voice}",
                                   params={"output_format": "pcm_24000"}, headers={"xi-api-key": el_key()}, timeout=30,
-                                  json={"text": text, "model_id": os.environ.get("ELEVENLABS_MODEL") or "eleven_flash_v2_5"})
+                                  json={"text": text, "model_id": os.environ.get("ELEVENLABS_MODEL") or "eleven_flash_v2_5",
+                                        **({"voice_settings": {"speed": speed}} if speed != 1 else {})})
                 r.raise_for_status()
                 return np.frombuffer(r.content, np.int16).astype(np.float32) / 32768, 24000, f"elevenlabs_{voice}"
             except Exception as e:
                 emit("error", message=f"ElevenLabs voice failed, using Kokoro: {e}")
             voice = os.environ.get("VOICE") or "bm_george"
         # bm_/bf_ voices are British, so en-gb.
-        samples, rate = self.tts.create(text, voice=voice, speed=1.0, lang="en-gb" if voice[0] == "b" else "en-us")
+        samples, rate = self.tts.create(text, voice=voice, speed=speed, lang="en-gb" if voice[0] == "b" else "en-us")
         return samples, rate, f"kokoro_{voice}"
 
     # Voice training: five takes of the first wake word and three sentences of other speech teach openWakeWord's

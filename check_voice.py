@@ -362,6 +362,70 @@ def name_needed() -> None:
     assert len(e.clip) == listener.PRE_ROLL
 
 
+def greeting() -> None:
+    """Waking says a few words, not the same ones twice running, and never in a call or over the request."""
+    chunk = np.ones(listener.CHUNK, np.int16)
+    sound = lambda: np.ones(RATE // 2, np.float32)
+    lines = [(f"Line {i}, sir.", sound(), RATE) for i in range(3)]
+    morning = ("Morning, sir.", sound(), RATE)
+
+    def wake(e, call=False):
+        events = []
+        with mock.patch.object(listener, "in_call", lambda: call), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+                mock.patch.object(listener, "pause_media", list):
+            e.oww.predict = lambda _: {"jarvis": 0.9}
+            e.on_chunk(chunk)
+        return [d["text"] for ev, d in events if ev == "greeting"]
+
+    def ready():
+        e = ears()
+        e.greetings, e.greetings_at = lines, {"Morning": morning, "Good day": morning, "Evening": morning}
+        e.greeted = time.monotonic()
+        return e
+
+    e = ready()
+    said = [wake(e)[0] for _ in range(1)]
+    for _ in range(30):
+        e.wait_for_wake()
+        said += wake(e)
+    assert all(a != b for a, b in zip(said, said[1:])) and set(said) == {g[0] for g in lines}, said
+    assert e.played[-1] is next(g[1] for g in lines if g[0] == said[-1])
+    assert e.on_chunk == e.after_wake and e.said == said[-1]
+    # The mic keeps counting from the moment it woke, and hears no more than the words.
+    assert e.deaf_until <= time.monotonic() and e.deaf_until == e.greeted
+    # Away a while, or just started: the time of day.
+    e = ready()
+    e.greeted = time.monotonic() - listener.GREETING_AWAY - 1
+    assert wake(e) == ["Morning, sir."]
+    e = ready()
+    e.greeted = 0.0
+    assert wake(e) == ["Morning, sir."]
+    # In a call: no words, as ever only the chime. Off, or not rendered: the chime.
+    e = ready()
+    assert wake(e, call=True) == [] and is_sound(e.played, listener.CHIME_UP)
+    e = ears()
+    assert wake(e) == [] and is_sound(e.played, listener.CHIME_UP)
+    # What the mic hears of it stays out of the request.
+    assert listener.strip_echo("Yes, sir. Status.", "Yes, sir.", late=True) == "Status."
+    assert listener.strip_echo("I'm here, sir.", "I'm here, sir.", late=True) == ""
+    # Each pool entry fits the phrase rules: no closing phrase and no wake word to trip on.
+    for word in listener.GREETINGS + list(listener.GREETINGS_AT):
+        for title in ("Sir", ""):
+            text = listener.greeting_text(word, title)
+            assert not listener.closes(text) and not listener.re.search(listener.NAMES, text, listener.re.I), text
+    # Too long, or silent: left out. A voice that fails: the chime, not a dead wake.
+    e = ears()
+    long, ok = np.ones(RATE * 2, np.float32), np.ones(RATE // 2, np.float32)
+    e.load_ack = lambda text, speed=1: (long if text.startswith("Yes") else ok, RATE)
+    with mock.patch.dict(listener.os.environ, {"VOICE_TITLE": "Sir"}), mock.patch.object(listener, "emit"):
+        e.load_greetings()
+    assert e.greetings and not any(g[0].startswith("Yes") for g in e.greetings) and "Morning" in e.greetings_at
+    e.load_ack = lambda text, speed=1: (_ for _ in ()).throw(RuntimeError("no voice"))
+    with mock.patch.object(listener, "emit"):
+        e.load_greetings()
+    assert not e.greetings
+
+
 def closing_cut() -> None:
     """A request that ends with a closing phrase goes at once. Mid-sentence, or with a failure, silence decides as before."""
     for said in ("Do it.", "Yeah, do it.", "yeah do it", "Fix the navbar. Go ahead.", "Okay, thank you.", "Send it.", "Status. Go.",
@@ -864,6 +928,7 @@ def main() -> None:
         assert shown == [("partial", {"text": "open terminal two"})], shown
     voice_data()
     name_needed()
+    greeting()
     closing_cut()
     echo()
     mic_names()
