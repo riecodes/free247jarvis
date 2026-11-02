@@ -511,6 +511,13 @@ def fixes() -> None:
 
 def talk_over() -> None:
     """Talking over a reply stops it, and its own echo, a video, a call or a reply that says the name don't."""
+    # VOICE_TTS=kokoro: ElevenLabs goes on hearing, Kokoro speaks.
+    with mock.patch.dict(os.environ, {"VOICE_ENGINE": "elevenlabs", "ELEVENLABS_API_KEY": "k", "VOICE": "bm_george", "ELEVENLABS_VOICE_ID": "v"}):
+        os.environ.pop("VOICE_TTS", None)
+        assert listener.voice_key() == "elevenlabs_v"
+        os.environ["VOICE_TTS"] = "kokoro"
+        assert listener.voice_key() == "kokoro_bm_george" and listener.el_key() == "k"  # el_key: Scribe and its live words
+
     # The decision: speech only counts when clearly louder than the reply is at the mic.
     def fed(chunks, ratio=2.0):
         t = listener.TalkOver(ratio)

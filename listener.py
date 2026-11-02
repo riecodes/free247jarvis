@@ -679,7 +679,7 @@ def el_key() -> str:
 def voice_key() -> str:
     """The voice that speaks: elevenlabs_<voice ID> when ElevenLabs is set up, else kokoro_<Kokoro voice> (see
     voices-v1.0.bin). Read at call time, not at import: .env is loaded after this module."""
-    if el_key():
+    if el_key() and os.environ.get("VOICE_TTS", "").lower() != "kokoro":  # VOICE_TTS=kokoro: ElevenLabs only hears
         return "elevenlabs_" + (os.environ.get("ELEVENLABS_VOICE_ID") or EL_VOICE)
     return "kokoro_" + (os.environ.get("VOICE") or "bm_george")
 
@@ -1002,7 +1002,8 @@ class Ears:
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
         self.vad_boost = float(os.environ.get("VAD_BOOST") or 1)  # the wake word and speech to text cope without it
         self.tts = Kokoro.from_session(kokoro_session(), str(MODELS / KOKORO[1]))  # also the fallback for ElevenLabs
-        emit("status", text="Voice: ElevenLabs" if el_key() else "Voice: Groq and Kokoro")
+        ears, mouth = "Scribe" if el_key() else "Groq", "ElevenLabs" if voice_key().startswith("elevenlabs") else "Kokoro"
+        emit("status", text=f"Voice: {ears} and {mouth}")
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
         self.acks = {WAKES[w][0]: self.load_ack(WAKES[w][1]) for w in self.words}  # by model name, as scores are
         self.read_settings()

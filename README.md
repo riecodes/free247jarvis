@@ -82,7 +82,8 @@ If ElevenLabs fails (no credits, no internet), that request falls back to Groq a
    ```
    Optional: `ELEVENLABS_MODEL=eleven_v4_turbo` sounds more natural; the default `eleven_flash_v2_5`
    is the fastest and cheapest.
-4. **Start the boss** as usual (`start.ps1`). `tmp\voice.log` says `Voice: ElevenLabs` when it is on.
+   Optional: `VOICE_TTS=kokoro` keeps ElevenLabs for hearing and live words, and speaks with the free voice.
+4. **Start the boss** as usual (`start.ps1`). `tmp\voice.log` says `Voice: Scribe and ElevenLabs` when it is on.
    `start.ps1 -Engine elevenlabs` or `-Engine free` overrides `.env` for one run.
 
 Cost: only a try at the wake word (1.5 seconds, to check for "Jarvis") and what follows it are sent, so idle hours cost nothing. A spoken reply is about
