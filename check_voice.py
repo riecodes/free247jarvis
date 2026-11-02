@@ -507,6 +507,12 @@ def fixes() -> None:
     assert "#" not in listener.VOCAB and not any("#" in right for _, right in listener.FIXES)
     assert listener.fix_words("use a real echo here") == "use a real echo here"
     assert listener.fix_words("do this, echo cpd") == "do this, reco cpd"
+    # "# say:": Kokoro says vlog in one syllable, vlogs too, and a line without one goes as text.
+    assert ("vlog", "vlˈɒɡ") in listener.SAYS and not any("say" in t for t in listener.TERMS + [r for _, r in listener.FIXES])
+    from kokoro_onnx.tokenizer import Tokenizer
+    gb = lambda t, tok=Tokenizer(): tok.phonemize(t, "en-gb")
+    assert listener.respoken("My Vlogs and vlog today.", gb) == gb("My Vlogs and vlog today.").replace("vˈiːlˈɒɡ", "vlˈɒɡ")
+    assert "vlˈɒɡz" in listener.respoken("My Vlogs", gb) and listener.respoken("A blog today", gb) is None
 
 
 def again() -> None:

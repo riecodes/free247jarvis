@@ -1,6 +1,7 @@
 # Words speech to text should spell right, one per line. "# also: a, b" after one: what it's often heard as, put right
 # in what the window and the boss get. Read when the voice starts. Never a sentence or a command:
 # on a noisy clip Whisper can hand these back. mishears.py suggests what to add here.
+# "# say: <phonemes>" after one: how the Kokoro voice says it (espeak's phonemes, as kokoro_onnx's Tokenizer().phonemize prints them).
 grep
 Jev
 Dentaria  # also: Dent area, Dentara
@@ -20,3 +21,4 @@ Cloudflare
 Claude
 Groq
 Taglish
+vlog  # say: vlˈɒɡ

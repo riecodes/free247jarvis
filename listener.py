@@ -100,13 +100,32 @@ def load_fixes(path: Path = HERE / "words.txt") -> list[tuple[re.Pattern, str]]:
     for line in lines:
         if line.lstrip().startswith("#"):  # a comment, even one that shows the format
             continue
-        term, _, also = line.partition("# also:")
+        term, _, also = line.split("# say:")[0].partition("# also:")
         fixes += [(re.compile(rf"\b{re.escape(w.strip())}\b", re.IGNORECASE), term.strip())
                   for w in also.split(",") if w.strip() and term.strip()]
     return fixes
 
 
-FIXES = load_fixes()
+def load_says(path: Path = HERE / "words.txt") -> list[tuple[str, str]]:
+    """How Kokoro should say a term, from "vlog  # say: vlˈɒɡ" in words.txt: the phonemes, as espeak writes them."""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    return [(line.split("#")[0].strip(), m[1]) for line in lines
+            if not line.lstrip().startswith("#") and (m := re.search(r"# say:\s*(\S+)", line)) and line.split("#")[0].strip()]
+
+
+FIXES, SAYS = load_fixes(), load_says()
+
+
+def respoken(text: str, phonemize) -> str | None:
+    """The text's phonemes with each SAYS word's put right (vlogs and vlogging too), or None when it has none.
+    espeak, which reads text for Kokoro, said "vlog" as "vee-log", and no respelling got it to one syllable."""
+    said = [(w, ipa) for w, ipa in SAYS if re.search(rf"\b{re.escape(w)}", text, re.IGNORECASE)]
+    if not said:
+        return None
+    phonemes = phonemize(text)
+    for w, ipa in said:
+        phonemes = phonemes.replace(phonemize(w), ipa)
+    return phonemes
 
 
 def fix_words(text: str) -> str:
@@ -1556,8 +1575,9 @@ class Ears:
             except Exception as e:
                 emit("error", message=f"ElevenLabs voice failed, using Kokoro: {e}")
             voice = os.environ.get("VOICE") or "bm_george"
-        # bm_/bf_ voices are British, so en-gb.
-        samples, rate = self.tts.create(text, voice=voice, speed=speed, lang="en-gb" if voice[0] == "b" else "en-us")
+        lang = "en-gb" if voice[0] == "b" else "en-us"  # bm_/bf_ voices are British
+        phonemes = respoken(text, lambda t: self.tts.tokenizer.phonemize(t, lang))
+        samples, rate = self.tts.create(phonemes or text, voice=voice, speed=speed, lang=lang, is_phonemes=bool(phonemes))
         return samples, rate, f"kokoro_{voice}"
 
     # Voice training: five takes of the first wake word and three sentences of other speech teach openWakeWord's
