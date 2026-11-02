@@ -568,6 +568,17 @@ def talk_over() -> None:
     t, got = fed(echo + [(True, 2000.0)] * 8)
     assert got.index(30.0) == 35 and t.peak > 2  # fires on the sixth chunk, with when it began
     assert not any(fed(echo + [(True, 2000.0)] * 8, ratio=8)[1])  # the knob
+    # A laptop's mic beside its speakers: the reply comes back as loud speech that follows its words, after a quiet lead-in.
+    step = listener.CHUNK / RATE
+    words = np.r_[np.zeros(4), np.tile([0.3, 0.05, 0.2, 0.02], 15)]  # its loudness every chunk, as it left the speaker
+    heard = [(words[max(0, i - 3)] > 0.04, 30.0 + 4000 * words[max(0, i - 3)]) for i in range(len(words))]  # back 0.24 s later
+
+    def laptop(chunks):
+        t = listener.TalkOver(2.0, words, 0.0)
+        return [t.feed(s, l, i * step) for i, (s, l) in enumerate(chunks)]
+    assert any(fed(heard)[1]) and not any(laptop(heard))  # the flat median alone stopped it, as on the laptop
+    over = laptop([(s or i >= 40, l + (2500 if i >= 40 else 0)) for i, (s, l) in enumerate(heard)])
+    assert 37 * step <= next(g for g in over if g) <= 40 * step  # someone talking over it still does, from about when they began
 
     rms = np.full(listener.CHUNK, 2000, np.int16)
     still = np.full(listener.CHUNK, 300, np.int16)
@@ -629,7 +640,14 @@ def talk_over() -> None:
             e.request_done(np.ones(RATE, np.int16))
         assert any(p is rest for p in played) and e.cut_rest is None
         # Someone was: nothing of the old reply comes back.
-        e.cut_rest = (rest, RATE)
+        e.cut_rest = (rest, RATE, ("Which one, A or B?", 0.0, True, True, True))
+        played.clear()
+        with mock.patch.object(listener, "transcribe", lambda c: ""):
+            e.request_done(np.ones(RATE, np.int16))
+        # It had asked something: after the rest, the window for the answer opens, as after any reply that asks.
+        assert played[-2] is rest and played[-1] is listener.CHIME_UP[0] and e.on_chunk == e.record_chunk
+        assert e.said == "Which one, A or B?" and e.idle_window is False and e.cut_rest is None
+        e.cut_rest = (rest, RATE, ("Done.", 0.0, False, False, False))
         played.clear()
         with mock.patch.object(listener, "transcribe", lambda c: "stop that one"):
             e.request_done(np.ones(RATE, np.int16))

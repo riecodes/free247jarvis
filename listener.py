@@ -227,7 +227,11 @@ LIVE_CLIP = 188  # the last 15 s
 # Talking over a reply stops it. What the mic hears of the speaker must not: speech in TALK_OVER_RUN of the last TALK_OVER_OF
 # chunks (0.64 s), louder by TALK_OVER_RATIO (.env) than the level the reply itself has at the mic. TALK_OVER_SETTLE chunks
 # first, to learn that level. A USB mic with the speakers on: a reply stayed about at the room's noise, 0-8% of it speech.
+# A laptop's own mic beside its speakers hears the reply as loud speech that rises and falls with its words, so the level
+# expected is also the reply's own loudness as it left the speaker (any time in the last TALK_OVER_LAG chunks, for the
+# delay), times how loud that comes back at the mic. A flat median stopped every laptop reply about 2 s in (2.4x-62.7x).
 TALK_OVER_RUN, TALK_OVER_OF, TALK_OVER_SETTLE, TALK_OVER_RATIO = 6, 8, 12, 2.0
+TALK_OVER_LAG, AUDIBLE = 6, 0.01  # 0.48 s; a reply quieter than this (RMS, full scale 1) is a pause in its words
 TAP_WAKE_LEAD = 1.0  # seconds of mic kept from before the wake word fired over a reply: the name itself comes out by its words
 MIC_TAP = None  # while a reply plays: a copy of the mic's chunks, since the main loop is busy playing it
 # What survives a stop, so it can say what it lost. Machine-local: tmp/ is neither in git nor synced.
@@ -598,21 +602,37 @@ def restart(args: list[str]) -> int:
 class TalkOver:
     """Tells someone talking over a reply from the reply's own echo. Everything it knows is the speech detector and the level."""
 
-    def __init__(self, ratio: float = TALK_OVER_RATIO) -> None:
-        self.ratio, self.peak, self.echo = ratio, 0.0, []
-        self.recent: deque[tuple[bool, float, float]] = deque(maxlen=TALK_OVER_OF)
+    def __init__(self, ratio: float = TALK_OVER_RATIO, ref: np.ndarray | None = None, start: float = 0.0) -> None:
+        """`ref`: the reply's loudness every chunk from `start` (envelope()); without it, only the median level counts."""
+        self.ratio, self.peak, self.echo, self.gains, self.ref, self.start = ratio, 0.0, [], [], ref, start
+        self.recent: deque[tuple[bool, float, float, float]] = deque(maxlen=TALK_OVER_OF)
 
     def feed(self, speech: bool, level: float, at: float) -> float:
         """When the speech began, once it's clearly someone talking; else 0."""
         if len(self.recent) == TALK_OVER_OF:
-            self.echo.append(self.recent[0][1])
-        self.recent.append((speech, level, at))
+            _, old, _, expect = self.recent[0]
+            self.echo.append(old)
+            if expect > AUDIBLE:
+                self.gains.append(old / expect)
+        k = int((at - self.start) * RATE / CHUNK)
+        window = self.ref[max(0, k - TALK_OVER_LAG):max(0, k + 1)] if self.ref is not None else []
+        self.recent.append((speech, level, at, float(np.max(window)) if len(window) else 0.0))
         speaking = [r for r in self.recent if r[0]]
-        if len(speaking) < TALK_OVER_RUN or len(self.echo) < TALK_OVER_SETTLE:
+        settled = len(self.gains) if self.ref is not None else len(self.echo)  # the reply's leading quiet teaches nothing
+        if len(speaking) < TALK_OVER_RUN or settled < TALK_OVER_SETTLE:
             return 0.0
-        ratio = float(np.mean([r[1] for r in speaking])) / max(float(np.median(self.echo)), 1.0)
+        floor, gain = float(np.median(self.echo)), float(np.percentile(self.gains, 90)) if self.gains else 0.0
+        echo = np.mean([max(gain * r[3], floor) for r in speaking])
+        ratio = float(np.mean([r[1] for r in speaking])) / max(float(echo), 1.0)
         self.peak = max(self.peak, ratio)
         return speaking[0][2] if ratio >= self.ratio else 0.0
+
+
+def envelope(samples: np.ndarray, rate: int) -> np.ndarray:
+    """A reply's loudness (RMS) every mic chunk, as it leaves the speaker: what its echo at the mic follows."""
+    n = rate * CHUNK // RATE
+    s = samples[:len(samples) // n * n].astype(np.float64).reshape(-1, n)
+    return np.sqrt((s ** 2).mean(axis=1))
 
 
 def asks_again(heard: str) -> bool:
@@ -1372,9 +1392,11 @@ class Ears:
             emit("heard", text=fixed, **({"raw": text} if fixed != text else {}))  # raw: for the window, as heard
         else:
             if self.cut_rest:  # it stopped for nobody: the rest of the reply, so a false alarm costs a pause and no words
-                rest, self.cut_rest = self.cut_rest, None
+                (rest, rate, turn), self.cut_rest = self.cut_rest, None
                 emit("status", text="Nobody was talking over it: back to the reply")
-                self.play(*rest)
+                self.play(rest, rate)
+                if turn[2]:  # it asked something: the window it would have opened, not "nothing" and the wake word
+                    return self.replied(*turn)
             self.release()  # a false wake: the video is back at once
             emit("nothing")
             self.tried()  # such as "Jarvis, Jarvis", which leaves no words once the wake word is taken out
@@ -1444,15 +1466,20 @@ class Ears:
         self.barge, self.cut_rest = 0.0, None
         if not self.play(samples, rate, over=(text, call)) and not problem:
             emit("caption", text=f"I can't play sound. {CANT_HEAR} I said: {text}")
+        turn = (text, (len(samples) - words_len) / rate, listen, wanted, asked)
         if self.barge:
-            return self.talked_over(text, samples, rate, words_len)
+            return self.talked_over(samples, rate, words_len, turn)
+        self.replied(*turn)
+
+    def replied(self, text: str, after: float, listen: bool, wanted: bool, asked: bool) -> None:
+        """A reply's words are out, `after` seconds of chime ago: the follow-up window when it listens, else the wake word."""
         # Measured at the mic: the last word arrives about 0.07 s before play() returns (DRAIN, less what the speaker holds back).
-        self.said, self.words_end = text, time.monotonic() - (len(samples) - words_len) / rate - 0.07
+        self.said, self.words_end = text, time.monotonic() - after - 0.07
         opened = self.words_end - self.lead
         self.deaf_until = opened
         emit("spoken", listening=listen)
         if listen:  # the user may answer without the wake word for a few seconds, then it waits for it again
-            if rate != CHIME_UP[1]:
+            if not after:
                 self.play(*CHIME_UP, tail=0.15)  # the mic is open again
                 self.deaf_until = opened
             self.record(lambda clip: self.request_done(clip) if clip is not None else self.close(),
@@ -1461,14 +1488,14 @@ class Ears:
         else:
             self.wait_for_wake(keep=not asked and bool(self.reply_by))  # news meanwhile: the reply is still to come
 
-    def talked_over(self, text: str, samples: np.ndarray, rate: int, words_len: int) -> None:
+    def talked_over(self, samples: np.ndarray, rate: int, words_len: int, turn: tuple) -> None:
         """The reply stopped for someone talking: on to recording them, from when they began (those chunks wait in the queue).
-        As heard by the mic, the reply ends about where it stopped, so that's what strip_echo looks for."""
+        As heard by the mic, the reply ends about where it stopped, so that's what strip_echo looks for. `turn`: replied()'s."""
         now = time.monotonic()
         at = min(words_len, int((now - self.play_began) * rate))
-        words = text.split()
+        words = turn[0].split()
         self.said, self.words_end = " ".join(words[:round(len(words) * at / max(words_len, 1)) + 4]), now
-        self.cut_rest = (samples[at:words_len], rate) if at < words_len else None
+        self.cut_rest = (samples[at:words_len], rate, (turn[0], 0.0, *turn[2:])) if at < words_len else None
         self.deaf_until = self.barge - 2 * CHUNK / RATE
         self.last_speech = now
         emit("status", text="Talked over: stopped speaking")
@@ -1476,12 +1503,12 @@ class Ears:
         self.record(self.request_done)
         self.cap, self.idle_window, self.window_from = MAX_CLIP, False, self.deaf_until  # a request like any other, not an answer in a window
 
-    def listen_over(self, text: str, quiet: bool, playing, stop) -> None:
+    def listen_over(self, text: str, quiet: bool, playing, stop, ref: np.ndarray | None = None) -> None:
         """Runs while a reply plays. "Hey Jarvis" always stops it, at the stricter score, unless the reply itself says the name.
         Talking over it does too, but not in a call, with people around, or with a video still playing."""
         global MIC_TAP
         tap = MIC_TAP = queue.Queue()
-        over = TalkOver(self.over_ratio) if self.talk_over and not quiet else None
+        over = TalkOver(self.over_ratio, ref, self.play_began) if self.talk_over and not quiet else None
         self.oww.reset()
         self.vad.reset_states()
         says_name = re.search(rf"\b{NAMES}\b", text, re.IGNORECASE)
@@ -1526,7 +1553,7 @@ class Ears:
             sd.play(np.concatenate([samples, np.zeros(int(rate * DRAIN), samples.dtype)]) if drain else samples, rate)
             if over:
                 stream = sd.get_stream()
-                self.listen_over(*over, lambda: stream.active, sd.stop)
+                self.listen_over(*over, lambda: stream.active, sd.stop, envelope(samples, rate))
             if self.barge and over:
                 return True
             sd.wait()
