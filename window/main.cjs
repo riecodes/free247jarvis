@@ -15,9 +15,11 @@ else app.whenReady().then(() => {
   const win = new BrowserWindow({
     width: 480, height: 600, minWidth: 280, minHeight: 240, show: false, autoHideMenuBar: true, title: 'Jarvis',
     backgroundColor: '#14161a', titleBarStyle: 'hidden', titleBarOverlay: overlay(),
+    trafficLightPosition: { x: 16, y: 16 }, // macOS: its three buttons at the left, centered on the header
     webPreferences: { sandbox: true, contextIsolation: true },
   })
-  nativeTheme.on('updated', () => win.setTitleBarOverlay(overlay()))
+  // macOS draws its own buttons in its own colors, and can't recolor them.
+  if (process.platform !== 'darwin') nativeTheme.on('updated', () => win.setTitleBarOverlay(overlay()))
   win.setContentProtection(process.env.CAPTION_VISIBLE !== '1')
   win.once('ready-to-show', () => win.showInactive())
   // A second copy quits at once. Started by a restart of the voice it changes nothing; asked for (--show), the window comes up.

@@ -1060,6 +1060,32 @@ def echo() -> None:
     assert heard(time.monotonic() - 60) == ["you want it"]  # long after the reply, it isn't compared at all
 
 
+def mac() -> None:
+    """The macOS paths, with AppleScript stood in for: the speaker's settings, only a playing player paused and resumed,
+    no call check or orch window, and voice data in ~/Library."""
+    told = []
+
+    def osascript(script: str) -> str:
+        told.append(script)
+        return "playing" if 'application "Spotify" to return player state' in script else ""
+
+    with mock.patch.multiple(listener, MAC=True, WINDOWS=False, osascript=osascript, mic_holder=mock.Mock(side_effect=AssertionError)), \
+            mock.patch.object(listener.Path, "exists", lambda self: True):
+        assert listener.media_playing() and listener.pause_media() == ["Spotify"]
+        assert told[-1] == 'if application "Spotify" is running then\ntell application "Spotify" to pause\nend if'
+        listener.resume_media(["Spotify"])
+        assert told[-1] == 'if application "Spotify" is running then\ntell application "Spotify" to play\nend if'
+        assert not listener.in_call() and listener.raise_orch() is None
+        with mock.patch.dict(listener.os.environ):
+            listener.os.environ.pop("LOCALAPPDATA", None)
+            assert listener.data_dir() == Path.home() / "Library" / "Application Support" / "free247jarvis" / "voicedata"
+    settings = "output volume:{}, input volume:75, alert volume:100, output muted:{}"
+    assert listener.mac_sound_problem(settings.format(50, "false")) == ""
+    assert "at zero" in listener.mac_sound_problem(settings.format(0, "false"))
+    assert "muted" in listener.mac_sound_problem(settings.format(50, "true"))
+    assert listener.mac_sound_problem(settings.format("missing value", "missing value")) == ""  # a speaker with no volume
+
+
 def voice_data() -> None:
     """Only wake word clips are kept, only by choice, in no synced folder, not in a call; old ones go unless forever."""
     real = Path(listener.os.environ["LOCALAPPDATA"]) / "free247jarvis" / "voicedata"
@@ -1249,6 +1275,7 @@ def resend(folder: Path) -> None:
 
 def main() -> None:
     video = object()
+    mac()  # before the stand-ins below replace what it checks
     listener.output_problem = lambda: ""  # this machine's real speaker must not decide the checks
     recent = Path(tempfile.mkdtemp())  # nor may they fill this machine's kept utterances
     listener.recent_dir = lambda: recent

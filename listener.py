@@ -51,6 +51,7 @@ import os
 import queue
 import random
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -68,6 +69,7 @@ sys.stdout = sys.stderr  # libraries print progress; only events may reach the p
 
 HERE = Path(__file__).resolve().parent
 MODELS = HERE / "models"
+WINDOWS, MAC = sys.platform == "win32", sys.platform == "darwin"  # the rest runs the same on both
 REPLY_WAV = HERE / "tmp" / "reply.wav"
 # The wake word: the model in models/, and what it says on waking (in the current voice, from a clip cached in tmp/).
 # Only this one: gdiamos/hey-claude scored 0.99 with nobody saying it (2026-10-30), and the user dropped it.
@@ -331,9 +333,10 @@ def emit(event: str, **data) -> None:
 
 
 def in_call() -> bool:
-    """A call, by what Windows can see; call_why says which signal. Next: speech around, in Ears.talking."""
+    """A call, by what Windows can see; call_why says which signal. Next: speech around, in Ears.talking. Windows only:
+    macOS has no public way to ask which app holds the mic, so there only Ears.talking tells."""
     global call_why
-    call_why = mic_holder() or call_window()
+    call_why = (mic_holder() or call_window()) if WINDOWS else ""
     return bool(call_why)
 
 
@@ -398,6 +401,12 @@ def mic_holder() -> str:
 def output_problem() -> str:
     """Why the user can't hear a line, when Windows can tell; empty when it can't (a speaker switched off at its
     knob looks like any other). PortAudio keeps the output it found at start, so a new Windows default is not used."""
+    if MAC:
+        try:
+            return mac_sound_problem(osascript("get volume settings"))
+        except Exception as e:
+            emit("error", message=f"Can't check the speaker: {e}")
+            return ""
     try:
         import sounddevice as sd
         from pycaw.pycaw import AudioUtilities
@@ -420,6 +429,38 @@ def output_problem() -> str:
     return ""
 
 
+def osascript(script: str) -> str:
+    """macOS: runs AppleScript, and returns what it printed."""
+    return subprocess.run(["osascript", "-"], input=script, capture_output=True, text=True, timeout=5).stdout.strip()
+
+
+def mac_sound_problem(settings: str) -> str:
+    """From AppleScript's "output volume:50, input volume:75, alert volume:100, output muted:false"."""
+    if "output muted:true" in settings:
+        return "Your Mac's sound is muted: unmute it to hear me."
+    volume = re.search(r"output volume:(\d+)", settings)
+    return "Your Mac's volume is at zero: turn it up to hear me." if volume and int(volume[1]) < 2 else ""
+
+
+# The players macOS lets a script ask and pause: browsers and other apps can't be, so a video plays on under the voice.
+MAC_PLAYERS = ("Music", "Spotify")
+
+
+def mac_playing() -> list:
+    """The MAC_PLAYERS playing now. Only installed ones are asked: naming a missing app makes macOS ask where it is."""
+    found = []
+    for app in MAC_PLAYERS:
+        if any(Path(d, f"{app}.app").exists() for d in ("/Applications", "/System/Applications", Path.home() / "Applications")) and \
+                osascript(f'if application "{app}" is running then\ntell application "{app}" to return player state as string\nend if') == "playing":
+            found.append(app)
+    return found
+
+
+def mac_tell(apps: list, verb: str) -> None:
+    for app in apps:  # "is running" first: telling a closed app opens it
+        osascript(f'if application "{app}" is running then\ntell application "{app}" to {verb}\nend if')
+
+
 async def playing_sessions() -> list:
     from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as Manager
     from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
@@ -430,13 +471,14 @@ async def playing_sessions() -> list:
 
 def media_playing() -> bool:
     try:
-        return bool(asyncio.run(playing_sessions()))
+        return bool(mac_playing() if MAC else asyncio.run(playing_sessions()))
     except Exception:
         return False
 
 
 def pause_media() -> list:
-    """Pauses whatever is playing in Windows' media sessions (browsers, Spotify) and returns just those, to resume."""
+    """Pauses whatever is playing in Windows' media sessions (browsers, Spotify), or on macOS in MAC_PLAYERS, and returns
+    just those, to resume."""
     async def pause() -> list:
         playing = await playing_sessions()
         for session in playing:
@@ -444,6 +486,10 @@ def pause_media() -> list:
         return playing
 
     try:
+        if MAC:
+            playing = mac_playing()
+            mac_tell(playing, "pause")
+            return playing
         return asyncio.run(pause())
     except Exception as e:
         emit("error", message=f"Can't pause media: {e}")
@@ -456,7 +502,7 @@ def resume_media(sessions: list) -> None:
             await session.try_play_async()
 
     try:
-        asyncio.run(resume())
+        mac_tell(sessions, "play") if MAC else asyncio.run(resume())
     except Exception as e:  # such as a tab closed meanwhile
         emit("error", message=f"Can't resume media: {e}")
 
@@ -482,7 +528,10 @@ def orch_window() -> int:
 
 def raise_orch() -> tuple[int, bool] | None:
     """Shows the orch's terminal above the other windows and leaves the keyboard where it is, so typing elsewhere never
-    lands in the orch. Returns what lower_orch needs; None when there is no such window, or it is already in front."""
+    lands in the orch. Returns what lower_orch needs; None when there is no such window, or it is already in front.
+    Windows only: on macOS, bringing a Terminal window up takes the keyboard with it."""
+    if not WINDOWS:
+        return None
     try:
         from ctypes import windll
         from ctypes.wintypes import HWND
@@ -892,8 +941,9 @@ def handed_back(text: str) -> bool:
 
 
 def data_dir() -> Path | None:
-    """Where voice data lands: outside C:\\dev, which Syncthing copies to the other machine."""
-    root = os.environ.get("LOCALAPPDATA")
+    """Where voice data lands: outside C:\\dev, which Syncthing copies to the other machine. On macOS, in
+    ~/Library/Application Support."""
+    root = os.environ.get("LOCALAPPDATA") or (Path.home() / "Library" / "Application Support" if MAC else None)
     return Path(root) / "free247jarvis" / "voicedata" if root else None
 
 

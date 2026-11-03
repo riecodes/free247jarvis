@@ -1,10 +1,10 @@
 # free247jarvis
 
-![License](https://img.shields.io/github/license/riecodes/free247jarvis?style=flat-square&color=green) ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white) ![Claude Code](https://img.shields.io/badge/Claude%20Code-voice-D97757?style=flat-square&logo=anthropic&logoColor=white) ![Price](https://img.shields.io/badge/price-free-brightgreen?style=flat-square)
+![License](https://img.shields.io/github/license/riecodes/free247jarvis?style=flat-square&color=green) ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white) ![macOS](https://img.shields.io/badge/macOS-untested-999999?style=flat-square&logo=apple&logoColor=white) ![Claude Code](https://img.shields.io/badge/Claude%20Code-voice-D97757?style=flat-square&logo=anthropic&logoColor=white) ![Price](https://img.shields.io/badge/price-free-brightgreen?style=flat-square)
 
 Say **"Hey Jarvis"** and run your Claude Code terminals by voice.
 
-A small, free, open-source voice layer for Windows. A wake word wakes a "boss" Claude Code
+A small, free, open-source voice layer for Windows, and for macOS (untested there yet). A wake word wakes a "boss" Claude Code
 session, which hands your spoken request to your other Claude Code terminals, picks the one
 that is free, opens new ones, and drives Windows apps for anything outside the terminal. It
 answers out loud.
@@ -21,6 +21,8 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **macOS, untested.** `setup.sh`, `start.sh` and `spawn.sh` do on a Mac what the `.ps1` scripts do on Windows. The
+  voice itself is the same code on both. What only Windows has is in "On macOS" below.
 - **"Sir" at the start or the end.** With `VOICE_TITLE=Sir`, a line says it once, either way round ("Sir, it's
   done." or "I'm with you, sir."), and the greetings do too.
 - **The window has its buttons.** Minimize, maximize and close at the top right, in the window's own colors. Closing it
@@ -90,6 +92,40 @@ to say "Hey Jarvis, open one more terminal".
 
 Optional: `.venv\Scripts\python listener.py train` teaches the wake word your voice (five
 "Hey Jarvis"es and three sentences), which cuts false wakes from other voices and the TV.
+
+## On macOS (untested)
+
+The same voice runs on a Mac: openWakeWord, Silero VAD, Groq and Kokoro are the same Python packages, and sounddevice
+brings its own PortAudio. No one has run it on a Mac yet, so expect to report what breaks. In Terminal:
+
+```sh
+xcode-select --install          # git, if it asks
+brew install node python@3.12   # Homebrew: https://brew.sh
+git clone https://github.com/riecodes/free247jarvis.git ~/dev/free247jarvis
+cd ~/dev/free247jarvis
+sh setup.sh                     # run it again after putting GROQ_API_KEY in .env
+sh start.sh                     # the boss, in a new Terminal window
+```
+
+In the boss window pick **Yes, I trust this folder** (the first time) and **I am using this for local development**.
+macOS then asks whether Terminal may use the microphone: allow it, or Jarvis hears only silence (System Settings,
+Privacy & Security, Microphone, to change it later). Then say "Hey Jarvis". `.venv/bin/python listener.py train` teaches
+it your voice, and the window installs the same way as on Windows (`npm install --prefix window`).
+
+What differs from Windows:
+
+- **Calls aren't noticed.** Windows says which app holds the mic and which meeting window is open; macOS has no public
+  way to ask. Jarvis still holds its news while people are talking near the mic, but not for a muted call.
+- **Only Music and Spotify pause** while it speaks: they are the players macOS lets a script pause. A video in a browser
+  plays on under the voice.
+- **The orch's window isn't raised** when something was paused: on a Mac that would take the keyboard too.
+- **Workers open in plain Terminal windows** (`spawn.sh`), not tiled into the 3x2 grid, and apps go through Claude Code's
+  own computer use instead of `gui.ps1`.
+- **Notifications** come from Notification Center, under Script Editor's name.
+- **Kokoro runs on the CPU.** The GPU build is for NVIDIA cards only.
+- Voice data and the last 50 things heard are kept in `~/Library/Application Support/free247jarvis`.
+- `check_boss.py` is Windows only. `check_voice.py`'s speaker checks stand in for Windows' sound API, so some of them
+  may not run on a Mac.
 
 ## Pro voice (ElevenLabs, optional)
 
@@ -369,7 +405,7 @@ it opened.
 
 ## Needs
 
-- Windows 10 or 11 with Windows Terminal and a microphone
+- Windows 10 or 11 with Windows Terminal and a microphone, or macOS with Terminal (untested)
 - [Claude Code](https://code.claude.com) 2.1.234 or later, signed in with a Pro or Max plan
 - Python 3.10 to 3.13 and Node 20 or later
 - A free Groq key for speech to text: <https://console.groq.com/keys> (about $0.04 per hour of
@@ -386,9 +422,10 @@ free247jarvis/
   words.txt      words speech to text should spell right
   mishears.py    lists likely mishears from the voice data, for review
   spawn.ps1      opens worker terminals t1 to t6 in their grid cells
+  spawn.sh       the same on macOS, without the grid
   gui.ps1        screenshots, typing, keys, and clicks for Windows apps
-  start.ps1      starts the boss
-  setup.ps1      one-time setup (safe to re-run)
+  start.ps1      starts the boss (start.sh on macOS)
+  setup.ps1      one-time setup, safe to re-run (setup.sh on macOS)
   window/        optional Electron window; voice.mjs serves its page and events
   check_boss.py  end-to-end check
 ```

@@ -150,8 +150,11 @@ let quiet = false // the listener thinks the user is with someone: no notificati
 function showToast(text) {
   log(`toast: ${text}`)
   if (process.env.VOICE_TOAST === 'off') return  // in checks
-  spawn('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(HERE, 'toast.ps1')],
-    { cwd: HERE, env: { ...process.env, JARVIS_TOAST: text }, detached: true, stdio: 'ignore', windowsHide: true })
+  // macOS: a Notification Center banner, the text as an argument so nothing in it runs as AppleScript.
+  const [command, args] = process.platform === 'darwin'
+    ? ['osascript', ['-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title "Jarvis"', '-e', 'end run', text]]
+    : ['powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(HERE, 'toast.ps1')]]
+  spawn(command, args, { cwd: HERE, env: { ...process.env, JARVIS_TOAST: text }, detached: true, stdio: 'ignore', windowsHide: true })
     .on('error', e => log(`toast failed: ${e.message}`)).unref()
 }
 
@@ -465,7 +468,8 @@ setInterval(() => {
 // The window, once `npm install` has run in window/ (optional: Electron is about 250 MB). VOICE_WINDOW=off skips it.
 // Detached, to outlive a restart of the voice; a second copy quits by itself, and with show brings the first one up
 // (POST /window, after the user closed or minimized it). No .env keys go to it.
-const ELECTRON = join(HERE, 'window', 'node_modules', 'electron', 'dist', 'electron.exe')
+const ELECTRON = join(HERE, 'window', 'node_modules', 'electron', 'dist',
+  process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron.exe')
 function openWindow(show = false) {
   if (!existsSync(ELECTRON)) return false
   const { ELECTRON_RUN_AS_NODE, ...plain } = process.env // set, it would run Electron as plain Node

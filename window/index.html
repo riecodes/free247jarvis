@@ -25,6 +25,7 @@
   /* The window's own buttons sit over its right end (main.cjs), and the rest of it drags the window. */
   header {
     display: flex; align-items: center; gap: 10px; height: 46px; flex: none; padding: 0 16px; border-bottom: 1px solid var(--line);
+    padding-left: calc(env(titlebar-area-x, 0px) + 16px); /* macOS: its buttons are at the left */
     padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 16px); -webkit-app-region: drag; app-region: drag;
   }
   header button { -webkit-app-region: no-drag; app-region: no-drag; }
