@@ -159,8 +159,7 @@ voice; a cloned ElevenLabs voice can't be used here. Tagalog isn't on OpenAI's l
 `.venv\Scripts\python realtime.py measure clip.wav` prints the real timings for 16 kHz clip, plays nothing, and costs a
 fraction of a cent.
 
-Two more, with no OpenAI key: `VOICE_ACK=on` says "On it" as soon as real work goes to the orch, then its answer
-later. `KNOWLEDGE_DIR=` takes several folders separated by `;`, such as Obsidian vaults: past 8,000 characters only the
+One more, with no OpenAI key: `KNOWLEDGE_DIR=` takes several folders separated by `;`, such as Obsidian vaults: past 8,000 characters only the
 notes sharing words with the question go to Anthropic, plus those they `[[link]]` to.
 
 ## Window (optional)

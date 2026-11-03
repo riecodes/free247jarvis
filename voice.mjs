@@ -274,8 +274,6 @@ async function route(text) {
   const quick = kind === 'status' ? status() : kind === 'chat' ? await chat(text)
     : picks ? await chat(text, withFacts(picks, await liveFacts())) : ''
   if (quick) return answer(quick)
-  // VOICE_ACK=on: real work takes the orch a turn, so a first word comes at once and its answer after.
-  if (/^on$/i.test(env.VOICE_ACK ?? '')) answer('On it.')
   await send(text, 'mic')
 }
 
