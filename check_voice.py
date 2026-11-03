@@ -7,6 +7,7 @@
   media  what was playing resumes after the line, or after the window when one opens
   hush   the wake word pauses the video and shows the orch's window until the reply; a false wake puts both back at once
   tries  wake word peaks are logged; a near miss ticks, except in a call; the wake word also works mid-task
+  wake   "Jarvis, ..." first in a phrase wakes it when alone, never in passing; so does a double clap, but not typing or knocks
   look   repeated tries, and each failure the user can't hear, go on screen; nothing else does
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
   scan   the real WASAPI and media session calls run on this machine (nothing is paused)
@@ -361,6 +362,82 @@ def name_needed() -> None:
     with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), mock.patch.object(listener, "pause_media", list):
         e.on_chunk(chunk)
     assert len(e.clip) == listener.PRE_ROLL
+
+
+def name_first() -> None:
+    """"Jarvis, wake up" or "OK Jarvis, status" under the threshold wakes it once speech to text hears the name first. The
+    name in passing, in a call, or over a video doesn't, and those last two never reach speech to text."""
+    chunk = np.ones(listener.CHUNK, np.int16)
+    assert listener.strip_wake("Jarvis, wake up.") == "" and listener.strip_wake("Yo Jarvis, status") == "status"
+
+    def try_at(said, peak=0.3, call=False, playing=False):
+        e, events, heard = ears(), [], []
+        e.need_name, e.next_name = True, 0.0
+        e.recent = listener.deque([chunk] * 10, maxlen=listener.NAME_ROLL)
+
+        def stt(clip, timeout=600):
+            heard.append(len(clip))
+            return said
+        with mock.patch.object(listener, "in_call", lambda: call), mock.patch.object(listener, "transcribe", stt), \
+                mock.patch.object(listener, "media_playing", lambda: playing), mock.patch.object(listener, "pause_media", list), \
+                mock.patch.object(listener, "emit", lambda ev, **d: events.append(ev)):
+            for score in (peak, 0.0):
+                e.oww.predict = lambda _, s=score: {"jarvis": s}
+                e.on_chunk(chunk)
+        return e, events, heard
+
+    e, events, heard = try_at("Jarvis, wake up.")
+    assert "wake" in events and e.on_chunk == e.after_wake and heard and e.woke
+    e, events, _ = try_at("OK Jarvis, status")  # the request is already in the clip: recorded on from there, as speech
+    assert "wake" in events and e.on_chunk == e.record_chunk and e.voiced >= listener.MIN_VOICED and len(e.clip) == 12
+    for said in ("So I told him Jarvis is great", "Hey Travis", ""):
+        e, events, _ = try_at(said)
+        assert "wake" not in events and e.on_chunk == e.wake_chunk, said
+    for how in ({"call": True}, {"playing": True}, {"peak": 0.05}):
+        e, events, heard = try_at("Jarvis, wake up", **how)
+        assert "wake" not in events and not heard, how
+    # Woken with nothing after the name: "wake up" is no request, so it listens for one instead of going back to sleep.
+    e = ears()
+    with mock.patch.object(listener, "transcribe", lambda clip: "Jarvis, wake up."), mock.patch.object(listener, "emit"):
+        e.woke = (0.9, 0)
+        e.request_done(np.zeros(1, np.int16))
+    assert e.on_chunk == e.record_chunk and e.woke
+
+
+def claps() -> None:
+    """Two sharp claps wake it; one clap, three, typing, knocks on the desk, or claps too far apart don't."""
+    rng = np.random.default_rng(1)
+    room = lambda: rng.normal(0, 60, 3 * listener.RATE)
+    t = np.arange(int(0.06 * listener.RATE)) / listener.RATE
+    clap = lambda amp=9000: rng.normal(0, 1, len(t)) * np.exp(-t / 0.008) * amp
+    knock = lambda: np.sin(2 * np.pi * 120 * t) * np.exp(-t / 0.015) * 9000
+
+    def sound(*at, make=clap):
+        x = room()
+        for s in at:
+            i = int(s * listener.RATE)
+            x[i:i + len(t)] += make()
+        return np.clip(x, -32768, 32767).astype(np.int16)
+
+    def doubles(x, talk=()):
+        c = listener.Claps()
+        return sum(c.feed(x[i:i + listener.CHUNK], i // listener.CHUNK in talk) for i in range(0, len(x) - listener.CHUNK, listener.CHUNK))
+    assert doubles(sound(1.0, 1.3)) == 1 and doubles(sound(1.0, 1.45)) == 1
+    for at in ((1.0,), (1.0, 1.3, 1.6), (1.0, 1.9), (0.6, 0.78, 0.96, 1.14, 1.32, 1.5)):
+        assert doubles(sound(*at)) == 0, at
+    assert doubles(sound(1.0, 1.3, make=knock)) == 0
+    assert doubles(sound(1.0, 1.3), talk=range(5, 11)) == 0  # right after speech: a word's last consonants, not claps
+    # Through the ears: a wake like the name's, with no speech to text.
+    e, events = ears(), []
+    e.claps = listener.Claps()
+    e.oww.predict = lambda _: {"jarvis": 0.0}
+    x = sound(1.0, 1.3)
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "pause_media", list), \
+            mock.patch.object(listener, "emit", lambda ev, **d: events.append(ev)):
+        for i in range(0, len(x) - listener.CHUNK, listener.CHUNK):
+            if e.on_chunk == e.wake_chunk:
+                e.on_chunk(x[i:i + listener.CHUNK])
+    assert "wake" in events and e.on_chunk == e.after_wake and e.woke[0] == 1.0
 
 
 def listen_after() -> None:
@@ -1354,6 +1431,8 @@ def main() -> None:
         assert shown == [("partial", {"text": "open terminal two"})], shown
     voice_data()
     name_needed()
+    name_first()
+    claps()
     listen_after()
     settings()
     bank()

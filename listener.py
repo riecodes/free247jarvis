@@ -200,6 +200,20 @@ CLOSING = re.compile(r"(?:^|[.!?,]\s+)(?:(?:yeah|yes|okay|ok|so|then|please|just
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
 PEAK_FLOOR = 0.03  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
 NEAR_MISS = 0.12  # a peak from here up to the threshold gets the near-miss tick
+# The name first ("Jarvis, wake up", "OK Jarvis, status"): the wake word model scores those 0.1 to 0.45 in test voices, under
+# the threshold. A try that peaks at NAME_FLOOR or more, once it's over, goes to speech to text, and wakes it when its words
+# open with the name. Only alone with the mic: in a call, with people talking or a video playing, the name said in passing
+# must not wake it. At most one check per NAME_EVERY seconds, for Groq's limit.
+NAME_FLOOR, NAME_EVERY = 0.1, 2.0
+OPENERS = r"(hey|hi|hay|okay|ok|yo|oy|uy|uh|um|so)"
+NAME_FIRST = re.compile(rf"^\W*({OPENERS}\W+)?(jarvis|jervis)\b", re.IGNORECASE)
+# A double clap wakes it too, the way the name does, also in a call or over a video: it's never said in passing. Counted in
+# 5 ms frames. A clap's peak is CLAP_RISE times the room's level (the median chunk RMS of the last 2 s) and at least
+# CLAP_LEVEL (.env, int16 peak; tonight's speech at the wake word ran RMS 90 to 210), from near quiet 10-40 ms before, down
+# to a quarter 35-55 ms after, and bright (a knock on the desk is dull). Two of them CLAP_GAP apart, with no other sharp
+# sound or speech CLAP_QUIET before the first or after the second: typing is many in a row.
+CLAP_LEVEL, CLAP_RISE, CLAP_BRIGHT = 2000.0, 12.0, 0.5
+CLAP_GAP, CLAP_QUIET = (24, 120), 100  # 0.12 to 0.6 s apart; 0.5 s
 CUE_GAP = 2  # seconds between near-miss ticks
 LOOK_TRIES, LOOK_WINDOW = 2, 20  # this many tries that got nowhere within this many seconds: they are looking for it
 CANT_HEAR = "Can't hear me? Check your speaker's power and knob, your headphones, and your PC's sound."
@@ -504,7 +518,7 @@ NAMES = r"(jarvis|jervis)"
 def strip_wake(text: str) -> str:
     """The pre-roll carries the wake word into the transcript, and a "Hey Jarvis" said again mid-request is dropped
     too."""
-    text = re.sub(rf"^\W*((hey|hi|hay|okay|ok)\W+)?{NAMES}\b\W*", "", text.strip(), flags=re.IGNORECASE)
+    text = re.sub(rf"^\W*({OPENERS}\W+)?{NAMES}\b(\W+wake\W+up\b)?\W*", "", text.strip(), flags=re.IGNORECASE)
     return re.sub(rf"\b(hey|hi|hay|okay|ok)\W+{NAMES}\b\W*", "", text, flags=re.IGNORECASE).strip()
 
 
@@ -978,6 +992,53 @@ def live_words():
     return GroqLive() if os.environ.get("GROQ_API_KEY") else None
 
 
+class Claps:
+    """Hears a double clap in the mic's chunks (CLAP_* above). feed() is True once the second clap's quiet is over."""
+    SPAN = 20  # frames kept: 9 before the one judged, 10 after it
+
+    def __init__(self, level: float = CLAP_LEVEL) -> None:
+        self.level = level
+        self.reset()
+
+    def reset(self) -> None:
+        self.peaks: deque[float] = deque(maxlen=self.SPAN)
+        self.bright: deque[float] = deque(maxlen=self.SPAN)
+        self.rms: deque[float] = deque(maxlen=25)
+        self.t, self.talked = 0, -10 ** 6  # frames so far; the last one in a chunk of speech
+        self.sharp: list[tuple[int, bool]] = []  # recent sharp sounds: (frame, whether it was a clap)
+
+    def feed(self, chunk: np.ndarray, speech: bool = False) -> bool:
+        x = chunk.astype(np.float64)
+        self.rms.append(float(np.sqrt(np.mean(x ** 2))))
+        need = max(self.level, CLAP_RISE * float(np.median(self.rms)))
+        for f in x.reshape(-1, 80):
+            self.t += 1
+            self.peaks.append(float(np.abs(f).max()))
+            self.bright.append(float(np.sqrt(np.mean(np.diff(f) ** 2)) / (np.sqrt(np.mean(f ** 2)) + 1e-9)))
+            if len(self.peaks) == self.SPAN:
+                self.judge(need)
+        if speech:
+            self.talked = self.t
+        return self.double()
+
+    def judge(self, need: float) -> None:
+        p, j = list(self.peaks), self.SPAN - 11
+        peak = p[j]
+        if peak < need / 2 or peak < max(p[j - 2:j + 3]) or max(p[j - 8:j - 2]) > peak / 4:
+            return
+        clap = peak >= need and max(p[j + 7:]) <= peak / 4 and self.bright[j] >= CLAP_BRIGHT
+        self.sharp = [s for s in self.sharp if self.t - s[0] < 400] + [(self.t - 10, clap)]
+
+    def double(self) -> bool:
+        s = self.sharp
+        if len(s) < 2 or self.t - s[-1][0] < CLAP_QUIET:
+            return False
+        (t1, c1), (t2, c2) = s[-2], s[-1]
+        alone = (len(s) < 3 or t1 - s[-3][0] >= CLAP_QUIET) and not t1 - CLAP_QUIET < self.talked < t1 - 16
+        self.sharp = []  # judged: two claps, or sharp sounds that weren't
+        return c1 and c2 and alone and CLAP_GAP[0] <= t2 - t1 <= CLAP_GAP[1]
+
+
 class Ears:
     """Turns 80 ms microphone chunks into events: waits for the wake word, then records until the speaker stops."""
 
@@ -985,6 +1046,7 @@ class Ears:
     live = None  # the live words of the clip being recorded
     woke = None  # (score, level) while the clip being recorded came from the wake word, not a follow-up window
     sure = False  # it woke while staying quiet: a shorter clip, none of it kept
+    claps = None  # the double clap; CLAP=off: none
     need_name = True  # speech to text must hear "Jarvis" before it wakes; WAKE_NAME=off leaves it to the score alone
     cap = MAX_CLIP  # chunks the clip being recorded may reach
     lead, said, words_end = LISTEN_LEAD, "", 0.0  # the reply last spoken, and when its last word reached the mic
@@ -1099,6 +1161,7 @@ class Ears:
         self.queue_since = 0.0  # when the oldest of them started waiting
         self.last_speech = 0.0  # when the VAD last heard speech
         self.tries: list[float] = []  # recent tries at the wake word that got nowhere
+        self.next_name = 0.0  # no name-first check before this moment
         self.wait_for_wake()
 
     def feed(self, chunk: np.ndarray) -> None:
@@ -1135,6 +1198,8 @@ class Ears:
         self.oww.reset()
         self.recent.clear()
         self.peak = 0.0
+        if self.claps:
+            self.claps.reset()
         self.on_chunk = self.wake_chunk
 
     def is_speech(self, chunk: np.ndarray) -> bool:
@@ -1164,10 +1229,14 @@ class Ears:
                 emit("quiet", on=bool(why), text=why)
 
     def wake_chunk(self, chunk: np.ndarray) -> None:
-        if self.is_speech(chunk):
+        speech = self.is_speech(chunk)
+        if speech:
             self.last_speech = time.monotonic()
         self.report_quiet()
         self.recent.append(chunk)
+        if self.claps and self.claps.feed(chunk, speech):
+            emit("status", text="Double clap")
+            return self.wake(next(iter(self.acks)), 1.0, int(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))), self.busy())
         scores = self.oww.predict(chunk)
         fired = max(scores, key=scores.get)
         score = float(scores[fired])
@@ -1187,23 +1256,53 @@ class Ears:
                     self.wait_for_wake(keep=True)  # keep: a video paused for an earlier request stays paused
                     self.tried(stray=True)
                     return
-            self.woke, self.sure = (score, level), sure
-            emit("wake")  # also while the boss works on the last request: this one reaches it as a new message
-            self.hush()  # first, so the video's sound stays out of the request            # Heard the wake word: short and undrained, so little of a one-breath request is lost. Its blip is at the
-            # start of a longer file, so the stream closing early doesn't reach it.
-            self.greet(sure)
-            self.record(self.request_done, list(self.recent)[-PRE_ROLL:])
-            self.ack, self.grace, self.on_chunk = self.acks[fired], GRACE, self.after_wake
+            self.wake(fired, score, level, sure, list(self.recent)[-PRE_ROLL:])
         elif score >= PEAK_FLOOR:
             if score > self.peak:
                 self.peak, self.peak_word = score, fired
         elif self.peak:  # the try is over: only now is its peak known
             peak, self.peak = self.peak, 0.0
             emit("peak", word=self.peak_word, score=round(peak, 2), level=self.peak_level)
-            self.peak_level = 0
+            level, self.peak_level = self.peak_level, 0
+            if self.name_first(peak, level):
+                return
             if peak >= NEAR_MISS:
                 self.cue(CHIME_NEAR)
                 self.tried(stray=True)
+
+    def wake(self, fired: str, score: float, level: int, sure: bool, start=(), said: str = "") -> None:
+        """Woken: by the wake word, its name first, or a double clap. `said`: what the name-first check heard, which may
+        already hold the request ("Jarvis, status"), so its clip is the start of the request and the recording goes on
+        from there as speech; with nothing after the name, it waits for the request as after "Hey Jarvis"."""
+        self.woke, self.sure = (score, level), sure
+        emit("wake")  # also while the boss works on the last request: this one reaches it as a new message
+        self.hush()  # first, so the video's sound stays out of the request
+        self.greet(sure)
+        self.record(self.request_done, start)
+        self.ack, self.grace, self.on_chunk = self.acks[fired], GRACE, self.after_wake
+        if set(re.findall(r"\w+", strip_wake(said).lower())) - {"wake", "up"}:  # "Jarvis, wake" cut short: no request yet
+            self.voiced = self.voiced_at = len(self.clip)
+            self.on_chunk = self.record_chunk
+
+    def name_first(self, peak: float, level: int) -> bool:
+        """A try under the threshold that opens with the name (NAME_FLOOR above): wakes it, and True. A failed check is
+        only a miss, said again: the request hadn't started."""
+        now = time.monotonic()
+        if not self.need_name or peak < NAME_FLOOR or now < self.next_name or self.busy() or not groq_room(LIVE_SPARE) \
+                or media_playing():
+            return False
+        self.next_name = now + NAME_EVERY
+        clip = np.concatenate(list(self.recent))
+        try:
+            said = transcribe(clip, NAME_TIMEOUT)
+        except Exception as e:
+            emit("status", text=f"Name first not checked: {e}")
+            return False
+        if not NAME_FIRST.search(said):
+            return False
+        emit("status", text=f"Woke on its name first ({peak:.2f}): {said}")
+        self.wake(self.peak_word, peak, level, False, list(self.recent), said)
+        return True
 
     def read_settings(self) -> None:
         """What the window's settings can change, from the environment: at the start, and on `set` with no restart."""
@@ -1214,6 +1313,7 @@ class Ears:
         self.talk_over = env.get("TALK_OVER", "").lower() != "off"
         self.over_ratio = float(env.get("TALK_OVER_RATIO") or TALK_OVER_RATIO)
         self.listen_all = env.get("LISTEN_AFTER", "").lower() != "asked"
+        self.claps = None if env.get("CLAP", "").lower() == "off" else Claps(float(env.get("CLAP_LEVEL") or CLAP_LEVEL))
         self.followup = round(float(env.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         # 0 chunks: no cut-off.
         self.closing_gap = 0 if env.get("CLOSING_CUT", "").lower() == "off" else round(float(env.get("CLOSING_GAP") or CLOSING_GAP) / 0.08)
@@ -1390,6 +1490,11 @@ class Ears:
             self.cut_rest = None
             self.heard_last, self.heard_at, self.saved_at = fixed, time.time(), 0.0  # saved_at: on disk right away
             emit("heard", text=fixed, **({"raw": text} if fixed != text else {}))  # raw: for the window, as heard
+        elif clip is not None and re.search(r"\bwake\W+up\b", transcript, re.IGNORECASE):  # "Jarvis, wake up": listen for the request
+            self.woke, self.sure = woke, sure
+            emit("status", text="Awake: listening for the request")
+            self.play(*CHIME_UP, tail=0.05, drain=False)
+            self.record(self.request_done)
         else:
             if self.cut_rest:  # it stopped for nobody: the rest of the reply, so a false alarm costs a pause and no words
                 (rest, rate, turn), self.cut_rest = self.cut_rest, None

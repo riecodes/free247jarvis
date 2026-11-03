@@ -21,6 +21,11 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **Clap twice to wake it.** Two sharp claps, about a quarter second apart, wake it like "Hey Jarvis". Typing, one
+  clap, three claps and knocks on the desk don't.
+- **Its name first wakes it too.** "Jarvis, wake up", "OK Jarvis, status" or "Yo Jarvis" work as well as "Hey Jarvis",
+  but only when you're alone with it: not in a call, with people talking, or with a video playing, and never when the
+  name comes mid-sentence ("I told him Jarvis...").
 - **Talk over it to stop it.** Start talking while it speaks and it stops and listens, no wake word needed. It
   now follows the loudness of its own words at the mic, so a laptop mic right next to the speakers no longer stops
   it. If nobody was talking, it finishes the reply and still listens for your answer.
@@ -213,6 +218,16 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   seconds before go to speech to text, and only if they have "Jarvis" does the pop play, usually under a second later.
   If not, nothing happens and the log says `its words had no Jarvis`. If speech to text can't answer in 4 seconds, it
   wakes anyway. If it ignores you too often, `WAKE_NAME=off` goes back to the score alone.
+- Its name first ("Jarvis, wake up", "OK Jarvis, status") scores only 0.1 to 0.45, under the threshold. So when a try
+  scores 0.1 or more and fails, its 1.5 seconds go to speech to text, at most once every 2 seconds, and it wakes if the
+  words open with the name (after "hey", "ok", "yo" or "so" at most). Anything said after the name is the start of the
+  request. In a call, with people talking or a video playing, this check is off, so the name in passing can't wake it;
+  "Hey Jarvis" and a double clap still do. The log says `Woke on its name first`. `WAKE_NAME=off` turns it off too.
+- A double clap is two sharp, bright sounds 0.12 to 0.6 seconds apart, each well above the room (and at least
+  `CLAP_LEVEL=`, 2000 by default), with no other sharp sound or speech for half a second around them. It also works in a
+  call or over a video, since nobody claps twice by accident; it can't stop a reply, though. Over 70 minutes of recorded
+  room sound it never fired. If it misses your claps, lower `CLAP_LEVEL=` (1000); if it wakes on its own, raise it.
+  `CLAP=off` turns it off (also in the window's Settings). The log says `Double clap`.
 - Two PCs that sync a folder: set `VOICE_SHARED=` to it on both, and only one has the voice. Turning the mic on claims it
   (a small `<host>\jarvis.json` there), and the other PC's mic closes and its replies stop as soon as the sync brings that.
   A PC that starts later stays closed until you turn its mic on.
