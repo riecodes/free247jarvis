@@ -50,6 +50,15 @@
   .choices li { display: flex; gap: 8px; }
   .choices b { flex: none; min-width: 1.1em; }
   .choices span { min-width: 0; }
+  .pick {
+    display: flex; gap: 8px; width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--bg); color: inherit; font: inherit; text-align: left; cursor: pointer;
+  }
+  .pick:hover:not(:disabled), .pick:focus-visible { border-color: var(--mine); }
+  .pick:disabled { cursor: default; opacity: .6; }
+  .pick.chosen { opacity: 1; border-color: var(--mine); background: var(--mine); color: var(--mine-text); }
+  .picks { display: flex; flex-wrap: wrap; gap: 6px; }
+  .picks .pick { width: auto; }
   .msg code { padding: 1px 4px; border-radius: 4px; background: var(--bg); font: 12.5px Consolas, monospace; }
   .msg pre { margin-top: 0; padding: 8px; border-radius: 8px; background: var(--bg); font: 12.5px/1.4 Consolas, monospace; white-space: pre-wrap; }
   .msg > * + pre { margin-top: 8px; }
@@ -247,6 +256,14 @@
     flush()
     return blocks
   }
+
+  // A reply's choices are buttons only when it asks something (rules.mjs asksSomething): "the B side passed" stays text.
+  const asks = text => /\?|\b(say|pick|choose|tell me)\b/i.test(text)
+  // A plain yes-or-no question as its last sentence gets Yes and No; "Ship it or wait?" doesn't.
+  function yesNo(text) {
+    const q = text.match(/([^.!?]*)\?\s*$/)?.[1] ?? ''
+    return !/\bor\b/i.test(q) && /^\s*(?:\w+,\s*)?(?:should|shall|do|does|did|is|are|was|were|can|could|will|would|want|may|have|has)\b/i.test(q)
+  }
   // format:end
 
   const make = (tag, ...kids) => {  // real nodes, never markup: these words come from speech and other sessions
@@ -280,12 +297,52 @@
     lastAt = at
     const m = document.createElement('div')
     m.className = cls
-    if (rich) m.append(...parse(text).map(b => RENDER[b.t](b)))
+    if (Array.isArray(rich)) m.append(...rich)
+    else if (rich) m.append(...parse(text).map(b => RENDER[b.t](b)))
     else m.textContent = text
     if (raw && raw !== text) m.title = `Heard as: ${raw}`
     chat.insertBefore(m, chat.contains(draft) ? draft : chat.contains(dots) ? dots : null)
     while (chat.children.length > 200) chat.firstChild.remove()
     follow()
+  }
+
+  // Clicking a choice answers as if it was said. Only the newest reply's buttons work: a click, an answer by voice or typed,
+  // or a newer reply with choices retires them, and they stay in the chat as they were.
+  let picks = []
+  const retire = () => { for (const b of picks) b.disabled = true; picks = [] }
+  async function choose(button, answer) {
+    retire()
+    button.classList.add('chosen')
+    const r = await fetch('/choice', { method: 'POST', body: answer }).catch(() => null)
+    if (!r?.ok) add('note fail', "Couldn't send that choice. Say it instead.")
+  }
+  function reply(e) {
+    hide(dots)
+    const options = (Array.isArray(e.options) ? e.options : []).map(String).filter(Boolean)
+    const ask = !options.length && asks(e.text), buttons = []
+    const button = (answer, ...kids) => {
+      const b = make('button', ...kids)
+      b.type = 'button'
+      b.className = 'pick'
+      b.onclick = () => choose(b, answer)
+      buttons.push(b)
+      return b
+    }
+    const list = items => {
+      const l = make('ul', ...items.map(([h, text]) => make('li', button(h, make('b', `${h}.`), make('span', ...inline(text))))))
+      l.className = 'choices'
+      return l
+    }
+    const nodes = parse(e.text).map(b => !ask ? RENDER[b.t](b) : b.t === 'choices' ? list(b.items.map(i => [i.h, i.text]))
+      : b.t === 'ol' ? list(b.items.map((t, n) => [String(n + 1), t])) : RENDER[b.t](b))
+    const row = options.length ? options : ask && !buttons.length && yesNo(e.text) ? ['Yes', 'No'] : []
+    if (row.length) {
+      const r = make('div', ...row.map(o => button(o, o)))
+      r.className = 'picks'
+      nodes.push(r)
+    }
+    add('msg me', e.text, e.at, '', nodes)
+    if (buttons.length) (retire(), picks = buttons)
   }
 
   const HANDLERS = {
@@ -299,6 +356,7 @@
     reminder: e => add('msg me', e.text, e.at, '', true),
     partial: e => liveWords(e.text),
     heard: e => {
+      retire()
       hide(draft)
       add('msg you', e.text, e.at, e.raw)
       show(dots)
@@ -307,12 +365,13 @@
     nothing: () => { hide(draft); hide(dots); rest('Heard no request') },
     route: e => $('detail').textContent = `${e.kind}, ${e.ms} ms`,
     sent: e => {
+      retire()
       if (e.via !== 'mic') add('msg you', e.text, e.at)
       show(dots)
       state('work', 'Claude is working')
     },
-    reply: e => { hide(dots); add('msg me', e.text, e.at, '', true) },
-    again: e => { hide(draft); add('msg you', e.text, e.at); add('msg me', e.line, e.at, '', true) },
+    reply,
+    again: e => { hide(draft); add('msg you', e.text, e.at); reply({ text: e.line, at: e.at }) },
     said: () => state('speak', 'Speaking'),
     spoken: e => {
       if (e.listening) {

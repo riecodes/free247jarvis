@@ -21,6 +21,8 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **Click to answer.** When it asks you to pick (A, B, C, 1, 2, yes or no), the window shows the choices as buttons, so
+  you can click your answer if you missed the question.
 - **Clap twice to wake it.** Two sharp claps, about a quarter second apart, wake it like "Hey Jarvis". Typing, one
   clap, three claps and knocks on the desk don't.
 - **Its name first wakes it too.** "Jarvis, wake up", "OK Jarvis, status" or "Yo Jarvis" work as well as "Hey Jarvis",
@@ -169,6 +171,11 @@ a mic: `node check_window.mjs`.
 While the window is open, your words appear as you speak: from ElevenLabs Scribe Realtime with the pro voice
 (about $0.39 per hour of speech, on top of the batch Scribe that still makes the final text), or from Groq every
 4 seconds with the free voice. They are for show only. If they fail, your request still goes through.
+
+Missed what it asked? Its choices are buttons. A reply that asks something gets one per lettered choice (A, B, C) or
+numbered item, Yes and No for a plain yes-or-no question, or the labels the boss passes as `options`. A click
+answers as if you said it: your listening window closes and the boss gets "B". Saying the answer still works. Only
+the newest reply's buttons work, until you answer it (by voice, typing or a click) or a newer reply brings new choices.
 
 ## How it works
 

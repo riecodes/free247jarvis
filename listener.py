@@ -4,6 +4,7 @@ voice.mjs (the channel server) starts this and talks to it over pipes. It reads 
 and writes one JSON event per stdout line:
 
   commands  on | off | enroll | cancel | listen (record without the wake word) | set NAME value | bank LINE | waiting JSON | quit
+            clicked                             a choice clicked in the window answered: the listening window closes
             watch on | watch off                the window opened or closed: live words only while it is open
             looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
@@ -1932,6 +1933,11 @@ def main(commands: list[str]) -> None:
             continue
         if value in ("watch on", "watch off"):
             ears.watching = value == "watch on"
+            continue
+        if value == "clicked":  # a choice clicked in the window answered: its listening window closes, unless they're talking
+            if ears.phase() == "window":
+                ears.wait_for_wake(keep=True)
+                ears.reply_by = time.monotonic() + REPLY_HOLD  # a video paused for the exchange stays paused for the reply
             continue
         if value == "listen":  # after "Say that again?": record the next sentence without the wake word
             if not ears.queue and not ears.busy():

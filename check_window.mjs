@@ -100,7 +100,7 @@ try {
 
   // How the window lays out a message, and keeps live words past the 15 s each batch covers.
   const [, format] = html.match(/\/\/ format:start[^\n]*\n([\s\S]*?)\/\/ format:end/)
-  const { stitch, parse, spokenChoices } = new Function(`${format}; return { stitch, parse, spokenChoices }`)()
+  const { stitch, parse, spokenChoices, asks, yesNo } = new Function(`${format}; return { stitch, parse, spokenChoices, asks, yesNo }`)()
   assert.strictEqual(stitch('', 'one two'), 'one two')
   assert.strictEqual(stitch('one two three four five', 'three four five six seven'), 'one two three four five six seven')
   assert.strictEqual(stitch('tell the course session to', 'The course session, to fix it'), 'tell the course session to fix it')
@@ -124,6 +124,10 @@ try {
   assert.deepStrictEqual(parse('One\n\nTwo\n- a\n- b\n1. c\n```\nx | y\n```\n| h | i |\n|---|---|\n| 1 | 2 |\n# Head').map(b => b.t),
     ['p', 'p', 'ul', 'ol', 'code', 'table', 'h'])
   assert.deepStrictEqual(parse('| h | i |\n|---|---|\n| 1 | 2 |')[0].rows, [['h', 'i'], ['1', '2']])
+  // Buttons: only on a reply that asks; Yes and No for a plain yes-or-no question as its last sentence.
+  assert(asks('Ship it now? A yes, or B not yet.') && asks('Say A or B.') && !asks('A fix is ready and the B side passed.'))
+  for (const q of ['Sir, should I ship it?', 'Done. Do you want the PDF too?', 'Is that okay?']) assert(yesNo(q), q)
+  for (const q of ['Ship it or wait?', 'Which one?', 'It shipped.', 'Should I ship it? It is ready.']) assert(!yesNo(q), q)
 
   // With nothing to replay yet, the stream still opens at once (it hung here until the first event).
   const empty = await fetch(url('/events'), { signal: AbortSignal.timeout(3000) })
@@ -186,7 +190,7 @@ try {
     request(url(path), { method: 'POST', headers }, r => { r.resume(); resolve(r.statusCode) })
       .on('error', reject).end('page')
   })
-  for (const path of ['/', '/heard', '/mic']) {
+  for (const path of ['/', '/heard', '/choice', '/mic']) {
     assert.strictEqual(await post(path, { Origin: 'https://evil.example' }), 403, path)
     assert.strictEqual(await post(path, { Origin: 'null' }), 403, path)
     assert.strictEqual(await post(path, { Host: 'evil.example' }), 403, path)
@@ -260,6 +264,12 @@ try {
     await heard("what's the status")  // no topic: the sessions' own summary as before
     await sleep(300)
     assert(!/vlog/.test(toListener().slice(before2).replace(/^bank .*$/gm, '')), toListener().slice(before2))
+    // A choice clicked in the window: it closes the listening window, and goes on as if said.
+    const r = await fetch(`http://127.0.0.1:${port3}/choice`, { method: 'POST', body: 'A' })
+    assert.strictEqual(r.status, 200)
+    for (let i = 0; i < 20 && !/^clicked$/m.test(toListener()); i++) await sleep(100)
+    assert.match(toListener(), /^clicked$/m)
+    assert.match(readFileSync(LOG, 'utf8'), / clicked: A\n/)
   } finally {
     router.stdin.end()
     router.kill()

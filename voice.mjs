@@ -83,6 +83,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           description: 'Keep the mic open a few seconds after this reply. Default: only when the line asks something ' +
             '(a question, or "say ..."). False on an acknowledgment of an answer the user just gave.',
         },
+        options: {
+          type: 'array', items: { type: 'string' }, maxItems: 8,
+          description: 'Optional: the answers this reply offers, as short labels ("A", "Ship it", "Yes"). The window shows ' +
+            'them as buttons, and a click comes back as a spoken request with that label. Lettered (A, B) and numbered ' +
+            'choices in the text, and a plain yes-or-no question, get buttons without it.',
+        },
       },
       required: ['text'],
     },
@@ -99,7 +105,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   }
   log(`reply: ${text}`)
   if (text && ears) {
-    show('reply', { text: written, by: 'claude' })
+    const options = req.params.arguments?.options
+    show('reply', { text: written, by: 'claude',
+      ...(Array.isArray(options) && { options: options.slice(0, 8).map(o => String(o).trim().slice(0, 80)).filter(Boolean) }) })
     spoke(text)
     ears.stdin.write(`${verbFor(askedAt, req.params.arguments?.listen ?? asksSomething(text))} ${text}\n`)
     askedAt = 0 // one reply answers the request; later lines are the boss's own news
@@ -487,7 +495,8 @@ function saveSetting(key, value) {
   ears?.stdin.write(`set ${key} ${value}\n`)
 }
 
-// POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /mic: on or off.
+// POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /choice: a choice clicked in
+// the window, the same. POST /mic: on or off.
 // GET and POST /settings: the window's settings panel.
 // GET /window and /events: the window and its live events, for this address only, so a web page can't read them
 // by pointing its own domain name at this machine.
@@ -539,6 +548,12 @@ const server = createServer((req, res) => {
       log(`mic ${text}`)
       ears.stdin.write(`${text}\n`)
     } else if (req.url === '/heard' && text) await route(text)
+    else if (req.url === '/choice' && text) {  // a choice clicked in the window: as if said, and the listening window closes
+      log(`clicked: ${text}`)
+      show('heard', { text, via: 'click' })
+      ears.stdin.write('clicked\n')
+      await route(text)
+    }
     else if (text) await push(text, 'http')
     res.end('ok')
   })
