@@ -24,8 +24,8 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 - **It speaks sooner.** A reply's first sentence starts while the rest is still being rendered: about 0.2 s to the first
   word instead of 1 to 2 s, and short openers like "Sir, done." are kept from the last time, so they play at once. A
   reply that arrives while you're talking is rendered meanwhile, so it starts the moment you stop.
-- **More ways to say hello.** Forty greetings plus the time of day, and about twenty ways to say "On it" the moment real
-  work goes to the orch. None of the last half comes back, so it doesn't sound like a loop.
+- **More ways to say hello.** Forty greetings plus the time of day ("Good afternoon, sir", "I'm here, sir"). None of
+  the last twenty comes back, so it doesn't sound like a loop.
 - **Click to answer.** When it asks you to pick (A, B, C, 1, 2, yes or no), the window shows the choices as buttons, so
   you can click your answer if you missed the question.
 - **Clap twice to wake it.** Two sharp claps, about a quarter second apart, wake it like "Hey Jarvis". Typing, one
@@ -154,8 +154,8 @@ voice; a cloned ElevenLabs voice can't be used here. Tagalog isn't on OpenAI's l
 `.venv\Scripts\python realtime.py measure clip.wav` prints the real timings for 16 kHz clip, plays nothing, and costs a
 fraction of a cent.
 
-Two more, with no OpenAI key: it says "On it" (or one of about twenty others) as soon as real work goes to the orch,
-then its answer later (`VOICE_ACK=off` for none). `KNOWLEDGE_DIR=` takes several folders separated by `;`, such as Obsidian vaults: past 8,000 characters only the
+Two more, with no OpenAI key: `VOICE_ACK=on` says "On it" as soon as real work goes to the orch, then its answer
+later. `KNOWLEDGE_DIR=` takes several folders separated by `;`, such as Obsidian vaults: past 8,000 characters only the
 notes sharing words with the question go to Anthropic, plus those they `[[link]]` to.
 
 ## Window (optional)
