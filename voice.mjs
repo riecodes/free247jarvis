@@ -465,15 +465,19 @@ setInterval(() => {
 }, 3000).unref()
 
 // The window, once `npm install` has run in window/ (optional: Electron is about 250 MB). VOICE_WINDOW=off skips it.
-// Detached, to outlive a restart of the voice; a second copy quits by itself. No .env keys go to it.
+// Detached, to outlive a restart of the voice; a second copy quits by itself, and with show brings the first one up
+// (POST /window, after the user closed or minimized it). No .env keys go to it.
 const ELECTRON = join(HERE, 'window', 'node_modules', 'electron', 'dist', 'electron.exe')
-if (env.VOICE_WINDOW !== 'off' && existsSync(ELECTRON)) {
+function openWindow(show = false) {
+  if (!existsSync(ELECTRON)) return false
   const { ELECTRON_RUN_AS_NODE, ...plain } = process.env // set, it would run Electron as plain Node
-  spawn(ELECTRON, [join(HERE, 'window')], {
+  spawn(ELECTRON, [join(HERE, 'window'), ...(show ? ['--show'] : [])], {
     env: { ...plain, VOICE_PORT: String(PORT), CAPTION_VISIBLE: env.CAPTION_VISIBLE ?? '' },
     detached: true, stdio: 'ignore',
   }).on('error', e => log(`window failed: ${e.message}`)).unref()
+  return true
 }
+if (env.VOICE_WINDOW !== 'off') openWindow()
 
 // The window's settings: the only names it can change, and what each may be. Saved in .env, so they last, and passed to
 // the listener at once. Never any other line of .env, and keys are never read out.
@@ -503,7 +507,8 @@ function saveSetting(key, value) {
 }
 
 // POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /choice: a choice clicked in
-// the window, the same. POST /resend-last: the last thing the user said, sent again. POST /mic: on or off.
+// the window, the same. POST /resend-last: the last thing the user said, sent again. POST /window: the window opened, or
+// brought to the front. POST /mic: on or off.
 // GET and POST /settings: the window's settings panel.
 // GET /window and /events: the window and its live events, for this address only, so a web page can't read them
 // by pointing its own domain name at this machine.
@@ -555,6 +560,10 @@ const server = createServer((req, res) => {
       log(`mic ${text}`)
       ears.stdin.write(`${text}\n`)
     } else if (req.url === '/heard' && text) await route(text)
+    else if (req.url === '/window') {
+      log('window asked for')
+      if (!openWindow(true)) return (res.writeHead(404), res.end('no window installed: npm install in window/'))
+    }
     else if (req.url === '/resend-last') {
       log('resend the last thing said')
       ears.stdin.write('resend\n')

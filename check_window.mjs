@@ -190,7 +190,7 @@ try {
     request(url(path), { method: 'POST', headers }, r => { r.resume(); resolve(r.statusCode) })
       .on('error', reject).end('page')
   })
-  for (const path of ['/', '/heard', '/choice', '/resend-last', '/mic']) {
+  for (const path of ['/', '/heard', '/choice', '/resend-last', '/window', '/mic']) {
     assert.strictEqual(await post(path, { Origin: 'https://evil.example' }), 403, path)
     assert.strictEqual(await post(path, { Origin: 'null' }), 403, path)
     assert.strictEqual(await post(path, { Host: 'evil.example' }), 403, path)

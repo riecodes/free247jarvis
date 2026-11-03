@@ -21,6 +21,8 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **The window has its buttons.** Minimize, maximize and close at the top right, in the window's own colors. Closing it
+  leaves the voice on, and `POST /window` brings it back.
 - **Nothing you say is dropped.** A long answer in the listening window used to be thrown away after 90 seconds. Now it
   records to your pause and goes to the orch, marked as maybe people talking. The last 50 things you said are kept on
   this PC, so `curl -X POST http://127.0.0.1:8790/resend-last` sends the newest again if it got lost.
@@ -173,7 +175,9 @@ node window/node_modules/electron/install.js
 ```
 
 It opens with the voice from then on, without taking the keyboard, and stays out of screen shares and
-recordings (`CAPTION_VISIBLE=1` in `.env` shows it there). `VOICE_WINDOW=off` skips it. To check it without
+recordings (`CAPTION_VISIBLE=1` in `.env` shows it there). Its minimize, maximize and close buttons sit at the right of
+its header, which you drag to move it; drag an edge to resize. Closing it closes only the window, and the voice goes on:
+`curl -X POST http://127.0.0.1:8790/window` opens it again, or brings it to the front. `VOICE_WINDOW=off` skips it. To check it without
 a mic: `node check_window.mjs`.
 
 While the window is open, your words appear as you speak: from ElevenLabs Scribe Realtime with the pro voice
