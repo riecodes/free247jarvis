@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { AGES, ageWords, asksForHeld, asksSomething, bankFile, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, withFacts } from './rules.mjs'
+import { AGES, ageWords, asksForHeld, asksSomething, bankFile, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, withFacts } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -38,12 +38,12 @@ const env = { ...process.env }
 const ENV_FILE = process.env.VOICE_ENV || join(HERE, '.env')  // VOICE_ENV: another file, in checks
 const dotenv = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
 for (const [, k, v] of dotenv.matchAll(/^([A-Z][A-Z0-9_]*)=(.*)$/gm)) env[k] ??= v.trim().replace(/^"(.*)"$/, '$1')
-// VOICE_TITLE=Sir: every spoken line opens with it ("Sir, the course session needs you.").
+// VOICE_TITLE=Sir: once in every spoken line, at its start or its end (rules.mjs titled).
 const TITLE = env.VOICE_TITLE?.trim() ?? ''
 // The listener's rising chime after a reply that asks something says the mic is open again (FOLLOWUP_SECONDS), so no spoken cue here.
-const titled = text => !TITLE || !text || text.toLowerCase().startsWith(TITLE.toLowerCase()) ? text
-  : `${TITLE}, ${text[0].toLowerCase()}${text.slice(1)}`
-const SPEAK = (TITLE ? `Start every spoken reply with "${TITLE},". ` : '') +
+const titled = text => withTitle(text, TITLE)
+const SPEAK = (TITLE ? `Say "${TITLE}" once in every spoken reply, at the start or at the end, and vary it the way a ` +
+  `person would ("${TITLE}, it's done." or "Done, ${TITLE.toLowerCase()}." or "I'm with you, ${TITLE.toLowerCase()}."). ` : '') +
   'Write times, numbers and dates as English words, the way they are said ("nine seventeen PM", "October ' +
   'twenty-six"), never in Spanish or Tagalog numbers.' +
   ' Whatever language the request is in, answer in plain English only, with no Tagalog or Taglish words at all ' +

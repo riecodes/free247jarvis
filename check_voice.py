@@ -882,8 +882,8 @@ def greeting() -> None:
     assert listener.strip_echo("I'm here, sir.", "I'm here, sir.", late=True) == ""
     # Each pool entry fits the phrase rules: no closing phrase and no wake word to trip on.
     for word in listener.GREETINGS + list(listener.GREETINGS_AT):
-        for title in ("Sir", ""):
-            text = listener.greeting_text(word, title)
+        for title, front in (("Sir", False), ("Sir", True), ("", False)):
+            text = listener.greeting_text(word, title, front)
             assert not listener.closes(text) and not listener.re.search(listener.NAMES, text, listener.re.I), text
     # Too long, or silent: left out. A voice that fails: the chime, not a dead wake.
     e = ears()
@@ -892,6 +892,7 @@ def greeting() -> None:
     with mock.patch.dict(listener.os.environ, {"VOICE_TITLE": "Sir"}), mock.patch.object(listener, "emit"):
         e.load_greetings()
     assert e.greetings and not any(g[0].startswith("Yes") for g in e.greetings) and "Morning" in e.greetings_at
+    assert "Sir, I'm here." in [g[0] for g in e.greetings] and "Sir, hello." not in [g[0] for g in e.greetings]
     e.load_ack = lambda text, speed=1: (_ for _ in ()).throw(RuntimeError("no voice"))
     with mock.patch.object(listener, "emit"):
         e.load_greetings()

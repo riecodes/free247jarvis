@@ -21,6 +21,8 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **"Sir" at the start or the end.** With `VOICE_TITLE=Sir`, a line says it once, either way round ("Sir, it's
+  done." or "I'm with you, sir."), and the greetings do too.
 - **The window has its buttons.** Minimize, maximize and close at the top right, in the window's own colors. Closing it
   leaves the voice on, and `POST /window` brings it back.
 - **Nothing you say is dropped.** A long answer in the listening window used to be thrown away after 90 seconds. Now it

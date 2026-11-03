@@ -122,3 +122,14 @@ export function ageWords(ms) {
   if (minutes < 2) return ONE_MINUTE
   return `As of ${AGE_STEPS.filter(([m]) => m <= minutes).at(-1)[1]} ago.`
 }
+
+// The title ("Sir") once in a line: the line's own when it has one, else at the front or the end of it. Which one
+// goes by the words, so a line comes out the same each time and one rendered ahead still matches when it's said.
+export function withTitle(text, title) {
+  if (!title || !text || new RegExp(`\\b${title.replace(/[^\w ]/g, '')}\\b`, 'i').test(text)) return text
+  let hash = 0
+  for (const c of text) hash = (hash * 31 + c.charCodeAt(0)) >>> 0
+  if (hash % 2) return `${title}, ${/^(I\b|[A-Z]{2})/.test(text) ? text : text[0].toLowerCase() + text.slice(1)}`
+  const [, words, end] = text.match(/^([\s\S]*?)([.!?]*)$/)
+  return `${words}, ${title.toLowerCase()}${end || '.'}`
+}

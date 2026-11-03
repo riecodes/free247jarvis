@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
-import { AGES, ageWords, isFiller, latestLines, matchLine, shortlist, withFacts } from './rules.mjs'
+import { AGES, ageWords, isFiller, latestLines, matchLine, shortlist, withFacts, withTitle } from './rules.mjs'
 
 for (const said of ['Hmm.', 'Mm-hmm.', 'Okay', 'Damn', 'Got it.']) assert(isFiller(said), said)
 for (const said of ['Yes', 'Go', 'Okay, send it', 'What?', 'Hello']) assert(!isFiller(said), said)
@@ -42,6 +42,15 @@ for (const [m, words] of [[0, 'As of just now.'], [1.5, 'As of a minute ago.'], 
   assert.strictEqual(ageWords(m * 60_000), words)
   assert(AGES.includes(words), words)
 }
+
+// "Sir" once, at the start or the end, the same each time for the same words, and never twice.
+const sirs = ['Done.', 'The vlog is rendering.', 'Should I ship it?', "I'm with you.", 'The draft is ready.', 'CPD is green.'].map(t => withTitle(t, 'Sir'))
+assert(sirs.some(t => t.startsWith('Sir, ')) && sirs.some(t => t.endsWith(', sir.')) && sirs.every(t => (t.match(/sir/gi) ?? []).length === 1), sirs.join(' | '))
+assert(sirs.includes('Should I ship it, sir?') || sirs.includes('Sir, should I ship it?'))
+assert(!sirs.some(t => /Sir, i'm|Sir, cPD/.test(t)), sirs.join(' | '))
+for (const t of ['Sir, done.', 'Done, sir.', 'Yes sir, it works.']) assert.strictEqual(withTitle(t, 'Sir'), t)
+assert.strictEqual(withTitle('Done.', ''), 'Done.')
+assert.strictEqual(withTitle('The vlog is rendering.', 'Sir'), withTitle('The vlog is rendering.', 'Sir'))
 
 const PORT = 8797
 const HERE = fileURLToPath(new URL('.', import.meta.url))
@@ -245,17 +254,19 @@ try {
     throw new Error('no router')
   }
   const toListener = () => existsSync(IN) ? readFileSync(IN, 'utf8') : ''
+  const toLines = () => toListener().split(/\r?\n/)
   try {
     await heard('how is the vlog going')
     for (let i = 0; i < 40 && !/As of/.test(toListener().replace(/bank .*\n/g, '')); i++) await sleep(100)
-    assert.match(toListener(), /^end Sir, the vlog is rendering\. As of two minutes ago\.$/m, toListener())
-    assert.match(toListener(), /^bank Sir, the vlog is rendering\.$/m)
+    const vlog = withTitle('The vlog is rendering.', 'Sir'), draft = withTitle('The draft is ready.', 'Sir')
+    assert(toLines().includes(`end ${vlog} As of two minutes ago.`), toListener())
+    assert(toLines().includes(`bank ${vlog}`))
     assert.match(toListener(), /^bank As of forty-five minutes ago\.$/m)
     // Your own machine's line, marked waiting, arrives within a few seconds, ready to follow a greeting.
     assert.strictEqual(spawnSync('node', ['progress.mjs', '--waiting', 'draft', 'The draft is ready'], { cwd: HERE, env: { ...process.env, VOICE_SHARED: BANK } }).status, 0)
     for (let i = 0; i < 70 && !/^waiting /m.test(toListener()); i++) await sleep(100)
-    assert.match(toListener(), /^waiting \["Sir, the draft is ready\."\]$/m, toListener())
-    assert.match(toListener(), /^bank Sir, the draft is ready\.$/m)
+    assert(toLines().includes(`waiting ${JSON.stringify([draft])}`), toListener())
+    assert(toLines().includes(`bank ${draft}`))
     const before2 = toListener().length
     await heard('how is the webinar going')  // nothing on it: the orch
     await sleep(300)

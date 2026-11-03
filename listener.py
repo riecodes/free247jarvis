@@ -552,8 +552,11 @@ def name_check(clip: np.ndarray) -> tuple[bool, str]:
     return bool(re.search(rf"\b{NAMES}\b", said, re.IGNORECASE)), said
 
 
-def greeting_text(word: str, title: str) -> str:
-    return f"{word}, {title.lower()}." if title else f"{word}."
+def greeting_text(word: str, title: str, front: bool = False) -> str:
+    """ "I'm here, sir." or, in front, "Sir, I'm here." """
+    if not title:
+        return f"{word}."
+    return f"{title}, {word if word.startswith('I') else word[0].lower() + word[1:]}." if front else f"{word}, {title.lower()}."
 
 
 def split_lead(text: str) -> tuple[str, str]:
@@ -1398,8 +1401,8 @@ class Ears:
         """Each greeting without its silence at the ends. A voice that fails leaves the chime, and the next start tries again."""
         title = (os.environ.get("VOICE_TITLE") or "").strip()
 
-        def render(word: str):
-            text = greeting_text(word, title)
+        def render(word: str, front: bool = False):
+            text = greeting_text(word, title, front)
             samples, rate = self.load_ack(text, GREETING_SPEED)
             loud = np.flatnonzero(np.abs(samples) > 0.01)
             if not len(loud):
@@ -1408,7 +1411,9 @@ class Ears:
             return (text, samples, rate) if len(samples) / rate <= GREETING_MAX else None
 
         try:
-            self.greetings = [g for g in map(render, GREETINGS) if g]
+            # The title at the end, and at the front too for those of two words or more: "Sir, yes." isn't said.
+            self.greetings = [g for word in GREETINGS for front in ((False, True) if " " in word and title else (False,))
+                              if (g := render(word, front))]
             self.greetings_at = {word: g for word in GREETINGS_AT if (g := render(word))}
             emit("status", text=f"{len(self.greetings) + len(self.greetings_at)} greetings ready")
         except Exception as e:
