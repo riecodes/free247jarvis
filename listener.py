@@ -5,6 +5,7 @@ and writes one JSON event per stdout line:
 
   commands  on | off | enroll | cancel | listen (record without the wake word) | set NAME value | bank LINE | waiting JSON | quit
             clicked                             a choice clicked in the window answered: the listening window closes
+            resend                              the newest utterance kept (keep_recent) goes again as a request
             watch on | watch off                the window opened or closed: live words only while it is open
             looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
@@ -166,7 +167,10 @@ WAKE_STRICT = 0.7  # the wake word score needed then; tonight's real wakes went 
 TALK_SHARE = 0.4  # this share of the last 30 s was speech: people are talking
 TALK_CHUNKS, TALK_MIN = 375, 125  # 30 s, and no verdict on less than 10 s
 QUIET_EVERY = 5  # seconds between checks for the window
-SHORT_CLIP = 1125  # 90 s cap, thrown away unsent: a listening window or a quiet-time request. A real answer ran about 60 s.
+# 90 s: past it, a listening window or a quiet-time request is likely people talking (once, 852 words of a conversation),
+# so it records on to the pause and goes to the orch marked as maybe not for it. It used to be dropped unsent, and a
+# real request was lost that way.
+SHORT_CLIP = 1125
 GRACE = 5  # speech within this many chunks of the wake is one breath ("Hey Jarvis, status"): no "Jarvis here"
 MIN_VOICED = 3  # less speech than this is a click or a cough, not a request
 END_QUIET = 62  # about 5s of quiet ends a request (1s cut people off mid-sentence, 2s still cut thinking pauses)
@@ -272,6 +276,7 @@ LOST_GAP = 20  # seconds between "I lost that" lines: a window catching noise du
 RESTART_QUIET = 60  # `listener.py restart` waits for this many seconds since the last speech
 RESTART_WAIT = 30 * 60  # and gives up after this long
 DATA_DAYS = 30  # voice data older than this is deleted
+RECENT_KEEP = 50  # utterances kept in recent_dir(), whatever VOICE_DATA says (RECENT=off: none), to resend one that went wrong
 DATA_MAX = 2 * 1024 ** 3  # and past this many bytes of clips, the oldest go first
 
 WAKE_TAKES = 5  # then these sentences
@@ -910,6 +915,31 @@ def prune_data() -> None:
         os.replace(rows.with_suffix(".partial"), rows)
 
 
+def recent_dir() -> Path | None:
+    data = data_dir()
+    return data.parent / "recent" if data else None
+
+
+def keep_recent(clip: np.ndarray) -> Path | None:
+    """Every utterance heard, the newest RECENT_KEEP, on this PC only (outside the synced folder), so one that was lost
+    or cut can be sent again. Its transcript goes next to it once there is one. A failure here only goes to the log."""
+    folder = recent_dir()
+    if not folder or os.environ.get("RECENT", "").lower() == "off":
+        return None
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        path = folder / (time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + f"-{int(now * 1000) % 1000:03d}.wav")
+        path.write_bytes(wav_bytes(clip))
+        for old in sorted(folder.glob("*.wav"))[:-RECENT_KEEP]:
+            old.unlink()
+            old.with_suffix(".txt").unlink(missing_ok=True)
+        return path
+    except Exception as e:
+        emit("status", text=f"Utterance not kept: {e}")
+        return None
+
+
 def keep_clip(clip: np.ndarray, transcript: str, text: str, score: float, level: int) -> None:
     """A clip that passed the wake word (or fired it with no name in its words), and one row about it, for mishears.py. Opt-in: only with VOICE_DATA=on or
     forever. Not in a call, where a client could be on it. A failure here only goes to the log: the request matters more."""
@@ -1067,6 +1097,7 @@ class Ears:
     woke = None  # (score, level) while the clip being recorded came from the wake word, not a follow-up window
     sure = False  # it woke while staying quiet: a shorter clip, none of it kept
     claps = None  # the double clap; CLAP=off: none
+    ran_long = False  # the recording went past its SHORT_CLIP cap
     need_name = True  # speech to text must hear "Jarvis" before it wakes; WAKE_NAME=off leaves it to the score alone
     cap = MAX_CLIP  # chunks the clip being recorded may reach
     lead, said, words_end = LISTEN_LEAD, "", 0.0  # the reply last spoken, and when its last word reached the mic
@@ -1132,6 +1163,26 @@ class Ears:
             self.last_speech = time.monotonic()
             emit("cut_off", text=text)
             self.line(text, asked=listen, hold=True, window=listen, toast=False)
+
+    def resend(self) -> None:
+        """POST /resend-last: the newest utterance kept, sent again as a request. Heard again if it never was (lost)."""
+        clips = sorted(recent_dir().glob("*.wav")) if recent_dir() and recent_dir().is_dir() else []
+        if not clips:
+            return emit("caption", text="I have nothing kept to send again.")
+        newest = clips[-1]
+        try:
+            said = newest.with_suffix(".txt").read_text(encoding="utf-8") if newest.with_suffix(".txt").is_file() else ""
+            if not said:
+                with wave.open(str(newest)) as w:
+                    said = transcribe(np.frombuffer(w.readframes(w.getnframes()), np.int16))
+                newest.with_suffix(".txt").write_text(said, encoding="utf-8")
+        except Exception as e:
+            return emit("caption", text=f"I couldn't hear that one again: {why_lost(e)}.")
+        text = fix_words(strip_wake(said))
+        if not text:
+            return emit("caption", text="The last thing kept has no words in it.")
+        emit("status", text=f"Sent again: {newest.name}")
+        emit("heard", text=text)
 
     def lost(self, e: Exception) -> None:
         """A request's words never came back: say so, rather than silence, and listen for it again."""
@@ -1429,6 +1480,7 @@ class Ears:
         self.clip, self.voiced, self.quiet, self.on_done, self.give_up = list(start), 0, 0, on_done, give_up
         self.voiced_at, self.window_from = 0, 0.0
         self.cap = MAX_CLIP if self.woke and not self.sure else SHORT_CLIP
+        self.ran_long = False
         self.on_chunk = self.record_chunk
 
     def record_chunk(self, chunk: np.ndarray) -> None:
@@ -1447,11 +1499,9 @@ class Ears:
         if self.live:
             self.live.feed(chunk)
         spoke = self.voiced >= MIN_VOICED
-        # Nobody's answer runs this long: a conversation the window caught, tonight 852 words of it. Nothing is sent.
-        if self.cap < MAX_CLIP and len(self.clip) >= self.cap:
-            emit("status", text="Too long for a reply: dropped unsent")
-            self.wait_for_wake()
-            return
+        if self.cap < MAX_CLIP and len(self.clip) >= self.cap:  # see SHORT_CLIP
+            emit("status", text="Long for a reply: recording to the pause, and the orch hears it may be people talking")
+            self.cap, self.ran_long = MAX_CLIP, True
         if (spoke and self.quiet >= END_QUIET) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP \
                 or (spoke and self.quiet == self.closing_gap and self.said_closing()):
             self.stop_live()
@@ -1481,11 +1531,15 @@ class Ears:
         late = began + self.voiced_at * CHUNK / RATE > self.words_end + ECHO_ROOM
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
         woke, sure = self.woke, self.sure
+        ran_long = self.ran_long
         self.wait_for_wake(keep=clip is not None)  # first, so a failed transcription still leaves the ears listening
+        kept = keep_recent(clip) if clip is not None else None
         try:
             transcript = transcribe(clip) if clip is not None else ""
         except Exception as e:
             return self.lost(e)
+        if kept and transcript:
+            kept.with_suffix(".txt").write_text(transcript, encoding="utf-8")
         text = strip_wake(transcript)
         first = None if heard_first is None else began + heard_first  # when the clip's first word began
         # A first word after the reply's end means no echo at all: all of it is the user, even reading the reply aloud.
@@ -1510,7 +1564,7 @@ class Ears:
             fixed = fix_words(text)
             self.cut_rest = None
             self.heard_last, self.heard_at, self.saved_at = fixed, time.time(), 0.0  # saved_at: on disk right away
-            emit("heard", text=fixed, **({"raw": text} if fixed != text else {}))  # raw: for the window, as heard
+            emit("heard", text=fixed, **({"raw": text} if fixed != text else {}), **({"long": True} if ran_long else {}))  # raw: for the window
         elif clip is not None and re.search(r"\bwake\W+up\b", transcript, re.IGNORECASE):  # "Jarvis, wake up": listen for the request
             self.woke, self.sure = woke, sure
             emit("status", text="Awake: listening for the request")
@@ -1976,6 +2030,9 @@ def main(commands: list[str]) -> None:
             continue
         if value in ("watch on", "watch off"):
             ears.watching = value == "watch on"
+            continue
+        if value == "resend":
+            ears.resend()
             continue
         if value == "clicked":  # a choice clicked in the window answered: its listening window closes, unless they're talking
             if ears.phase() == "window":

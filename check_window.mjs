@@ -190,7 +190,7 @@ try {
     request(url(path), { method: 'POST', headers }, r => { r.resume(); resolve(r.statusCode) })
       .on('error', reject).end('page')
   })
-  for (const path of ['/', '/heard', '/choice', '/mic']) {
+  for (const path of ['/', '/heard', '/choice', '/resend-last', '/mic']) {
     assert.strictEqual(await post(path, { Origin: 'https://evil.example' }), 403, path)
     assert.strictEqual(await post(path, { Origin: 'null' }), 403, path)
     assert.strictEqual(await post(path, { Host: 'evil.example' }), 403, path)
@@ -270,6 +270,10 @@ try {
     for (let i = 0; i < 20 && !/^clicked$/m.test(toListener()); i++) await sleep(100)
     assert.match(toListener(), /^clicked$/m)
     assert.match(readFileSync(LOG, 'utf8'), / clicked: A\n/)
+    // The last thing said, sent again: the listener has it.
+    assert.strictEqual((await fetch(`http://127.0.0.1:${port3}/resend-last`, { method: 'POST' })).status, 200)
+    for (let i = 0; i < 20 && !/^resend$/m.test(toListener()); i++) await sleep(100)
+    assert.match(toListener(), /^resend$/m)
   } finally {
     router.stdin.end()
     router.kill()

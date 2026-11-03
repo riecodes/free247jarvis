@@ -294,15 +294,20 @@ def staying_quiet() -> None:
         e.say("Your answer?")
         assert e.spoken == ["Your answer?"] and ("spoken", {"listening": False}) in events and e.on_chunk == e.wake_chunk
 
-    # A listening window that runs on is thrown away unsent, and a wake word's request isn't capped.
+    # A listening window that runs on is never dropped: it records on to the pause, marked as run long. A wake word's
+    # request isn't capped.
     e = ears()
     e.vad.predict = lambda *a, **k: 0.9
     sent = []
     with mock.patch.object(listener, "emit", lambda *a, **k: None), mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "pause_media", list):
         e.record(sent.append, give_up=100)
-        for _ in range(listener.SHORT_CLIP):
+        for _ in range(listener.SHORT_CLIP + 10):
             e.on_chunk(chunk)
-        assert not sent and e.on_chunk == e.wake_chunk and e.talking()
+        assert not sent and e.on_chunk == e.record_chunk and e.ran_long and e.cap == listener.MAX_CLIP
+        e.vad.predict = lambda *a, **k: 0.0
+        for _ in range(listener.END_QUIET):
+            e.on_chunk(chunk)
+        assert len(sent) == 1 and len(sent[0]) == (listener.SHORT_CLIP + 10 + listener.END_QUIET) * len(chunk)
         e = ears()
         e.vad.predict = lambda *a, **k: 0.9
         e.woke = (0.9, 9)
@@ -1203,9 +1208,49 @@ def fast_voice() -> None:
     assert len(listener.GREETINGS) >= 40 and len(set(listener.GREETINGS)) == len(listener.GREETINGS)
 
 
+def resend(folder: Path) -> None:
+    """Every utterance is kept, the newest RECENT_KEEP, with its words; POST /resend-last sends the newest again."""
+    for old in folder.glob("*"):
+        old.unlink()
+    events = []
+    with mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), mock.patch.object(listener, "in_call", lambda: False):
+        e = ears()
+        with mock.patch.object(listener, "transcribe", lambda c: "Open the door."):
+            for _ in range(listener.RECENT_KEEP + 3):
+                e.request_done(np.ones(RATE // 10, np.int16))
+        assert len(list(folder.glob("*.wav"))) == listener.RECENT_KEEP == len(list(folder.glob("*.txt")))
+        events.clear()
+        e.resend()
+        assert ("heard", {"text": "Open the door."}) in events
+        # Lost, so no words kept: heard again from its audio, then sent.
+        with mock.patch.object(listener, "transcribe", lambda c: (_ for _ in ()).throw(RuntimeError("Groq is down"))):
+            e.request_done(np.ones(RATE // 10, np.int16))
+        newest = sorted(folder.glob("*.wav"))[-1]
+        assert not newest.with_suffix(".txt").exists()
+        events.clear()
+        with mock.patch.object(listener, "transcribe", lambda c: "Hey Jarvis, ship it." if len(c) == RATE // 10 else ""):
+            e.resend()
+        assert ("heard", {"text": "ship it."}) in events and newest.with_suffix(".txt").read_text(encoding="utf-8")
+        # A run-long window goes out marked, for the orch to judge.
+        events.clear()
+        e.ran_long = True
+        with mock.patch.object(listener, "transcribe", lambda c: "A long one."):
+            e.request_done(np.ones(RATE // 10, np.int16))
+        assert ("heard", {"text": "A long one.", "long": True}) in events
+        # Nothing kept: it says so.
+        with mock.patch.object(listener, "RECENT_KEEP", 0):
+            for old in folder.glob("*"):
+                old.unlink()
+        events.clear()
+        e.resend()
+        assert events[0][0] == "caption"
+
+
 def main() -> None:
     video = object()
     listener.output_problem = lambda: ""  # this machine's real speaker must not decide the checks
+    recent = Path(tempfile.mkdtemp())  # nor may they fill this machine's kept utterances
+    listener.recent_dir = lambda: recent
     # Nor may the checks touch this machine's real video or orch window.
     listener.pause_media, listener.resume_media = lambda: [], lambda sessions: None
     listener.raise_orch, listener.lower_orch = lambda: None, lambda raised: None
@@ -1495,6 +1540,7 @@ def main() -> None:
     name_first()
     claps()
     fast_voice()
+    resend(recent)
     listen_after()
     settings()
     bank()

@@ -123,6 +123,10 @@ async function push(text, via) {
 
 let askedAt = 0 // when the boss last got a spoken request it has not answered yet
 const held = [] // lines not said because of a call, until the user asks for them
+// What the listener heard in a listening window, without the wake word, ran past 90 s: often people talking nearby.
+const LONG_NOTE = '(From the voice: this ran past 90 seconds in the listening window, without the wake word, so it may ' +
+  'be people talking nearby rather than a request. If it is not one, say briefly that you heard a long stretch and ask ' +
+  'whether to act on it.)'
 const send = (text, via) => {
   if (via === 'mic') askedAt = Date.now()
   show('sent', { text, via })
@@ -384,7 +388,9 @@ function startEars() {
     if (e.event !== 'caption') show(e.event, e)
     if (e.event === 'spoken' || e.event === 'partial') return
     if (e.event === 'quiet') quiet = e.on
-    if (e.event === 'heard') {
+    if (e.event === 'heard' && e.long) {  // past 90 s without the wake word: the orch judges, the router doesn't guess
+      send(`${LONG_NOTE} ${e.text}`, 'mic').catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
+    } else if (e.event === 'heard') {
       route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
         .catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
     } else if (e.event === 'caption') {
@@ -497,7 +503,7 @@ function saveSetting(key, value) {
 }
 
 // POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /choice: a choice clicked in
-// the window, the same. POST /mic: on or off.
+// the window, the same. POST /resend-last: the last thing the user said, sent again. POST /mic: on or off.
 // GET and POST /settings: the window's settings panel.
 // GET /window and /events: the window and its live events, for this address only, so a web page can't read them
 // by pointing its own domain name at this machine.
@@ -549,6 +555,10 @@ const server = createServer((req, res) => {
       log(`mic ${text}`)
       ears.stdin.write(`${text}\n`)
     } else if (req.url === '/heard' && text) await route(text)
+    else if (req.url === '/resend-last') {
+      log('resend the last thing said')
+      ears.stdin.write('resend\n')
+    }
     else if (req.url === '/choice' && text) {  // a choice clicked in the window: as if said, and the listening window closes
       log(`clicked: ${text}`)
       show('heard', { text, via: 'click' })

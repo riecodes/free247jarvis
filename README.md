@@ -21,6 +21,9 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **Nothing you say is dropped.** A long answer in the listening window used to be thrown away after 90 seconds. Now it
+  records to your pause and goes to the orch, marked as maybe people talking. The last 50 things you said are kept on
+  this PC, so `curl -X POST http://127.0.0.1:8790/resend-last` sends the newest again if it got lost.
 - **It speaks sooner.** A reply's first sentence starts while the rest is still being rendered: about 0.2 s to the first
   word instead of 1 to 2 s, and short openers like "Sir, done." are kept from the last time, so they play at once. A
   reply that arrives while you're talking is rendered meanwhile, so it starts the moment you stop.
@@ -330,6 +333,10 @@ nothing while the mic is off, nothing from a follow-up window, nothing in a call
 **Nothing here is uploaded by keeping it**, though the request itself still goes to your speech-to-text service to
 be heard. Delete that folder to erase it all. With `off` or `on`, clips already there age out under the `on`
 limits, including ones kept under `forever`.
+
+Separately, whatever `VOICE_DATA` says, the last 50 things heard after the wake word or in a listening window are kept
+in `%LOCALAPPDATA%\free247jarvis\recent` (audio and transcript, never synced or uploaded), so one that got lost can be
+sent again with `POST /resend-last`. Older ones are deleted as new ones come. `RECENT=off` in `.env` keeps none.
 
 **Anyone near the mic while you make a request is in the clip, and with `forever` they stay in it.** Tell them, or
 turn it off for that stretch.

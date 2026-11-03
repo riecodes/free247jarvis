@@ -45,6 +45,7 @@ def ears() -> realtime.RealtimeEars:
 
 def main() -> None:
     events, played = [], []
+    listener.recent_dir = lambda: None  # the checks keep no utterances on this machine
 
     class Out:
         def __init__(self, **how):
