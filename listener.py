@@ -57,6 +57,7 @@ import time
 import wave
 import zlib
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -186,10 +187,22 @@ CLOSING_GAP = 0.8
 # Said on waking, with VOICE_TITLE after the comma. Rendered once per voice, in tmp/, so they play with no wait. Longer than
 # GREETING_MAX and it's skipped: it would talk over the request. No closing phrase, no "Jarvis", and two words or more, so
 # strip_echo can tell one when the mic hears it. After GREETING_AWAY of nothing, the time of day leads.
+# None of the last half of the pool comes back, so it doesn't sound like a loop.
 GREETINGS = ["Yes", "I'm here", "Right here", "Listening", "Go on", "I'm listening", "Here", "Tell me", "Yes, what is it",
-             "Ready", "What's up", "Yes, I'm here", "With you", "Hello"]
-GREETINGS_AT = {"Morning": range(4, 12), "Good day": range(12, 18), "Evening": (18, 19, 20, 21, 22, 23, 0, 1, 2, 3)}
-GREETING_MAX, GREETING_AWAY, GREETING_SPEED = 1.0, 30 * 60, 1.2
+             "Ready", "What's up", "Yes, I'm here", "With you", "Hello", "Hi", "At your service", "How can I help",
+             "What do you need", "What can I do", "Standing by", "All ears", "I'm all ears", "Yes, go on", "Sure",
+             "Here for you", "What's next", "Talk to me", "Yes, tell me", "Right with you", "I hear you", "On standby",
+             "Yep", "Sure, what is it", "Hey there", "Good to hear you", "Yes, what's up", "Here and ready",
+             "What can I get you", "I'm with you", "Yes, ready"]
+_EVENING = (18, 19, 20, 21, 22, 23, 0, 1, 2, 3)
+GREETINGS_AT = {"Morning": range(4, 12), "Good morning": range(4, 12), "Good day": range(12, 18), "Afternoon": range(12, 18),
+                "Good afternoon": range(12, 18), "Evening": _EVENING, "Good evening": range(18, 24), "Working late": (23, 0, 1, 2, 3)}
+# A reply's first sentence plays while the rest renders: Kokoro took 1.5 to 2.3 s for a whole reply before a sound. One
+# of LEAD_CACHE words or fewer ("Sir, done.", "Sir, got it.") is rendered once and kept in tmp/, so it starts at once.
+LEAD_CACHE = 4
+SPEAKER = ThreadPoolExecutor(1)  # one render at a time, in the order asked
+TTS_LOCK = threading.Lock()  # SPEAKER and the main loop (greetings, banked lines) both render; espeak under Kokoro may not be thread-safe
+GREETING_MAX, GREETING_AWAY, GREETING_SPEED = 1.3, 30 * 60, 1.2
 REMIND_EVERY = 30 * 60  # seconds before the same waiting item can follow a greeting again
 CLOSING_TAIL = 75  # chunks before the pause: 6 s, plenty for the words and quick to send
 CLOSING_EVERY = 4  # seconds between checks, to stay under Groq's 20 requests a minute
@@ -536,6 +549,12 @@ def name_check(clip: np.ndarray) -> tuple[bool, str]:
 
 def greeting_text(word: str, title: str) -> str:
     return f"{word}, {title.lower()}." if title else f"{word}."
+
+
+def split_lead(text: str) -> tuple[str, str]:
+    """The first sentence and the rest, or (text, "") for one sentence. "1.5" and "tmp/a.wav" don't split: no space."""
+    m = re.match(r"(.+?[.!?])\s+(\S.*)", text, re.DOTALL)
+    return (m[1], m[2]) if m else (text, "")
 
 
 def closes(said: str) -> bool:
@@ -1052,6 +1071,7 @@ class Ears:
     cap = MAX_CLIP  # chunks the clip being recorded may reach
     lead, said, words_end = LISTEN_LEAD, "", 0.0  # the reply last spoken, and when its last word reached the mic
     banked: dict = {}  # lines rendered ahead, by their words
+    ready: dict = {}  # lines waiting in the queue, already rendering: prepare()'s futures by their words
     waiting: list = []  # lines about something that waits on the user
     reminded: dict = {}  # when each of them last followed a greeting
     reminders = True  # REMINDERS=off: never
@@ -1059,7 +1079,7 @@ class Ears:
     sounds = True  # False: no chimes, whatever the files say (SOUNDS=off)
     listen_all, mic_open = True, True  # listen_all: a window after every line (LISTEN_AFTER=asked: only after a question)
     closing_gap, next_closing, voiced_at = round(CLOSING_GAP / 0.08), 0.0, 0  # voiced_at: chunks in when the speech last was
-    greetings, greetings_at, greeted, last_greeting = (), {}, 0.0, ""  # all rendered; greetings is empty with GREETING=off
+    greetings, greetings_at, greeted, last_greetings = (), {}, 0.0, []  # all rendered; greetings is empty with GREETING=off
     strict, talk_share = WAKE_STRICT, TALK_SHARE
     quiet_why, next_quiet = "", 0.0
     cut_off = True  # CUT_OFF=off: says nothing about a stop or a lost request
@@ -1140,7 +1160,7 @@ class Ears:
         self.talk_share = float(os.environ.get("TALK_SHARE") or TALK_SHARE)
         self.need_name = os.environ.get("WAKE_NAME", "").lower() != "off"
         self.lead = float(os.environ.get("LISTEN_LEAD") or LISTEN_LEAD)
-        self.banked, self.waiting, self.reminded = {}, [], {}
+        self.banked, self.waiting, self.reminded, self.ready = {}, [], {}, {}
         self.spoke: deque[bool] = deque(maxlen=TALK_CHUNKS)
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
         self.vad_boost = float(os.environ.get("VAD_BOOST") or 1)  # the wake word and speech to text cope without it
@@ -1352,13 +1372,13 @@ class Ears:
             return
         now = time.monotonic()
         hour = time.localtime().tm_hour
-        due = next((g for word, g in self.greetings_at.items() if hour in GREETINGS_AT[word]), None)
+        due = random.choice([g for word, g in self.greetings_at.items() if hour in GREETINGS_AT[word]] or [None])
         if due and (not self.greeted or now - self.greeted > GREETING_AWAY):
             line = due
         else:
-            line = random.choice([g for g in self.greetings if g[0] != self.last_greeting] or self.greetings)
+            line = random.choice([g for g in self.greetings if g[0] not in self.last_greetings] or self.greetings)
         text, samples, rate = line
-        self.greeted, self.last_greeting = now, text
+        self.greeted, self.last_greetings = now, (self.last_greetings + [text])[-max(1, len(self.greetings) // 2):]
         emit("greeting", text=text)
         self.play(samples, rate)
         # One thing that waits on the user, at most, and not the same one again soon. None in a call: that's the chime above.
@@ -1527,6 +1547,7 @@ class Ears:
         self.queue.append((text, how))
         if self.user_turn():
             emit("queued", text=text)
+            self.ready[text] = self.prepare(text)  # rendered while it waits, so it plays the moment they're done
 
     def flush(self) -> None:
         """Says the oldest waiting line once the user is done. The main loop calls this after every event."""
@@ -1547,6 +1568,7 @@ class Ears:
         back unsaid as `held`."""
         import soundfile as sf
 
+        prepared = self.ready.pop(text, None)
         call = self.busy()
         if call and hold:
             emit("held", text=text)
@@ -1557,20 +1579,32 @@ class Ears:
         self.last_line, self.last_line_at = text, time.monotonic()
         wanted = listen
         listen = listen or (self.listen_all and bool(self.followup) and self.mic_open and not call)  # never in a call or room talk
-        samples, rate, _ = self.speech(text)
-        REPLY_WAV.parent.mkdir(exist_ok=True)
-        sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
-        os.replace(REPLY_WAV.with_suffix(".partial.wav"), REPLY_WAV)
+        first, later = prepared or self.prepare(text)
+        samples, rate = first.result()
         emit("said", wav=str(REPLY_WAV), text=text)
-        words_len = len(samples)
-        if listen and self.sounds and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
-            samples = np.concatenate([samples.astype(np.float32), np.zeros(rate * 6 // 10, np.float32), CHIME_UP[0]])  # 0.7 s after the last word
         self.hush()
         problem = output_problem()  # not caught by the sound failing: a muted speaker plays along silently
         if problem:
             emit("caption", text=f"{problem} I said: {text}")
         self.barge, self.cut_rest = 0.0, None
-        if not self.play(samples, rate, over=(text, call)) and not problem:
+        played, lead = True, 0
+        if later:  # the first sentence plays while Kokoro renders the rest, which is ready long before it ends
+            played, lead = self.play(samples, rate, over=(text, call)), len(samples)
+            rest, rest_rate = later.result()
+            if rest_rate != rate:
+                rest = np.interp(np.arange(0, len(rest), rest_rate / rate), np.arange(len(rest)), rest)
+            samples = np.concatenate([samples.astype(np.float32), rest.astype(np.float32)])
+        REPLY_WAV.parent.mkdir(exist_ok=True)
+        sf.write(REPLY_WAV.with_suffix(".partial.wav"), samples, rate)
+        os.replace(REPLY_WAV.with_suffix(".partial.wav"), REPLY_WAV)
+        words_len = len(samples)
+        if listen and self.sounds and rate == CHIME_UP[1]:  # the chime in the same stream, the instant the words end
+            samples = np.concatenate([samples.astype(np.float32), np.zeros(rate * 6 // 10, np.float32), CHIME_UP[0]])  # 0.7 s after the last word
+        if not self.barge:
+            played = self.play(samples[lead:] if lead else samples, rate, over=(text, call)) and played
+            if lead and self.barge:
+                self.play_began -= lead / rate  # talked_over counts from the first word
+        if not played and not problem:
             emit("caption", text=f"I can't play sound. {CANT_HEAR} I said: {text}")
         turn = (text, (len(samples) - words_len) / rate, listen, wanted, asked)
         if self.barge:
@@ -1684,6 +1718,14 @@ class Ears:
             sf.write(path, samples, rate)
         return sf.read(path, dtype="float32")
 
+    def prepare(self, text: str) -> tuple:
+        """Starts rendering a line: (its first sentence, the rest or None), as futures. A short first sentence ("Sir, done.")
+        comes from the disk cache, so the voice starts the moment the line arrives; the rest renders while that plays."""
+        lead, rest = (text, "") if any(text.startswith(line) for line in self.banked) else split_lead(text)
+        cached = rest and len(lead.split()) <= LEAD_CACHE
+        first = SPEAKER.submit(lambda: self.load_ack(lead) if cached else self.speech(lead)[:2])
+        return first, rest and SPEAKER.submit(lambda: self.speech(rest)[:2])
+
     def speech(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int, str]:
         """The reply as audio, plus the voice_key() that said it: the ElevenLabs voice when set up, else (or when it
         fails) Kokoro. A line rendered ahead, with an age after it that is too, needs neither."""
@@ -1709,8 +1751,9 @@ class Ears:
                 emit("error", message=f"ElevenLabs voice failed, using Kokoro: {e}")
             voice = os.environ.get("VOICE") or "bm_george"
         lang = "en-gb" if voice[0] == "b" else "en-us"  # bm_/bf_ voices are British
-        phonemes = respoken(text, lambda t: self.tts.tokenizer.phonemize(t, lang))
-        samples, rate = self.tts.create(phonemes or text, voice=voice, speed=speed, lang=lang, is_phonemes=bool(phonemes))
+        with TTS_LOCK:
+            phonemes = respoken(text, lambda t: self.tts.tokenizer.phonemize(t, lang))
+            samples, rate = self.tts.create(phonemes or text, voice=voice, speed=speed, lang=lang, is_phonemes=bool(phonemes))
         return samples, rate, f"kokoro_{voice}"
 
     # Voice training: five takes of the first wake word and three sentences of other speech teach openWakeWord's

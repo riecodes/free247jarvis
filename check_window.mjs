@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
-import { AGES, ageWords, isFiller, latestLines, matchLine, shortlist, withFacts } from './rules.mjs'
+import { ACKS, AGES, ageWords, fresh, isFiller, latestLines, matchLine, shortlist, withFacts } from './rules.mjs'
 
 for (const said of ['Hmm.', 'Mm-hmm.', 'Okay', 'Damn', 'Got it.']) assert(isFiller(said), said)
 for (const said of ['Yes', 'Go', 'Okay, send it', 'What?', 'Hello']) assert(!isFiller(said), said)
@@ -42,6 +42,14 @@ for (const [m, words] of [[0, 'As of just now.'], [1.5, 'As of a minute ago.'], 
   assert.strictEqual(ageWords(m * 60_000), words)
   assert(AGES.includes(words), words)
 }
+
+// Acks: none of the last half of the pool again, and every one gets its turn.
+let recent = [], acks = []
+for (let i = 0; i < 400; i++) (recent = fresh(ACKS, recent), acks.push(recent.at(-1)))
+const half = ACKS.length / 2
+assert(acks.every((a, i) => !acks.slice(Math.max(0, i - half), i).includes(a)) && new Set(acks).size === ACKS.length)
+assert.strictEqual(new Set(ACKS).size, ACKS.length)
+for (const a of ACKS) assert(!/jarvis|(do it|go|go ahead|thanks?|thank you|that's it)\W*$/i.test(a), a)
 
 const PORT = 8797
 const HERE = fileURLToPath(new URL('.', import.meta.url))
@@ -257,9 +265,10 @@ try {
     assert.match(toListener(), /^waiting \["Sir, the draft is ready\."\]$/m, toListener())
     assert.match(toListener(), /^bank Sir, the draft is ready\.$/m)
     const before2 = toListener().length
-    await heard('how is the webinar going')  // nothing on it: the orch
+    await heard('how is the webinar going')  // nothing on it: the orch, with an ack said first
     await sleep(300)
-    assert(!/^(end|say) /m.test(toListener().slice(before2)), toListener().slice(before2))
+    const spoken = toListener().slice(before2).match(/^(end|say) .*$/gm) ?? []
+    assert(spoken.length === 1 && ACKS.some(a => spoken[0] === `end Sir, ${a[0].toLowerCase()}${a.slice(1)}`), spoken.join(' | '))
     jevSays = 'status'
     await heard("what's the status")  // no topic: the sessions' own summary as before
     await sleep(300)

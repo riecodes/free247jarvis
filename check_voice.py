@@ -39,6 +39,7 @@ def ears() -> listener.Ears:
     e.followup, e.deaf_until, e.paused, e.raised, e.reply_by = 100, 0.0, [], None, 0.0
     e.oww, e.vad, e.vad_boost, e.recent = mock.Mock(), mock.Mock(), 1, []
     e.spoke = listener.deque(maxlen=listener.TALK_CHUNKS)
+    e.ready = {}
     e.on_chunk, e.voiced = e.wake_chunk, 0
     e.need_name = False  # name_needed tests it; the rest is about what follows the wake word
     e.closing_gap = 0  # closing_cut tests it
@@ -1143,6 +1144,65 @@ def voice_data() -> None:
     assert mishears.shaky([{"clip": "a.wav", "segments": [{"text": " huh", "avg_logprob": -0.9}, {"text": "ok", "avg_logprob": -0.1}]}]) == [(-0.9, "a.wav", "huh")]
 
 
+def fast_voice() -> None:
+    """A reply's first sentence plays while the rest renders, and a short one comes from the cache. Greetings don't repeat soon."""
+    assert listener.split_lead("Sir, done. It's at tmp/a.wav.") == ("Sir, done.", "It's at tmp/a.wav.")
+    assert listener.split_lead("It took 1.5 s.") == ("It took 1.5 s.", "")
+    events = []
+
+    def say(e, text):
+        with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))),                 mock.patch("soundfile.write"), mock.patch.object(listener.os, "replace"):
+            e.say(text, asked=False)
+
+    e, cached = ears(), []
+    e.load_ack = lambda text, speed=1: (cached.append(text), np.ones(RATE // 2, np.float32), RATE)[1:]
+    e.speech = lambda text: (e.spoken.append(text), np.zeros(RATE * 2, np.float32), RATE, "test")[1:]
+    say(e, "Sir, done. The old account is gone, and a new one is ready.")
+    assert cached == ["Sir, done."] and e.spoken == ["The old account is gone, and a new one is ready."]
+    assert [len(p) for p in e.played] == [RATE // 2, RATE * 2] and e.on_chunk == e.wake_chunk
+    # A long first sentence is rendered, not cached. One sentence: one render, as before.
+    e, cached = ears(), []
+    e.load_ack = lambda text, speed=1: cached.append(text)
+    say(e, "The old account and all of its files are gone now. A new one is ready.")
+    say(e, "Done.")
+    assert not cached and e.spoken == ["The old account and all of its files are gone now.", "A new one is ready.", "Done."]
+    # Talked over in the second part: the cut counts from the first word, so what's left is the rest past that point.
+    e = ears()
+    e.speech = lambda text: (np.zeros(RATE // 2 if text == "First part." else RATE * 2, np.float32), RATE, "test")
+
+    def over_second(samples, rate=0, *a, **k):
+        if k.get("over") and len(samples) == RATE * 2:
+            e.play_began, e.barge = time.monotonic() - 0.5, time.monotonic()
+        return True
+    e.play, e.load_ack = over_second, lambda text, speed=1: e.speech(text)[:2]
+    say(e, "First part. And then the second part, which is longer.")
+    assert e.cut_rest and abs(len(e.cut_rest[0]) - RATE * 1.5) < RATE * 0.05, len(e.cut_rest[0])
+    assert e.said.startswith("First part.") and e.on_chunk == e.record_chunk
+    # A line queued while the user talks renders then, and plays from that.
+    e = ears()
+    e.on_chunk, e.clip, e.voiced = e.record_chunk, ["their words"], 5
+    e.load_ack = lambda text, speed=1: e.speech(text)[:2]
+    with mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))):
+        e.line("Queued. Then more.", asked=False)
+    assert "Queued. Then more." in e.ready
+    listener.SPEAKER.submit(int).result()
+    assert e.spoken == ["Queued.", "Then more."]
+    e.wait_for_wake()
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), mock.patch("soundfile.write"),             mock.patch.object(listener.os, "replace"):
+        e.flush()
+    assert e.spoken == ["Queued.", "Then more."] and not e.ready and len(e.played) == 2
+    # Forty greetings: none of the last half comes back.
+    e = ears()
+    e.greetings = [(f"Line {i}.", np.zeros(10, np.float32), RATE) for i in range(40)]
+    e.greeted = time.monotonic()
+    said = []
+    with mock.patch.object(listener, "emit", lambda ev, **d: said.append(d["text"]) if ev == "greeting" else None):
+        for _ in range(200):
+            e.greet(False)
+    assert all(len(set(said[i:i + 20])) == 20 for i in range(len(said) - 20)) and len(set(said)) == 40
+    assert len(listener.GREETINGS) >= 40 and len(set(listener.GREETINGS)) == len(listener.GREETINGS)
+
+
 def main() -> None:
     video = object()
     listener.output_problem = lambda: ""  # this machine's real speaker must not decide the checks
@@ -1187,6 +1247,7 @@ def main() -> None:
 
     # Never over the user: while a request or an answer is being recorded every line waits, oldest first.
     events = []
+    said = lambda: [d["text"] for ev, d in events if ev == "said"]  # played, not only rendered: a queued line renders ahead
     with mock.patch.object(listener, "in_call", lambda: False), \
             mock.patch.object(listener, "emit", lambda event, **d: events.append((event, d))), \
             mock.patch.object(listener, "pause_media", lambda: []), \
@@ -1196,34 +1257,34 @@ def main() -> None:
         e.line("First.", asked=False, hold=True)
         e.line("Second?", hold=True)
         e.flush()
-        assert e.spoken == [] and e.on_chunk == e.record_chunk and e.clip == ["their words"]
+        assert said() == [] and e.on_chunk == e.record_chunk and e.clip == ["their words"]
         assert [d["text"] for ev, d in events if ev == "queued"] == ["First.", "Second?"]
         # Their words are handled: the oldest line goes out. The second opens the window.
         e.wait_for_wake()
         e.flush()
-        assert e.spoken == ["First."] and e.on_chunk == e.wake_chunk
+        assert said() == ["First."] and e.on_chunk == e.wake_chunk
         e.flush()
-        assert e.spoken == ["First.", "Second?"] and e.on_chunk == e.record_chunk
+        assert said() == ["First.", "Second?"] and e.on_chunk == e.record_chunk
         # That open window holds the next line too, even before the user says a word, until it closes.
         e.voiced = 0
         e.line("Third.", asked=False, hold=True)
         e.flush()
-        assert e.spoken == ["First.", "Second?"]
+        assert said() == ["First.", "Second?"]
         e.close()
         e.flush()
-        assert e.spoken[-1] == "Third."
+        assert said()[-1] == "Third."
         # Speech with no recording on: the line waits for 3 s of quiet, but not forever. Quiet: it goes at once.
-        e = ears()
+        e, _ = ears(), events.clear()
         e.line("News.", asked=False, hold=True)
         e.flush()
-        assert e.spoken == ["News."]
+        assert said() == ["News."]
         e.last_speech = listener.time.monotonic()
         e.line("News.", asked=False, hold=True)
         e.flush()
-        assert e.spoken == ["News."]
+        assert said() == ["News."]
         e.queue_since -= listener.HOLD_MAX
         e.flush()
-        assert e.spoken == ["News.", "News."]
+        assert said() == ["News.", "News."]
         # The VAD feeds that, while waiting for the wake word.
         e = ears()
         e.vad.predict = lambda *a, **k: 0.9
@@ -1433,6 +1494,7 @@ def main() -> None:
     name_needed()
     name_first()
     claps()
+    fast_voice()
     listen_after()
     settings()
     bank()

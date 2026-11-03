@@ -122,3 +122,15 @@ export function ageWords(ms) {
   if (minutes < 2) return ONE_MINUTE
   return `As of ${AGE_STEPS.filter(([m]) => m <= minutes).at(-1)[1]} ago.`
 }
+
+// Said the moment real work goes to the orch. Each is rendered once and kept, so it plays at once.
+export const ACKS = ['On it.', 'Got it.', 'On it now.', 'Working on it.', 'Sure, on it.', 'Right away.', 'Leave it with me.',
+  'One moment.', 'Will do.', 'Sure thing.', 'Okay, working on it.', 'Coming right up.', 'Let me handle that.', 'Okay, on it.',
+  'Give me a moment.', 'Let me check.', 'Starting now.', 'Okay, give me a sec.', 'Right, on it.', 'Already on it.']
+
+// `recent` plus a line from `pool` that isn't among the last half of them, so it doesn't sound canned; the line is last.
+export function fresh(pool, recent, random = Math.random) {
+  const left = pool.filter(a => !recent.includes(a))
+  const line = left[Math.floor(random() * left.length)] ?? pool[0]
+  return [...recent, line].slice(-Math.max(1, Math.floor(pool.length / 2)))
+}

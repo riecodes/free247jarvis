@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { AGES, ageWords, asksForHeld, asksSomething, bankFile, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, withFacts } from './rules.mjs'
+import { ACKS, AGES, ageWords, asksForHeld, asksSomething, bankFile, fresh, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, withFacts } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -47,7 +47,8 @@ const SPEAK = (TITLE ? `Start every spoken reply with "${TITLE},". ` : '') +
   'Write times, numbers and dates as English words, the way they are said ("nine seventeen PM", "October ' +
   'twenty-six"), never in Spanish or Tagalog numbers.' +
   ' Whatever language the request is in, answer in plain English only, with no Tagalog or Taglish words at all ' +
-  '(not even "na", "po" or "sige").'
+  '(not even "na", "po" or "sige"). Vary your wording from reply to reply the way a person would, not the same ' +
+  'opener ("done", "got it") every time, and keep the first sentence short: it is spoken while the rest is rendered.'
 
 // A key from .env: NAME=..., or NAME_FILE= a file that holds the key alone or a NAME=... line (another app's .env).
 function secret(name) {
@@ -269,10 +270,13 @@ async function route(text) {
   const quick = kind === 'status' ? status() : kind === 'chat' ? await chat(text)
     : picks ? await chat(text, withFacts(picks, await liveFacts())) : ''
   if (quick) return answer(quick)
-  // VOICE_ACK=on: real work takes the orch a turn, so a first word comes at once and its answer after.
-  if (/^on$/i.test(env.VOICE_ACK ?? '')) answer('On it.')
+  // Real work takes the orch a turn, so a first word comes at once and its answer after (VOICE_ACK=off: none).
+  if (!/^off$/i.test(env.VOICE_ACK ?? '')) answer(ack())
   await send(text, 'mic')
 }
+
+let lastAcks = []
+const ack = () => (lastAcks = fresh(ACKS, lastAcks)).at(-1)
 
 // Says it without the boss; `listen` then records the next sentence without the wake word.
 function answer(text, listen = false) {
@@ -477,6 +481,7 @@ const SETTINGS = [
   { key: 'FOLLOWUP_SECONDS', label: 'Listening window', hint: 'Seconds it waits for you after speaking. 0: none.', min: 0, max: 120, fallback: '8' },
   { key: 'CLOSING_CUT', label: 'Send on a closing phrase', hint: '"Do it", "go ahead", "thank you" send without the 5 s wait.', options: ['on', 'off'] },
   { key: 'REMINDERS', label: 'Reminders', hint: 'After a greeting, one thing that is waiting on you.', options: ['on', 'off'] },
+  { key: 'VOICE_ACK', label: 'Say "On it" first', hint: 'A quick word the moment real work goes to the orch; its answer comes after.', options: ['on', 'off'] },
   { key: 'CLAP', label: 'Clap twice to wake it', hint: 'Two sharp claps work like "Hey Jarvis".', options: ['on', 'off'] },
   { key: 'TALK_OVER', label: 'Talk over it to stop it', hint: 'Off: only "Hey Jarvis" stops a reply.', options: ['on', 'off'] },
   { key: 'CUT_OFF', label: 'Say when it got cut off', hint: 'After its ears stop, or a request is lost: says so, and the last thing it heard.', options: ['on', 'off'] },
