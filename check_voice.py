@@ -425,14 +425,21 @@ def claps() -> None:
             x[i:i + len(t)] += make()
         return np.clip(x, -32768, 32767).astype(np.int16)
 
-    def doubles(x, talk=()):
-        c = listener.Claps()
+    def doubles(x, talk=(), once=False):
+        c = listener.Claps(once=once)
         return sum(c.feed(x[i:i + listener.CHUNK], i // listener.CHUNK in talk) for i in range(0, len(x) - listener.CHUNK, listener.CHUNK))
     assert doubles(sound(1.0, 1.3)) == 1 and doubles(sound(1.0, 1.45)) == 1
     for at in ((1.0,), (1.0, 1.3, 1.6), (1.0, 1.9), (0.6, 0.78, 0.96, 1.14, 1.32, 1.5)):
         assert doubles(sound(*at)) == 0, at
     assert doubles(sound(1.0, 1.3, make=knock)) == 0
     assert doubles(sound(1.0, 1.3), talk=range(5, 11)) == 0  # right after speech: a word's last consonants, not claps
+    assert doubles(sound(1.0, 1.3), talk=range(18, 24)) == 0  # words right after: the same
+    # A fan's hum (RMS 200, as on the PD100X) under softer claps: the old bar, 12 times the room's level, was over them.
+    hum = 280 * np.sin(2 * np.pi * 150 * np.arange(3 * listener.RATE) / listener.RATE)
+    assert doubles(np.clip(sound(1.0, 1.3, make=lambda: clap(1500)) + hum, -32768, 32767).astype(np.int16)) == 1
+    # CLAP=once: one loud snap alone wakes it too; a soft one, or one in a pair too far apart, doesn't count twice.
+    assert doubles(sound(1.0), once=True) == 1 and doubles(sound(1.0, make=lambda: clap(400)), once=True) == 0
+    assert doubles(sound(1.0, 1.9), once=True) == 2
     # Through the ears: a wake like the name's, with no speech to text.
     e, events = ears(), []
     e.claps = listener.Claps()
