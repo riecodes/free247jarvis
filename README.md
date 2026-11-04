@@ -21,6 +21,8 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **It knows when you're done.** A small local model hears whether a request sounds finished, so a finished one
+  goes after 2 seconds of quiet instead of 5, with no Groq request. Unsure, it waits as before.
 - **The double clap is off by default.** `CLAP=on` turns it on, and it now hears through a fan's or a PC's hum, which
   used to drown it. Two snaps or tongue clicks wake it too, which is why it is off.
 - **macOS, untested.** `setup.sh`, `start.sh` and `spawn.sh` do on a Mac what the `.ps1` scripts do on Windows. The
@@ -296,9 +298,12 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   of your request, in order and allowing for spelling ("Be no. Yes" for "B, no." comes out as "Yes"). Words timed after it
   finished speaking are always yours, even if you read its reply aloud. Loud speakers next to the mic can still open a
   listening window by themselves: lower `LISTEN_LEAD=` then.
-- End a request with "do it", "go", "go ahead", "send it", "let's go", "that's it" or "thank you" and it goes after 0.8
-  seconds of quiet instead of 5 (`CLOSING_GAP=`, or `CLOSING_CUT=off`). At each pause the last 6 seconds go to speech to
-  text, at most once every 4 seconds, and the phrase must stand on its own: "how do I do it" and "do it again" don't count.
+- A request that sounds finished goes after 2 seconds of quiet instead of 5. At that pause, [Smart Turn](https://github.com/pipecat-ai/smart-turn)
+  v3.2 (BSD 2-Clause, 8.7 MB, downloaded by `listener.py fetch`) judges the last 8 seconds of your voice on the
+  processor, in about a tenth of a second, from how you said it rather than the words. Only a sure "done" sends early;
+  anything less waits the 5 seconds. Over the 231 kept requests of its first tuning, it cut 2% of them short and sent 14%
+  sooner. Its languages include English but not Tagalog; those numbers are from English and Taglish requests both. `CLOSING_GAP=` sets the pause,
+  `CLOSING_CUT=off` leaves it all to the silence. No speech to text is asked, so it costs nothing on Groq.
 - On waking it says a short line, never one of the last twenty, and the time of day when it's been a while. They're rendered once
   per voice, so they play at once with no turn of the boss, and you can talk over them. While you're with someone: only the
   chime. `GREETING=off` for the chime always.

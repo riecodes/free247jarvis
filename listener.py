@@ -150,6 +150,10 @@ KOKORO_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/mode
 # The full-precision model: on a GTX 1650 about 0.6 s for a short reply, and on the CPU about 2 s, where the int8
 # one took 4 to 6 s (int8 math is slow on the CPU and not run on the GPU).
 KOKORO = ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
+# Smart Turn v3.2 (pipecat-ai, BSD 2-Clause): from the sound alone, whether the user has finished. 8.7 MB, int8, on the CPU
+# in about 0.09 s. Pinned to the commit of 2026-01-07. English is one of its 23 languages; Tagalog isn't.
+TURN_MODEL = "smart-turn-v3.2-cpu.onnx"
+TURN_URL = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/"
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 EL_URL = "https://api.elevenlabs.io/v1"
 EL_VOICE = "JBFqnCBsd6RMkjVDRZzb"  # George, a stock British ElevenLabs voice, when ELEVENLABS_VOICE_ID is empty
@@ -187,11 +191,14 @@ REPEAT_RECENT = 90  # seconds after a line that "what?" still means that line; l
 ASK_AGAIN = re.compile(r"(sorry )?(what|huh|ha+|ano|ano yun|pardon( me)?|again|come again|what again|what is it again|what was that|what did you say"
                        r"|say (that|it) again|repeat( that| it)?|one more time|once more|i didn't (hear|catch) (that|you))")
 LETTER_NAMES = {"ay": "a", "eh": "a", "be": "b", "bee": "b", "see": "c", "sea": "c", "dee": "d", "ee": "e", "eff": "f", "gee": "g", "aitch": "h"}
-# Words at the end of a request that end it at once (CLOSING_CUT=off in .env turns it off). After CLOSING_GAP of quiet (.env)
-# the words so far go to speech to text; silence stays the fallback for everything else.
-CLOSING_GAP = 0.8
+# A request that sounds finished goes without the full END_QUIET (CLOSING_CUT=off in .env turns it off). After CLOSING_GAP
+# of quiet (.env), Smart Turn judges the last 8 s; at TURN_SURE or more it goes, else silence decides as before. Tried on
+# the user's 231 kept requests (2026-11-04): at 0.8 s it cut 14% of them short, at 2 s and 0.95 it cut 2% (pauses before
+# the last one counted as unfinished) and sent 14% 3 s sooner. The first TURN_SKIP chunks are the greeting, which sounds
+# done. It replaced a check of the words for "do it", "go ahead" and "thank you", which cost a Groq request each pause.
+CLOSING_GAP, TURN_SURE, TURN_SKIP = 2.0, 0.95, 38
 # Said on waking, with VOICE_TITLE after the comma. Rendered once per voice, in tmp/, so they play with no wait. Longer than
-# GREETING_MAX and it's skipped: it would talk over the request. No closing phrase, no "Jarvis", and two words or more, so
+# GREETING_MAX and it's skipped: it would talk over the request. No "Jarvis", and two words or more, so
 # strip_echo can tell one when the mic hears it. After GREETING_AWAY of nothing, the time of day leads.
 # None of the last half of the pool comes back, so it doesn't sound like a loop.
 GREETINGS = ["Yes", "I'm here", "Right here", "Listening", "Go on", "I'm listening", "Here", "Tell me", "Yes, what is it",
@@ -210,13 +217,6 @@ SPEAKER = ThreadPoolExecutor(1)  # one render at a time, in the order asked
 TTS_LOCK = threading.Lock()  # SPEAKER and the main loop (greetings, banked lines) both render; espeak under Kokoro may not be thread-safe
 GREETING_MAX, GREETING_AWAY, GREETING_SPEED = 1.3, 30 * 60, 1.2
 REMIND_EVERY = 30 * 60  # seconds before the same waiting item can follow a greeting again
-CLOSING_TAIL = 75  # chunks before the pause: 6 s, plenty for the words and quick to send
-CLOSING_EVERY = 4  # seconds between checks, to stay under Groq's 20 requests a minute
-CLOSING_TIMEOUT = 3
-# After the start of the words or a clause: "how do I do it" and "where did it go" are no closing. A cut here costs a late
-# word, sent as its own request. Whisper invents "Thank you" over long quiet, so only the words before the quiet go.
-CLOSING = re.compile(r"(?:^|[.!?,]\s+)(?:(?:yeah|yes|okay|ok|so|then|please|just|and)\W+)*"
-                     r"(?:do it|let's do it|go ahead|go for it|go|let's go|send it|thank you|thanks|that's it)\W*$", re.IGNORECASE)
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
 PEAK_FLOOR = 0.03  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
 NEAR_MISS = 0.12  # a peak from here up to the threshold gets the near-miss tick
@@ -261,7 +261,7 @@ GIVE_UP = 62  # about 5s without speech after waking: nobody is talking
 MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV tops Groq's free 25 MB at 13 min)
 # Free voice's live words, in chunks: every 4 s is 15 requests a minute, leaving room in Groq's 20 for the request itself.
 LIVE_EVERY = 50
-LIVE_SPARE, CLOSING_SPARE = 8, 4  # requests a minute kept free for wake checks and requests, when these two ask
+LIVE_SPARE = 8  # requests a minute kept free for wake checks and requests, when the live words ask
 LIVE_CLIP = 188  # the last 15 s
 # Talking over a reply stops it. What the mic hears of the speaker must not: speech in TALK_OVER_RUN of the last TALK_OVER_OF
 # chunks (0.64 s), louder by TALK_OVER_RATIO (.env) than the level the reply itself has at the mic. TALK_OVER_SETTLE chunks
@@ -620,10 +620,25 @@ def split_lead(text: str) -> tuple[str, str]:
     return (m[1], m[2]) if m else (text, "")
 
 
-def closes(said: str) -> bool:
-    """A lone "Thank you." isn't one: it's what Whisper makes of faint sound, and there is no request to send anyway."""
-    said = strip_wake(said)
-    return bool(CLOSING.search(said)) and " ".join(re.findall(r"\w+", said.lower())) not in HALLUCINATIONS
+def mel_filters() -> np.ndarray:
+    """Whisper's 80 Slaney mel filters over 0 to 8 kHz, for a 400-point FFT: (201, 80)."""
+    to_mel = lambda f: np.where(f < 1000, f * 3 / 200, 15 + np.log(np.maximum(f, 1e-9) / 1000) * 27 / np.log(6.4))
+    to_hz = lambda m: np.where(m < 15, m * 200 / 3, 1000 * np.exp((m - 15) * np.log(6.4) / 27))
+    edges = to_hz(np.linspace(0.0, float(to_mel(np.float64(8000))), 82))
+    slopes = edges[None, :] - np.linspace(0, 8000, 201)[:, None]
+    gaps = np.diff(edges)
+    return np.maximum(0, np.minimum(-slopes[:, :-2] / gaps[:-1], slopes[:, 2:] / gaps[1:])) * (2 / (edges[2:] - edges[:-2]))
+
+
+def turn_features(audio: np.ndarray) -> np.ndarray:
+    """Smart Turn's input from 16 kHz int16 audio: its last 8 s (zeros in front when shorter) as Whisper's log mel, the way
+    transformers' WhisperFeatureExtractor makes it (checked against it to 4e-6), without that package."""
+    x = audio.astype(np.float64)[-8 * RATE:] / 32768
+    x = np.pad(x, (8 * RATE - len(x), 0))
+    x = np.pad((x - x.mean()) / np.sqrt(x.var() + 1e-7), 200, mode="reflect")
+    frames = np.lib.stride_tricks.sliding_window_view(x, 400)[::160] * np.hanning(401)[:-1]
+    log = np.log10(np.maximum((np.abs(np.fft.rfft(frames, axis=1)) ** 2) @ mel_filters(), 1e-10)).T[:, :-1]
+    return ((np.maximum(log, log.max() - 8) + 4) / 4).astype(np.float32)[None]
 
 
 def sorry(title: str) -> str:
@@ -807,7 +822,7 @@ def fetch() -> None:
 
     MODELS.mkdir(exist_ok=True)
     download_models(["hey_jarvis"], target_directory=str(MODELS))  # plus the feature and VAD models
-    for name, url in [(n, KOKORO_URL + n) for n in KOKORO]:
+    for name, url in [(n, KOKORO_URL + n) for n in KOKORO] + [(TURN_MODEL, TURN_URL + TURN_MODEL)]:
         path = MODELS / name
         if not path.is_file():
             emit("status", text=f"Downloading {name}...")
@@ -1180,7 +1195,7 @@ class Ears:
     idle_window = False  # the window now open follows a line that asked nothing
     sounds = True  # False: no chimes, whatever the files say (SOUNDS=off)
     listen_all, mic_open = True, True  # listen_all: a window after every line (LISTEN_AFTER=asked: only after a question)
-    closing_gap, next_closing, voiced_at = round(CLOSING_GAP / 0.08), 0.0, 0  # voiced_at: chunks in when the speech last was
+    closing_gap, voiced_at, turn = round(CLOSING_GAP / 0.08), 0, None  # voiced_at: chunks in when the speech last was
     greetings, greetings_at, greeted, last_greetings = (), {}, 0.0, []  # all rendered; greetings is empty with GREETING=off
     strict, talk_share = WAKE_STRICT, TALK_SHARE
     quiet_why, next_quiet = "", 0.0
@@ -1286,6 +1301,12 @@ class Ears:
         self.banked, self.waiting, self.reminded, self.ready = {}, [], {}, {}
         self.spoke: deque[bool] = deque(maxlen=TALK_CHUNKS)
         self.vad = VAD(str(MODELS / "silero_vad.onnx"))
+        try:
+            import onnxruntime as rt
+
+            self.turn = rt.InferenceSession(str(MODELS / TURN_MODEL), providers=["CPUExecutionProvider"])
+        except Exception as e:  # silence ends every request, as before
+            emit("error", message=f"No Smart Turn, so the full pause: {e}")
         self.vad_boost = float(os.environ.get("VAD_BOOST") or 1)  # the wake word and speech to text cope without it
         self.tts = Kokoro.from_session(kokoro_session(), str(MODELS / KOKORO[1]))  # also the fallback for ElevenLabs
         ears, mouth = "Scribe" if el_key() else "Groq", "ElevenLabs" if voice_key().startswith("elevenlabs") else "Kokoro"
@@ -1580,27 +1601,23 @@ class Ears:
             emit("status", text="Long for a reply: recording to the pause, and the orch hears it may be people talking")
             self.cap, self.ran_long = MAX_CLIP, True
         if (spoke and self.quiet >= END_QUIET) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP \
-                or (spoke and self.quiet == self.closing_gap and self.said_closing()):
+                or (spoke and self.quiet == self.closing_gap and self.sounds_done()):
             self.stop_live()
             self.on_done(np.concatenate(self.clip) if spoke else None)
 
-    def said_closing(self) -> bool:
-        """The speech so far ends with a closing phrase. Blocks for a moment; the mic's chunks wait in the queue, so if the
-        user goes on, nothing is lost and the next pause checks again. Any failure leaves it to silence."""
-        now = time.monotonic()
-        if not self.closing_gap or self.on_done == self.take_done or now < self.next_closing or not groq_room(CLOSING_SPARE):
+    def sounds_done(self) -> bool:
+        """Smart Turn hears the request finished (CLOSING_GAP above). Blocks for about 0.1 s; the mic's chunks wait in the
+        queue. Unsure, past nothing but the greeting, or any failure: silence decides."""
+        if not self.closing_gap or not self.turn or self.on_done == self.take_done or len(self.clip) < TURN_SKIP:
             return False
-        self.next_closing = now + CLOSING_EVERY
-        if self.live:
-            self.live.waiting = 0  # this request takes the live words' turn, for Groq's limit
         try:
-            said = transcribe(np.concatenate(self.clip[max(0, self.voiced_at - CLOSING_TAIL):self.voiced_at + 2]), CLOSING_TIMEOUT)
+            done = float(self.turn.run(None, {"input_features": turn_features(np.concatenate(self.clip[-100:]))})[0].ravel()[0])
         except Exception as e:
-            emit("status", text=f"Closing phrase not checked: {e}")
+            emit("status", text=f"End of the request not checked: {e}")
             return False
-        if not closes(said):
+        if done < TURN_SURE:
             return False
-        emit("status", text="Closing phrase: sent without waiting for the silence")
+        emit("status", text=f"Sounds done ({done:.2f}): sent without waiting for the silence")
         return True
 
     def request_done(self, clip: np.ndarray | None) -> None:

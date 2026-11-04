@@ -502,7 +502,7 @@ def settings() -> None:
         e = ears()
         e.load_greetings = lambda: setattr(e, "greetings", ["ok"])
         e.read_settings()
-        assert e.sounds and e.greetings == ["ok"] and e.listen_all and e.followup == 100 and e.closing_gap == 10
+        assert e.sounds and e.greetings == ["ok"] and e.listen_all and e.followup == 100 and e.closing_gap == round(listener.CLOSING_GAP / 0.08)
     # With sounds off, no chime plays, and a spoken line still does.
     e = listener.Ears.__new__(listener.Ears)
     e.sounds, e.deaf_until = False, 0.0
@@ -895,7 +895,7 @@ def greeting() -> None:
     for word in listener.GREETINGS + list(listener.GREETINGS_AT):
         for title, front in (("Sir", False), ("Sir", True), ("", False)):
             text = listener.greeting_text(word, title, front)
-            assert not listener.closes(text) and not listener.re.search(listener.NAMES, text, listener.re.I), text
+            assert not listener.re.search(listener.NAMES, text, listener.re.I), text
     # Too long, or silent: left out. A voice that fails: the chime, not a dead wake.
     e = ears()
     long, ok = np.ones(RATE * 2, np.float32), np.ones(RATE // 2, np.float32)
@@ -911,79 +911,66 @@ def greeting() -> None:
 
 
 def closing_cut() -> None:
-    """A request that ends with a closing phrase goes at once. Mid-sentence, or with a failure, silence decides as before."""
-    for said in ("Do it.", "Yeah, do it.", "yeah do it", "Fix the navbar. Go ahead.", "Okay, thank you.", "Send it.", "Status. Go.",
-                 "Hey Jarvis, do it.", "Fine, thanks", "That's it.", "Fix that, then do it.", "Please send it.", "It works. Let's go.", "Yeah, let's do it."):
-        assert listener.closes(said), said
-    for said in ("How do I do it", "Can you do it", "Where did it go?", "I want to go", "I'll send it", "do it again", "Go to the page",
-                 "thank you for that", "tell them thank you", "", "Going", "Thank you."):
-        assert not listener.closes(said), said
-
+    """A request that sounds finished goes after CLOSING_GAP; unsure, during the greeting, or with a failure, silence
+    decides as before. No speech to text is asked."""
     chunk = np.ones(listener.CHUNK, np.int16)
 
-    def talk(saying, fail=False):
-        """Four chunks of speech, then quiet: how many chunks of quiet until it ended, and what it asked."""
-        e, sent, asked = ears(), [], []
-        e.closing_gap, e.next_closing = 10, 0.0
+    class Turn:
+        def __init__(self, done=0.99, fail=False):
+            self.done, self.fail, self.heard = done, fail, []
 
-        def stt(clip, timeout=600):
-            asked.append(len(clip))
-            assert timeout == listener.CLOSING_TIMEOUT
-            if fail:
-                raise RuntimeError("offline")
-            return saying
+        def run(self, _, feeds):
+            self.heard.append(feeds["input_features"].shape)
+            if self.fail:
+                raise RuntimeError("broken")
+            return [np.array([[self.done]], np.float32)]
 
-        with mock.patch.object(listener, "transcribe", stt), mock.patch.object(listener, "emit", lambda *a, **k: None):
+    def talk(turn, speech=listener.TURN_SKIP):
+        """Speech, then quiet: how many chunks of quiet until it ended."""
+        e, sent = ears(), []
+        e.closing_gap, e.turn = 10, turn
+        with mock.patch.object(listener, "transcribe", side_effect=AssertionError), mock.patch.object(listener, "emit", lambda *a, **k: None):
             e.record(sent.append)
             e.vad.predict = lambda *a, **k: 0.9
-            for _ in range(4):
+            for _ in range(speech):
                 e.on_chunk(chunk)
             e.vad.predict = lambda *a, **k: 0.0
             n = 0
             while not sent and n < 200:
                 e.on_chunk(chunk)
                 n += 1
-        return n, sent, asked
+        return n, sent
 
-    n, sent, asked = talk("Fix it. Do it.")
-    assert n == 10 and len(sent) == 1 and asked == [(4 + 2) * listener.CHUNK], (n, asked)  # the words, not the quiet
-    # Not a closing, or speech to text down: only silence ends it, after one check.
-    for kw in ({"saying": "Fix the navbar"}, {"saying": "Do it.", "fail": True}):
-        n, sent, asked = talk(**kw)
-        assert n == listener.END_QUIET and len(sent) == 1 and len(asked) == 1, (kw, n)
-    # Going on after the pause: another pause checks again, but not within CLOSING_EVERY, for Groq's limit.
-    e, sent, asked = ears(), [], []
-    e.closing_gap = 2
-    with mock.patch.object(listener, "transcribe", lambda clip, timeout=600: asked.append(1) or "go on"), mock.patch.object(listener, "emit", lambda *a, **k: None):
-        e.record(sent.append)
-        for _ in range(3):
-            e.vad.predict = lambda *a, **k: 0.9
-            for _ in range(4):
-                e.on_chunk(chunk)
-            e.vad.predict = lambda *a, **k: 0.0
-            for _ in range(3):
-                e.on_chunk(chunk)
-    assert len(asked) == 1 and not sent, asked
-    # Near Groq's limit the nice-to-haves step aside, the closing check before what the user said.
+    turn = Turn()
+    n, sent = talk(turn)
+    assert n == 10 and len(sent) == 1 and turn.heard == [(1, 80, 800)], (n, turn.heard)  # Whisper's 8 s of log mel
+    for kw in ({"done": 0.9}, {"fail": True}):  # unsure, or broken: the full silence
+        n, sent = talk(Turn(**kw))
+        assert n == listener.END_QUIET and len(sent) == 1, (kw, n)
+    turn = Turn()
+    n, sent = talk(turn, speech=4)  # only the greeting so far: it sounds done, and isn't
+    assert n == listener.END_QUIET and not turn.heard
+    n, sent = talk(None)  # no model
+    assert n == listener.END_QUIET
+    # Near Groq's limit the live words step aside for what the user said.
     with mock.patch.object(listener, "groq_calls", listener.deque([time.monotonic()] * 12, maxlen=20)):
-        assert not listener.groq_room(listener.LIVE_SPARE) and listener.groq_room(listener.CLOSING_SPARE)
+        assert not listener.groq_room(listener.LIVE_SPARE)
         live = listener.GroqLive()
         live.waiting = listener.LIVE_EVERY
         live.feed(chunk)
         assert not live.busy
-    with mock.patch.object(listener, "groq_calls", listener.deque([time.monotonic()] * 16, maxlen=20)):
-        e = ears()
-        e.closing_gap = 5
-        e.record(sent.append)
-        assert not listener.groq_room(listener.CLOSING_SPARE) and not e.said_closing()
     # Off, and voice training never checks.
     e = ears()
     assert e.closing_gap == 0
-    e.record(sent.append)
-    assert not e.said_closing()
+    e.record(lambda clip: None)
+    assert not e.sounds_done()
     e = ears()
-    e.closing_gap, e.on_done = 5, e.take_done
-    assert not e.said_closing()
+    e.closing_gap, e.on_done, e.turn = 5, e.take_done, Turn()
+    assert not e.sounds_done()
+    # The features match transformers' WhisperFeatureExtractor (checked to 4e-6 on 2026-11-04): shape, range, and silence.
+    x = listener.turn_features(np.random.default_rng(3).normal(0, 3000, 3 * listener.RATE).astype(np.int16))
+    assert x.shape == (1, 80, 800) and x.dtype == np.float32 and -1.5 < x.min() and x.max() < 3
+    assert listener.mel_filters().shape == (201, 80) and abs(listener.mel_filters().sum(0)[0] - 0.0247) < 0.001
 
 
 def echo() -> None:
