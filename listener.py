@@ -227,7 +227,7 @@ NEAR_MISS = 0.12  # a peak from here up to the threshold gets the near-miss tick
 NAME_FLOOR, NAME_EVERY = 0.1, 2.0
 OPENERS = r"(hey|hi|hay|okay|ok|yo|oy|uy|uh|um|so)"
 NAME_FIRST = re.compile(rf"^\W*({OPENERS}\W+)?(jarvis|jervis)\b", re.IGNORECASE)
-# A double clap or a double snap wakes it too, the way the name does, also in a call or over a video: it's never said in
+# CLAP=on: a double clap wakes it too, the way the name does, also in a call or over a video: it's never said in
 # passing. Judged on the sound's top (each sample less the one before), where a room's low hum drops out: on the PD100X
 # with a fan's hum (2026-11-04) the room ran RMS 190, so the old bar of 12 times the room was 2300 and real claps, peaking
 # 800 to 1800, never reached it; on the top the room is about 10 and claps and snaps peak 300 to 2300. Counted in 5 ms
@@ -235,9 +235,9 @@ NAME_FIRST = re.compile(rf"^\W*({OPENERS}\W+)?(jarvis|jervis)\b", re.IGNORECASE)
 # CLAP_LEVEL (.env), from near quiet 10-40 ms before, down to half 35-55 ms after (the room's echo kept a real double
 # clap above a quarter), and bright (a knock on the desk is dull). Two of them CLAP_GAP apart, with no other sharp sound or
 # speech CLAP_QUIET before the first or after the second: typing is many in a row, and a word's consonants come with words.
-# CLAP=once: one alone wakes it too, at CLAP_ONCE times the bar. Replayed over 85 minutes of kept requests, pairs fired in
-# 2 of 222 (one a real double clap) and singles in 7, so a single is opt-in. Both recordings caught every loud one.
-CLAP_LEVEL, CLAP_RISE, CLAP_BRIGHT, CLAP_ONCE = 250.0, 20.0, 0.5, 4.0
+# Replayed over 85 minutes of kept requests, it fired in 2 of 222 (one a real double clap). Off by default: two snaps or
+# two tongue clicks sound the same to it, and a single snap (tried 2026-11-04) woke it on the user's tic.
+CLAP_LEVEL, CLAP_RISE, CLAP_BRIGHT = 250.0, 20.0, 0.5
 CLAP_GAP, CLAP_QUIET = (24, 120), 100  # 0.12 to 0.6 s apart; 0.5 s
 CUE_GAP = 2  # seconds between near-miss ticks
 LOOK_TRIES, LOOK_WINDOW = 2, 20  # this many tries that got nowhere within this many seconds: they are looking for it
@@ -1101,13 +1101,11 @@ def live_words():
 
 
 class Claps:
-    """Hears a double clap or snap in the mic's chunks (CLAP_* above), or with once a single loud one. feed() is True once
-    the last one's quiet is over, and `how` says which it was."""
+    """Hears a double clap in the mic's chunks (CLAP_* above). feed() is True once the second clap's quiet is over."""
     SPAN = 20  # frames kept: 9 before the one judged, 10 after it
-    how = ""
 
-    def __init__(self, level: float = CLAP_LEVEL, once: bool = False) -> None:
-        self.level, self.once = level, once
+    def __init__(self, level: float = CLAP_LEVEL) -> None:
+        self.level = level
         self.reset()
 
     def reset(self) -> None:
@@ -1115,7 +1113,7 @@ class Claps:
         self.bright: deque[float] = deque(maxlen=self.SPAN)
         self.rms: deque[float] = deque(maxlen=25)
         self.t, self.talked, self.last = 0, -10 ** 6, 0.0  # frames so far; the last one in a chunk of speech; the last sample
-        self.sharp: list[tuple[int, bool, bool]] = []  # recent sharp sounds: (frame, whether a clap, whether loud enough alone)
+        self.sharp: list[tuple[int, bool]] = []  # recent sharp sounds: (frame, whether it was a clap)
 
     def feed(self, chunk: np.ndarray, speech: bool = False) -> bool:
         x = chunk.astype(np.float64)
@@ -1139,23 +1137,17 @@ class Claps:
         if peak < need / 2 or peak < max(p[j - 2:j + 3]) or max(p[j - 8:j - 2]) > peak / 4:
             return
         clap = peak >= need and max(p[j + 7:]) <= peak / 2 and self.bright[j] >= CLAP_BRIGHT
-        self.sharp = [s for s in self.sharp if self.t - s[0] < 400] + [(self.t - 10, clap, clap and peak >= CLAP_ONCE * need)]
+        self.sharp = [s for s in self.sharp if self.t - s[0] < 400] + [(self.t - 10, clap)]
 
     def double(self) -> bool:
         s = self.sharp
-        if not s or self.t - s[-1][0] < CLAP_QUIET:
+        if len(s) < 2 or self.t - s[-1][0] < CLAP_QUIET:
             return False
-        self.sharp = []  # judged: two claps, one, or sharp sounds that weren't
-        talked = lambda t: t - CLAP_QUIET < self.talked < t - 16
-        t2, c2, loud = s[-1]
-        if self.talked > t2 + 16:  # words after it: a consonant, not a clap
-            return False
-        if len(s) >= 2 and s[-1][0] - s[-2][0] <= CLAP_GAP[1]:  # a pair, or too close for one alone
-            (t1, c1, _), alone = s[-2], (len(s) < 3 or s[-2][0] - s[-3][0] >= CLAP_QUIET) and not talked(s[-2][0])
-            self.how = "Double clap"
-            return c1 and c2 and alone and CLAP_GAP[0] <= t2 - t1 <= CLAP_GAP[1]
-        self.how = "One snap"
-        return self.once and loud and not talked(t2)
+        (t1, c1), (t2, c2) = s[-2], s[-1]
+        alone = (len(s) < 3 or t1 - s[-3][0] >= CLAP_QUIET) and not t1 - CLAP_QUIET < self.talked < t1 - 16
+        words_after = self.talked > t2 + 16  # a word's consonants, not claps
+        self.sharp = []  # judged: two claps, or sharp sounds that weren't
+        return c1 and c2 and alone and not words_after and CLAP_GAP[0] <= t2 - t1 <= CLAP_GAP[1]
 
 
 class Ears:
@@ -1165,7 +1157,7 @@ class Ears:
     live = None  # the live words of the clip being recorded
     woke = None  # (score, level) while the clip being recorded came from the wake word, not a follow-up window
     sure = False  # it woke while staying quiet: a shorter clip, none of it kept
-    claps = None  # the double clap or snap; CLAP=off: none
+    claps = None  # the double clap, with CLAP=on
     ran_long = False  # the recording went past its SHORT_CLIP cap
     need_name = True  # speech to text must hear "Jarvis" before it wakes; WAKE_NAME=off leaves it to the score alone
     cap = MAX_CLIP  # chunks the clip being recorded may reach
@@ -1376,7 +1368,7 @@ class Ears:
         self.report_quiet()
         self.recent.append(chunk)
         if self.claps and self.claps.feed(chunk, speech):
-            emit("status", text=self.claps.how)
+            emit("status", text="Double clap")
             return self.wake(next(iter(self.acks)), 1.0, int(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))), self.busy())
         scores = self.oww.predict(chunk)
         fired = max(scores, key=scores.get)
@@ -1454,8 +1446,7 @@ class Ears:
         self.talk_over = env.get("TALK_OVER", "").lower() != "off"
         self.over_ratio = float(env.get("TALK_OVER_RATIO") or TALK_OVER_RATIO)
         self.listen_all = env.get("LISTEN_AFTER", "").lower() != "asked"
-        clap = env.get("CLAP", "").lower()
-        self.claps = None if clap == "off" else Claps(float(env.get("CLAP_LEVEL") or CLAP_LEVEL), clap == "once")
+        self.claps = Claps(float(env.get("CLAP_LEVEL") or CLAP_LEVEL)) if env.get("CLAP", "").lower() == "on" else None
         self.followup = round(float(env.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         # 0 chunks: no cut-off.
         self.closing_gap = 0 if env.get("CLOSING_CUT", "").lower() == "off" else round(float(env.get("CLOSING_GAP") or CLOSING_GAP) / 0.08)

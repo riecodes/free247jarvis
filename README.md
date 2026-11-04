@@ -21,8 +21,8 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
-- **A snap wakes it too.** Two quick snaps work like a double clap, and the double clap now hears through a
-  fan's or a PC's hum, which used to drown it. `CLAP=once` (window, Settings) lets a single snap wake it.
+- **The double clap is off by default.** `CLAP=on` turns it on, and it now hears through a fan's or a PC's hum, which
+  used to drown it. Two snaps or tongue clicks wake it too, which is why it is off.
 - **macOS, untested.** `setup.sh`, `start.sh` and `spawn.sh` do on a Mac what the `.ps1` scripts do on Windows. The
   voice itself is the same code on both. What only Windows has is in "On macOS" below.
 - **"Sir" at the start or the end.** With `VOICE_TITLE=Sir`, a line says it once, either way round ("Sir, it's
@@ -280,14 +280,13 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   scores 0.1 or more and fails, its 1.5 seconds go to speech to text, at most once every 2 seconds, and it wakes if the
   words open with the name (after "hey", "ok", "yo" or "so" at most). Anything said after the name is the start of the
   request. In a call, with people talking or a video playing, this check is off, so the name in passing can't wake it;
-  "Hey Jarvis" and a double clap still do. The log says `Woke on its name first`. `WAKE_NAME=off` turns it off too.
-- A double clap or a double snap is two sharp, bright sounds 0.12 to 0.6 seconds apart, each well above the room (and at
-  least `CLAP_LEVEL=`, 250 by default), with no other sharp sound or speech for half a second around them. It is measured
-  on the top of the sound, so a fan's or a PC's hum doesn't hide it. It also works in a call or over a video, since nobody
-  claps twice by accident; it can't stop a reply, though. If it misses, lower `CLAP_LEVEL=` (150); if it wakes on its own,
-  raise it. `CLAP=once` lets a single loud snap wake it too: replayed over 85 minutes of recorded requests that fired 7
-  times, so it is off by default. `CLAP=off` turns both off (also in the window's Settings). The log says `Double clap` or
-  `One snap`.
+  "Hey Jarvis" and a double clap (`CLAP=on`) still do. The log says `Woke on its name first`. `WAKE_NAME=off` turns it off too.
+- `CLAP=on` (also in the window's Settings) wakes it on a double clap: two sharp, bright sounds 0.12 to 0.6 seconds
+  apart, each well above the room (and at least `CLAP_LEVEL=`, 250 by default), with no other sharp sound or speech for
+  half a second around them. It is measured on the top of the sound, so a fan's or a PC's hum doesn't hide it. It also
+  works in a call or over a video; it can't stop a reply, though. It is off by default, because it can't tell two claps
+  from two snaps or two tongue clicks. If it misses, lower `CLAP_LEVEL=` (150); if it wakes on its own, raise it. The log
+  says `Double clap`.
 - Two PCs that sync a folder: set `VOICE_SHARED=` to it on both, and only one has the voice. Turning the mic on claims it
   (a small `<host>\jarvis.json` there), and the other PC's mic closes and its replies stop as soon as the sync brings that.
   A PC that starts later stays closed until you turn its mic on.

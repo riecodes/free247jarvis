@@ -490,7 +490,7 @@ const SETTINGS = [
   { key: 'FOLLOWUP_SECONDS', label: 'Listening window', hint: 'Seconds it waits for you after speaking. 0: none.', min: 0, max: 120, fallback: '8' },
   { key: 'CLOSING_CUT', label: 'Send on a closing phrase', hint: '"Do it", "go ahead", "thank you" send without the 5 s wait.', options: ['on', 'off'] },
   { key: 'REMINDERS', label: 'Reminders', hint: 'After a greeting, one thing that is waiting on you.', options: ['on', 'off'] },
-  { key: 'CLAP', label: 'Clap or snap to wake it', hint: 'Twice, quickly, works like "Hey Jarvis". once: a single loud snap does too, and now and then a sharp sound may wake it.', options: ['on', 'once', 'off'] },
+  { key: 'CLAP', label: 'Clap twice to wake it', hint: 'Works like "Hey Jarvis". Two snaps or tongue clicks wake it too.', options: ['on', 'off'], fallback: 'off' },
   { key: 'TALK_OVER', label: 'Talk over it to stop it', hint: 'Off: only "Hey Jarvis" stops a reply.', options: ['on', 'off'] },
   { key: 'CUT_OFF', label: 'Say when it got cut off', hint: 'After its ears stop, or a request is lost: says so, and the last thing it heard.', options: ['on', 'off'] },
 ]
