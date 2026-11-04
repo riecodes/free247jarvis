@@ -767,13 +767,14 @@ def echo_run(words: list[str], tail: list[str]) -> tuple[int, int]:
     return best
 
 
-def strip_echo(heard: str, said: str, late: bool, overlap: bool = False) -> str:
+def strip_echo(heard: str, said: str, late: bool, overlap: bool = False, reach: int = ECHO_WORDS) -> str:
     """What a clip heard without the end of the reply just spoken, which can open it now the mic opens before the reply
     ends. `late`: there was speech after the reply's end, so a lone last word may be the user's ("Yes or no?" "No."). `overlap`:
-    speech to text timed the clip's first word before the reply's end, so even one word that fits is the echo."""
+    speech to text timed the clip's first word before the reply's end, so even one word that fits is the echo. `reach`: how
+    many of its last words the clip can hold; all of them for a greeting and reminder, said while the clip records."""
     spans = list(re.finditer(r"[\w']+", heard.lower()))
     words = [m.group() for m in spans]
-    tail = re.findall(r"[\w']+", said.lower())[-ECHO_WORDS:]
+    tail = re.findall(r"[\w']+", said.lower())[-reach:]
     if not words or not tail:
         return heard
     n, end = echo_run(words, tail)
@@ -1189,6 +1190,7 @@ class Ears:
     saved_phase, saved_at = "", 0.0
     talk_over, over_ratio = True, TALK_OVER_RATIO  # TALK_OVER=off: only the wake word stops a reply
     last_line, last_line_at = "", 0.0  # the line last spoken in full, for "what?"
+    said_reach = ECHO_WORDS  # how much of `said` a clip can open with (strip_echo)
     window_from = 0.0  # when the clip being recorded began, if it follows a reply: from the mic, not worked out from its length
     barge, play_began, cut_rest = 0.0, 0.0, None  # when someone began talking over the reply; what's left of it, if it was nobody
 
@@ -1511,7 +1513,10 @@ class Ears:
             self.reminded[extra] = now
             emit("reminder", text=extra)
             self.play(*self.banked[extra])
+        # The whole of it can be in the clip: the mic records from the wake word on. On 2026-11-04 a reminder of 20 words
+        # went to the orch five times as the user's own request.
         self.said, self.words_end = f"{text} {extra}" if extra else text, time.monotonic() - 0.07
+        self.said_reach = len(self.said.split())
         self.deaf_until = now
 
     def tried(self, stray: bool = False) -> None:
@@ -1616,7 +1621,7 @@ class Ears:
         first = None if heard_first is None else began + heard_first  # when the clip's first word began
         # A first word after the reply's end means no echo at all: all of it is the user, even reading the reply aloud.
         if clip is not None and self.said and began < self.words_end + 2 and not (first and first > self.words_end + ECHO_ROOM):
-            clean = strip_echo(text, self.said, late, overlap=first is not None)
+            clean = strip_echo(text, self.said, late, overlap=first is not None, reach=self.said_reach)
             if clean != text:
                 emit("status", text="Took out what it heard of its own reply")
             text = clean
@@ -1740,7 +1745,7 @@ class Ears:
     def replied(self, text: str, after: float, listen: bool, wanted: bool, asked: bool) -> None:
         """A reply's words are out, `after` seconds of chime ago: the follow-up window when it listens, else the wake word."""
         # Measured at the mic: the last word arrives about 0.07 s before play() returns (DRAIN, less what the speaker holds back).
-        self.said, self.words_end = text, time.monotonic() - after - 0.07
+        self.said, self.words_end, self.said_reach = text, time.monotonic() - after - 0.07, ECHO_WORDS
         opened = self.words_end - self.lead
         self.deaf_until = opened
         emit("spoken", listening=listen)
@@ -1761,6 +1766,7 @@ class Ears:
         at = min(words_len, int((now - self.play_began) * rate))
         words = turn[0].split()
         self.said, self.words_end = " ".join(words[:round(len(words) * at / max(words_len, 1)) + 4]), now
+        self.said_reach = ECHO_WORDS
         self.cut_rest = (samples[at:words_len], rate, (turn[0], 0.0, *turn[2:])) if at < words_len else None
         self.deaf_until = self.barge - 2 * CHUNK / RATE
         self.last_speech = now

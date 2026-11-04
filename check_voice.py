@@ -886,6 +886,11 @@ def greeting() -> None:
     # What the mic hears of it stays out of the request.
     assert listener.strip_echo("Yes, sir. Status.", "Yes, sir.", late=True) == "Status."
     assert listener.strip_echo("I'm here, sir.", "I'm here, sir.", late=True) == ""
+    # A greeting and a reminder, all of it in the clip (2026-11-04 08:00): only the user's words go on.
+    said = "Good afternoon, sir. The printer is in its own setup mode instead of WPS, one question on screen, sir."
+    heard = "Good afternoon sir. The printer is in its own setup mode instead of WPS. One question on screen sir. Yeah so check the DM."
+    assert listener.strip_echo(heard, said, late=True) == heard  # a reply's reach: too far back
+    assert listener.strip_echo(heard, said, late=True, reach=len(said.split())) == "Yeah so check the DM."
     # Each pool entry fits the phrase rules: no closing phrase and no wake word to trip on.
     for word in listener.GREETINGS + list(listener.GREETINGS_AT):
         for title, front in (("Sir", False), ("Sir", True), ("", False)):
