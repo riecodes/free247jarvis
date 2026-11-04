@@ -282,6 +282,7 @@ HEARD_WORDS = 12  # the end of it, which is where to pick up from: never a long 
 LOST_GAP = 20  # seconds between "I lost that" lines: a window catching noise during a Groq limit must not loop on it
 RESTART_QUIET = 60  # `listener.py restart` waits for this many seconds since the last speech
 RESTART_WAIT = 30 * 60  # and gives up after this long
+ASKED, ASKED_WAIT = HERE / "tmp" / "asked", 180  # voice.mjs: a spoken request the orch hasn't answered, for at most this long
 DATA_DAYS = 30  # voice data older than this is deleted
 RECENT_KEEP = 50  # utterances kept in recent_dir(), whatever VOICE_DATA says (RECENT=off: none), to resend one that went wrong
 DATA_MAX = 2 * 1024 ** 3  # and past this many bytes of clips, the oldest go first
@@ -667,11 +668,19 @@ def read_state() -> dict:
         return {}
 
 
-def quiet_enough(state: dict, now: float) -> bool:
+def asked_at() -> float:
+    try:
+        return float(ASKED.read_text(encoding="utf-8")) / 1000
+    except (OSError, ValueError):
+        return 0.0
+
+
+def quiet_enough(state: dict, now: float, asked: float = 0.0) -> bool:
     """A moment to stop the listener without cutting anyone off. A save this old means it's speaking or waiting on speech to
-    text, whose blocking calls hold up the saves."""
+    text, whose blocking calls hold up the saves. `asked`: when the orch got a request it is still answering, whose reply
+    a restart would cut off; one that never comes stops counting after ASKED_WAIT."""
     return (now - state.get("at", 0) <= 3 * STATE_EVERY and state.get("phase") == "idle" and not state.get("lines")
-            and now - state.get("last_speech", 0) >= RESTART_QUIET)
+            and now - state.get("last_speech", 0) >= RESTART_QUIET and not 0 <= now - asked < ASKED_WAIT)
 
 
 def restart(args: list[str]) -> int:
@@ -680,7 +689,7 @@ def restart(args: list[str]) -> int:
     now_please = "--now" in args
     why = " ".join(a for a in args if a != "--now") or "a restart"
     deadline = time.time() + RESTART_WAIT
-    while not now_please and not quiet_enough(read_state(), time.time()):
+    while not now_please and not quiet_enough(read_state(), time.time(), asked_at()):
         if time.time() > deadline:
             print(f"Not restarted: no quiet minute in {RESTART_WAIT // 60} minutes.")
             return 1

@@ -766,6 +766,8 @@ def cut_off() -> None:
     for busy in ({"last_speech": now - 30}, {"phase": "talking"}, {"phase": "window"}, {"lines": 1}, {"at": now - 60}):
         assert not listener.quiet_enough({**calm, **busy}, now), busy
     assert not listener.quiet_enough({}, now)
+    # The orch still answering a request: wait, unless the answer is long overdue.
+    assert not listener.quiet_enough(calm, now, asked=now - 30) and listener.quiet_enough(calm, now, asked=now - listener.ASKED_WAIT)
     limited = type("E", (Exception,), {"response": type("R", (), {"status_code": 429})})("429 for url")
     assert listener.why_lost(limited) == "speech to text hit its limit" and "url" not in listener.why_lost(ValueError("url"))
 

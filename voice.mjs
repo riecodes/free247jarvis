@@ -5,7 +5,7 @@
 // Everything it hears and says is logged to tmp/voice.log.
 // With a TypeSafe key in .env, a router answers quick requests itself, without a turn of the boss (see route).
 import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, hostname } from 'node:os'
 import { createInterface } from 'node:readline'
@@ -111,7 +111,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       ...(Array.isArray(options) && { options: options.slice(0, 8).map(o => String(o).trim().slice(0, 80)).filter(Boolean) }) })
     spoke(text)
     ears.stdin.write(`${verbFor(askedAt, req.params.arguments?.listen ?? asksSomething(text))} ${text}\n`)
-    askedAt = 0 // one reply answers the request; later lines are the boss's own news
+    setAsked(0) // one reply answers the request; later lines are the boss's own news
   }
   return { content: [{ type: 'text', text: 'Speaking.' }] }
 })
@@ -122,13 +122,20 @@ async function push(text, via) {
 }
 
 let askedAt = 0 // when the boss last got a spoken request it has not answered yet
+// Also in tmp/asked, so `listener.py restart` waits for the answer instead of cutting it off (2026-11-04, 15:44).
+const ASKED = process.env.VOICE_LOG ? `${process.env.VOICE_LOG}.asked` : join(HERE, 'tmp', 'asked') // a check's apart too
+function setAsked(at) {
+  askedAt = at
+  try { at ? writeFileSync(ASKED, String(at)) : rmSync(ASKED, { force: true }) } catch (e) { log(`asked mark: ${e.message}`) }
+}
+setAsked(0) // a mark left by a voice that stopped answers nothing now
 const held = [] // lines not said because of a call, until the user asks for them
 // What the listener heard in a listening window, without the wake word, ran past 90 s: often people talking nearby.
 const LONG_NOTE = '(From the voice: this ran past 90 seconds in the listening window, without the wake word, so it may ' +
   'be people talking nearby rather than a request. If it is not one, say briefly that you heard a long stretch and ask ' +
   'whether to act on it.)'
 const send = (text, via) => {
-  if (via === 'mic') askedAt = Date.now()
+  if (via === 'mic') setAsked(Date.now())
   show('sent', { text, via })
   return mcp.notification({ method: 'notifications/claude/channel', params: { content: text, meta: { via } } })
 }
