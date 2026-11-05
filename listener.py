@@ -201,12 +201,14 @@ CLOSING_GAP, TURN_SURE, TURN_SKIP = 2.0, 0.95, 38
 # GREETING_MAX and it's skipped: it would talk over the request. No "Jarvis", and two words or more, so
 # strip_echo can tell one when the mic hears it. After GREETING_AWAY of nothing, the time of day leads.
 # None of the last half of the pool comes back, so it doesn't sound like a loop.
+# Formal only (asked 2026-11-05): no "Yep", "Hi", "Sure", "What's up" or "Hey there".
 GREETINGS = ["Yes", "I'm here", "Right here", "Listening", "Go on", "I'm listening", "Here", "Tell me", "Yes, what is it",
-             "Ready", "What's up", "Yes, I'm here", "With you", "Hello", "Hi", "At your service", "How can I help",
-             "What do you need", "What can I do", "Standing by", "All ears", "I'm all ears", "Yes, go on", "Sure",
-             "Here for you", "What's next", "Talk to me", "Yes, tell me", "Right with you", "I hear you", "On standby",
-             "Yep", "Sure, what is it", "Hey there", "Good to hear you", "Yes, what's up", "Here and ready",
-             "What can I get you", "I'm with you", "Yes, ready"]
+             "Ready", "Yes, I'm here", "With you", "Hello", "At your service", "How can I help",
+             "What do you need", "What can I do", "Standing by", "All ears", "I'm all ears", "Yes, go on",
+             "Here for you", "What's next", "Yes, tell me", "Right with you", "I hear you", "On standby",
+             "Good to hear you", "Here and ready", "I'm with you", "Yes, ready", "At your command",
+             "Awaiting your instruction", "Ready when you are", "Please go ahead", "At your disposal",
+             "Yes, please continue", "Please, go on", "Ready for you", "Your instructions"]
 _EVENING = (18, 19, 20, 21, 22, 23, 0, 1, 2, 3)
 GREETINGS_AT = {"Morning": range(4, 12), "Good morning": range(4, 12), "Good day": range(12, 18), "Afternoon": range(12, 18),
                 "Good afternoon": range(12, 18), "Evening": _EVENING, "Good evening": range(18, 24), "Working late": (23, 0, 1, 2, 3)}
