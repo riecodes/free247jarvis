@@ -1006,6 +1006,15 @@ def echo() -> None:
     assert strip("No, wait, do this instead", pick, late=True) == "No, wait, do this instead"
     assert strip("Be careful with that", pick, late=True) == "Be careful with that"
     assert strip("Tell me more", "Done.", late=True, overlap=True) == "Tell me more"  # a short reply, and nothing fits
+    # Garbled echoes that reached the orch on 2026-11-05, both after a talk-over its own voice set off on the laptop.
+    bounced = "On email, the clinic sent one estimate to a demo patient at an example dot com address, and it bounced."
+    assert strip("Coulson announced.", bounced, late=True, overlap=True) == ""  # timed at its end, with its last word
+    assert strip("Coulson announced.", bounced, late=True) == "Coulson announced."  # untimed, or later: theirs
+    assert strip("Yes, and what bounced?", bounced, late=True, overlap=True) == "Yes, and what bounced?"  # four words: theirs
+    bar = "Two calls: the bottom action bar on phones, recommended yes, and the 3D Home"  # up to 4 words past where it stopped
+    assert strip("The bottom action box.", bar, late=True, during=True) == ""  # recorded while it played that
+    assert strip("The bottom action box.", bar, late=True) == "The bottom action box."  # after it: an answer
+    assert strip("Stop, open the riecodes email", bar, late=True, during=True) == "Stop, open the riecodes email"
 
     # The timing: a first word after the reply's end means nothing of it is echo, even its very words.
     def request(said, first):

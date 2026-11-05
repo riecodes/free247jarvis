@@ -187,6 +187,8 @@ ECHO = 1.0  # seconds the mic stays deaf after a sound, unless the caller says o
 LISTEN_LEAD = 0.5  # 1 let whole last phrases in ("A, yes, recommended. B, no."), and talking over a longer stretch now stops the reply
 ECHO_ROOM = 0.3  # speech this long past the last word is the user's, not the speaker's or the room's
 ECHO_WORDS = 12  # how far back from a reply's end its echo can reach into a clip
+DURING_ECHO = 0.8  # a talk-over this close to what was playing is its echo (its own, garbled: 0.9). One quoting it goes too,
+# and the reply goes on: a pause, said again after it, beats sending the orch its own words
 REPEAT_RECENT = 90  # seconds after a line that "what?" still means that line; later it goes to the orch like anything else
 ASK_AGAIN = re.compile(r"(sorry )?(what|huh|ha+|ano|ano yun|pardon( me)?|again|come again|what again|what is it again|what was that|what did you say"
                        r"|say (that|it) again|repeat( that| it)?|one more time|once more|i didn't (hear|catch) (that|you))")
@@ -794,11 +796,12 @@ def echo_run(words: list[str], tail: list[str]) -> tuple[int, int]:
     return best
 
 
-def strip_echo(heard: str, said: str, late: bool, overlap: bool = False, reach: int = ECHO_WORDS) -> str:
+def strip_echo(heard: str, said: str, late: bool, overlap: bool = False, reach: int = ECHO_WORDS, during: bool = False) -> str:
     """What a clip heard without the end of the reply just spoken, which can open it now the mic opens before the reply
     ends. `late`: there was speech after the reply's end, so a lone last word may be the user's ("Yes or no?" "No."). `overlap`:
     speech to text timed the clip's first word before the reply's end, so even one word that fits is the echo. `reach`: how
-    many of its last words the clip can hold; all of them for a greeting and reminder, said while the clip records."""
+    many of its last words the clip can hold; all of them for a greeting and reminder, said while the clip records. `during`:
+    the clip is from a talk-over, recorded while the reply still played, so a close match anywhere in `reach` is its echo."""
     spans = list(re.finditer(r"[\w']+", heard.lower()))
     words = [m.group() for m in spans]
     tail = re.findall(r"[\w']+", said.lower())[-reach:]
@@ -815,7 +818,18 @@ def strip_echo(heard: str, said: str, late: bool, overlap: bool = False, reach: 
     n, end = echo_run(words, tail)
     if overlap and n and end >= len(tail) - 2:  # a word or two, timed as said while the reply was still ending
         return heard[spans[n - 1].end():].lstrip(" ,.!?;:-")
+    if overlap and len(words) <= 3 and sounds_like(words[-1], tail[-1]):  # its last word, the ones before it garbled:
+        return ""  # "and it bounced" came back as "Coulson announced" (2026-11-05)
+    if during and echo_like(" ".join(words), tail) >= DURING_ECHO:  # all of it recorded while the reply played
+        return ""  # its words garbled, from anywhere in it: "the bottom action bar" came back as "The bottom action box."
     return heard
+
+
+def echo_like(heard: str, tail: list[str]) -> float:
+    """How close `heard` comes to any stretch of the reply's `tail` about as many words long, spelling and all (0 to 1)."""
+    n = len(heard.split())
+    return max((difflib.SequenceMatcher(None, heard, " ".join(tail[i:j])).ratio() for i in range(len(tail))
+                for j in range(i + 1, len(tail) + 1) if abs(j - i - n) <= max(1, n // 2)), default=0.0)
 
 
 def wake_words() -> list[str]:
@@ -1650,7 +1664,7 @@ class Ears:
         first = None if heard_first is None else began + heard_first  # when the clip's first word began
         # A first word after the reply's end means no echo at all: all of it is the user, even reading the reply aloud.
         if clip is not None and self.said and began < self.words_end + 2 and not (first and first > self.words_end + ECHO_ROOM):
-            clean = strip_echo(text, self.said, late, overlap=first is not None, reach=self.said_reach)
+            clean = strip_echo(text, self.said, late, overlap=first is not None, reach=self.said_reach, during=self.cut_rest is not None)
             if clean != text:
                 emit("status", text="Took out what it heard of its own reply")
             text = clean
