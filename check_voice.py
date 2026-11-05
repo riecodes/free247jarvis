@@ -687,7 +687,8 @@ def talk_over() -> None:
                 n["n"] += 1
                 listener.MIC_TAP.put((chunk, float(n["n"])))
             return True
-        with mock.patch.object(listener, "emit", lambda *a, **k: None), mock.patch.object(listener, "media_playing", lambda: media):
+        with mock.patch.object(listener, "emit", lambda *a, **k: n.setdefault("said", k.get("text", ""))), \
+                mock.patch.object(listener, "media_playing", lambda: ["Chrome"] if media else []):
             e.listen_over(text, quiet, playing, lambda: n.setdefault("stopped", True))
         assert listener.MIC_TAP is None
         return e, n
@@ -697,6 +698,7 @@ def talk_over() -> None:
     for how in ({"quiet": True}, {"media": True}, {"setting": False}):
         e, n = run(reply, **how)
         assert not e.barge and "stopped" not in n, how
+    assert run(reply, media=True)[1]["said"].endswith("not stopped, Chrome kept playing")  # in the log: why it didn't stop
     # The wake word works in a call too, but the reply's own "Jarvis" doesn't count.
     e, n = run(reply, quiet=True, score=0.9)
     assert e.barge and e.sure and e.woke[0] == 0.9
@@ -810,7 +812,8 @@ def cut_off() -> None:
             # The restart command: says why, stops only a listener that's alive, and never a stale pid.
             listener.EARS_STATE.write_text(json.dumps({"pid": 99999, "at": time.time(), "phase": "idle", "lines": 0,
                                                        "last_speech": time.time() - listener.RESTART_QUIET}), encoding="utf-8")
-            with mock.patch.object(listener.os, "kill") as kill, mock.patch("builtins.print"):
+            with mock.patch.object(listener.os, "kill") as kill, mock.patch("builtins.print"), \
+                    mock.patch.object(listener, "asked_at", lambda: 0.0):  # not the live orch's request: it waited 30 min on one
                 assert listener.restart(["my", "update"]) == 0
                 kill.assert_called_once_with(99999, 15)
                 assert listener.EARS_WHY.read_text(encoding="utf-8") == "my update"

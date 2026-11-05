@@ -477,11 +477,12 @@ async def playing_sessions() -> list:
     return [s for s in manager.get_sessions() if s.get_playback_info().playback_status == Status.PLAYING]
 
 
-def media_playing() -> bool:
+def media_playing() -> list:
+    """The apps playing now (Windows' media sessions, or MAC_PLAYERS): empty when nothing is."""
     try:
-        return bool(mac_playing() if MAC else asyncio.run(playing_sessions()))
+        return mac_playing() if MAC else [s.source_app_user_model_id for s in asyncio.run(playing_sessions())]
     except Exception:
-        return False
+        return []
 
 
 def pause_media() -> list:
@@ -1803,6 +1804,7 @@ class Ears:
         self.oww.reset()
         self.vad.reset_states()
         says_name = re.search(rf"\b{NAMES}\b", text, re.IGNORECASE)
+        kept: list = []
         try:
             while playing():
                 try:
@@ -1814,8 +1816,8 @@ class Ears:
                     louder = np.clip(chunk.astype(np.float64) * self.vad_boost, -32768, 32767).astype(np.int16)
                     speech = self.vad.predict(louder, frame_size=640) >= SPEECH
                     began = over.feed(speech, float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))), at)
-                    if began and media_playing():  # paused by now if it could be; what's left is the video's voices
-                        began = 0.0
+                    if began and (playing_now := media_playing()):  # paused by now if it could be; what's left is the video's voices
+                        kept, began = playing_now, 0.0
                 if not says_name and not began:
                     scores = self.oww.predict(chunk)
                     score = float(max(scores.values()))
@@ -1827,8 +1829,9 @@ class Ears:
                     return
         finally:
             MIC_TAP = None
-            if over:
-                emit("status", text=f"Over that reply: loudest speech {over.peak:.1f}x its echo (stops at {self.over_ratio:.1f}x)")
+            if over:  # a stop the video's voices could have made says so, or it reads as talk-over not working
+                held = f"; not stopped, {', '.join(kept)} kept playing" if kept else ""
+                emit("status", text=f"Over that reply: loudest speech {over.peak:.1f}x its echo (stops at {self.over_ratio:.1f}x){held}")
 
     def play(self, samples: np.ndarray, rate: int, tail: float = ECHO, drain: bool = True, over: tuple | None = None) -> bool:
         """Plays it with the mic deaf until `tail` seconds after the end. False if it could not play. `over`: a reply's words and
