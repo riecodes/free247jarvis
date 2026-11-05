@@ -1162,7 +1162,14 @@ def voice_data() -> None:
     assert listener.segments_text({"segments": [{"text": "Open it.", "avg_logprob": -0.3}, {"text": "Noise.", "avg_logprob": -9}]}) == "Open it."
 
     # Whisper's prompt handed back on noise (from real answers, 2026-11-01), and what must still pass.
-    for back in ["Rc, Cpd, Su, Toc, Cpd, Su, Toc", "Riecodes, wrc, crc, cpc, cpc.", "Cpd, co, ManyChat, Nakeem.", "Cpd."]:
+    # Whisper's stock lines and other scripts for noise (phantoms heard 2026-11-05); his Latin-script Tagalog passes.
+    for ghost in ["Продолжение следует", "Добрый день", "Дмитрий", "¿No?", "Obrigado", "Terima kasih.", "ご視聴ありがとうございました",
+                  "字幕by索兰娅", "شكرا لكم", "Please subscribe!"]:
+        assert listener.phantom(ghost), ghost
+    for real_one in ["No.", "Sige, ituloy mo", "Ano na, cpd na yung riecodes", "Open Ñ files", "Open the Привет page"]:
+        assert not listener.phantom(real_one), real_one
+    for back in ["Rc, Cpd, Su, Toc, Cpd, Su, Toc", "Riecodes, wrc, crc, cpc, cpc.", "Cpd, co, ManyChat, Nakeem.", "Cpd.",
+                 "Продолжение следует.", "Obrigado."]:
         with mock.patch.object(listener, "emit", lambda *a, **k: heard.append(a[0])):
             heard.clear()
             with mock.patch.object(listener, "transcribe", lambda clip: back), mock.patch.object(listener, "in_call", lambda: False):

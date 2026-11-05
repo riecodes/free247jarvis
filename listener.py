@@ -258,7 +258,16 @@ DRAIN = 0.35
 # this only drops what Whisper is very unsure of; HALLUCINATIONS catches the rest.
 MIN_LOGPROB = -1.0
 # What Whisper says for noise or silence. Dropping a real "thank you" costs nothing: there is nothing to do.
-HALLUCINATIONS = {"thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye"}
+HALLUCINATIONS = {"thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye", "please subscribe",
+                  "¿no", "¿sí", "obrigado", "obrigada", "gracias", "merci", "danke", "terima kasih", "arigato"}
+
+
+def phantom(text: str) -> bool:
+    """What Whisper says for noise: a stock line, or mostly another script. The user speaks English, Tagalog and Taglish,
+    all Latin letters, so "Продолжение следует" or "ご視聴ありがとうございました" is never him (2026-11-05)."""
+    letters = [c for c in text if c.isalpha()]
+    latin = sum(ord(c) < 0x250 or 0x1E00 <= ord(c) < 0x1F00 for c in letters)  # Latin with its accents
+    return " ".join(re.findall(r"[¿¡]?\w+", text.lower())) in HALLUCINATIONS or latin * 2 < len(letters)
 GIVE_UP = 62  # about 5s without speech after waking: nobody is talking
 MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV tops Groq's free 25 MB at 13 min)
 # Free voice's live words, in chunks: every 4 s is 15 requests a minute, leaving room in Groq's 20 for the request itself.
@@ -1113,7 +1122,7 @@ class GroqLive:
     def ask(self, clip: np.ndarray) -> None:
         try:
             text = strip_wake(groq_text(clip, timeout=10))
-            if text and not self.stopped and " ".join(re.findall(r"\w+", text.lower())) not in HALLUCINATIONS:
+            if text and not self.stopped and not phantom(text):
                 emit("partial", text=fix_words(text))
         except Exception as e:  # such as the rate limit: the next try may pass, and the request's own text is apart
             emit("status", text=f"Live words skipped: {e}")
@@ -1646,7 +1655,7 @@ class Ears:
                 emit("status", text="Took out what it heard of its own reply")
             text = clean
         words = re.findall(r"\w+", text.lower())
-        if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or " ".join(words) in HALLUCINATIONS or handed_back(text):
+        if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or phantom(text) or handed_back(text):
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
         if clip is not None and woke and not sure:  # staying quiet: other people may be on the clip
             keep_clip(clip, transcript, text, *woke)
