@@ -9,6 +9,8 @@ and writes one JSON event per stdout line:
             watch on | watch off                the window opened or closed: live words only while it is open
             looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
+            ask <text> | ack <text>             as say | end, from the router: the answer to what was just heard, ahead of older news
+            routed                              the request just heard is answered: news and the greeting's reminder may play
             end <text>                          as say, but it closes the exchange: no follow-up window
             late <text>                         an older reply, or a question nobody prompted: held while staying quiet, else as say
             tell <text>                         news nobody asked for: held while staying quiet, else in full; no follow-up window
@@ -248,6 +250,8 @@ LOOK_TRIES, LOOK_WINDOW = 2, 20  # this many tries that got nowhere within this 
 CANT_HEAR = "Can't hear me? Check your speaker's power and knob, your headphones, and your PC's sound."
 SPOKE_WAIT = 3  # a line waits until the user has been quiet this many seconds, even outside a recording
 HOLD_MAX = 30  # but no longer than this outside a recording: speech that long is a TV or someone else
+ROUTE_WAIT = 10  # seconds after a request is heard that news waits for voice.mjs's answer to it (Jev 3 s and Haiku 6 s at
+# most; `routed` ends it as soon as the answer is queued)
 REPLY_HOLD = 60  # seconds a request keeps the video paused while no reply comes, under rules.mjs's FRESH
 ORCH_WINDOW = r"\b(PC|LP) Orchestrator$"  # the orch's terminal title, from ccorchname in the cc profile
 SWP_KEEP = 0x13  # SetWindowPos: SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
@@ -1217,6 +1221,8 @@ class Ears:
     ready: dict = {}  # lines waiting in the queue, already rendering: prepare()'s futures by their words
     waiting: list = []  # lines about something that waits on the user
     reminded: dict = {}  # when each of them last followed a greeting
+    routing_until = 0.0  # a request was heard: its answer goes first, so news waits until this moment
+    remind_next = ""  # the greeting's reminder, said once the request after it is answered (or nothing came)
     reminders = True  # REMINDERS=off: never
     idle_window = False  # the window now open follows a line that asked nothing
     sounds = True  # False: no chimes, whatever the files say (SOUNDS=off)
@@ -1556,13 +1562,12 @@ class Ears:
         # One thing that waits on the user, at most, and not the same one again soon. None in a call: that's the chime above.
         extra = next((w for w in self.waiting if self.reminders and w in self.banked
                       and now - self.reminded.get(w, -REMIND_EVERY) >= REMIND_EVERY), None)
+        # Not now: the user talks next, and on 2026-11-06 a reminder right after the greeting cut them off. It waits for
+        # their request to be answered (after_turn).
         if extra:
             self.reminded[extra] = now
-            emit("reminder", text=extra)
-            self.play(*self.banked[extra])
-        # The whole of it can be in the clip: the mic records from the wake word on. On 2026-11-04 a reminder of 20 words
-        # went to the orch five times as the user's own request.
-        self.said, self.words_end = f"{text} {extra}" if extra else text, time.monotonic() - 0.07
+            self.remind_next = extra
+        self.said, self.words_end = text, time.monotonic() - 0.07
         self.said_reach = len(self.said.split())
         self.deaf_until = now
 
@@ -1684,6 +1689,7 @@ class Ears:
             fixed = fix_words(text)
             self.cut_rest = None
             self.heard_last, self.heard_at, self.saved_at = fixed, time.time(), 0.0  # saved_at: on disk right away
+            self.routing_until = time.monotonic() + ROUTE_WAIT
             emit("heard", text=fixed, **({"raw": text} if fixed != text else {}), **({"long": True} if ran_long else {}))  # raw: for the window
         elif clip is not None and re.search(r"\bwake\W+up\b", transcript, re.IGNORECASE):  # "Jarvis, wake up": listen for the request
             self.woke, self.sure = woke, sure
@@ -1699,6 +1705,7 @@ class Ears:
                     return self.replied(*turn)
             self.release()  # a false wake: the video is back at once
             emit("nothing")
+            self.after_turn()
             self.tried()  # such as "Jarvis, Jarvis", which leaves no words once the wake word is taken out
 
     def close(self) -> None:
@@ -1707,18 +1714,33 @@ class Ears:
         self.wait_for_wake()
 
     def user_turn(self) -> bool:
-        """The user has the floor: a recording or a follow-up window is on, or they spoke a moment ago."""
+        """The user has the floor: a recording or a follow-up window is on, they spoke a moment ago, or what they said
+        is still being answered."""
+        if time.monotonic() < self.routing_until:
+            return True
         if self.on_chunk != self.wake_chunk:
             # A window after a line that asked nothing, with nobody speaking into it: news doesn't wait it out.
             return not (self.idle_window and not self.voiced)
         now = time.monotonic()
         return now - self.last_speech < SPOKE_WAIT and now - self.queue_since < HOLD_MAX
 
-    def line(self, text: str, **how) -> None:
-        """Every spoken line comes through here, so it never talks over the user. See flush."""
+    def after_turn(self) -> None:
+        """The user's request was answered, or none came: news may play, and the greeting's reminder joins it."""
+        self.routing_until = 0.0
+        if self.remind_next:
+            emit("reminder", text=self.remind_next)
+            self.line(self.remind_next, asked=False, window=False)
+            self.remind_next = ""
+
+    def line(self, text: str, first: bool = False, **how) -> None:
+        """Every spoken line comes through here, so it never talks over the user. See flush. first: the answer to what
+        they just said, ahead of older news. A line that waited out their turn opens a short window after it (carry_on),
+        so they can go on with what they were saying: on 2026-11-06 one closed the mic on them."""
         if not self.queue:
             self.queue_since = time.monotonic()
-        self.queue.append((text, how))
+        if not first and self.user_turn():
+            how["carry_on"] = True
+        self.queue.insert(sum(1 for _, h in self.queue if h.get("first")) if first else len(self.queue), (text, {**how, **({"first": True} if first else {})}))
         if self.user_turn():
             emit("queued", text=text)
             self.ready[text] = self.prepare(text)  # rendered while it waits, so it plays the moment they're done
@@ -1735,7 +1757,8 @@ class Ears:
         elif self.reply_by and not self.queue and time.monotonic() >= self.reply_by and self.on_chunk == self.wake_chunk:
             self.release()  # no reply came: the boss is on something long, and its reply pauses the video again
 
-    def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True, toast: bool = True) -> None:
+    def say(self, text: str, asked: bool = True, hold: bool = False, window: bool = True, toast: bool = True,
+            carry_on: bool = False, first: bool = False) -> None:
         """Speaks a line with Kokoro, media paused, and keeps a copy in tmp/reply.wav. The caller mutes the mic
         meanwhile. Only a line that wants an answer (asked and window) opens the follow-up window, and never while
         staying quiet, so other people's audio is not sent to speech to text. With hold, staying quiet keeps the line
@@ -1752,7 +1775,7 @@ class Ears:
             emit("caption", text=text, remind=True)  # nobody prompted it and it needs them: a notification too
         self.last_line, self.last_line_at = text, time.monotonic()
         wanted = listen
-        listen = listen or (self.listen_all and bool(self.followup) and self.mic_open and not call)  # never in a call or room talk
+        listen = listen or ((self.listen_all or carry_on) and bool(self.followup) and self.mic_open and not call)  # never in a call or room talk
         first, later = prepared or self.prepare(text)
         samples, rate = first.result()
         emit("said", wav=str(REPLY_WAV), text=text)
@@ -2166,11 +2189,15 @@ def main(commands: list[str]) -> None:
             if not ears.queue and not ears.busy():
                 ears.record(ears.request_done)
             continue
-        if value.startswith(("say ", "end ", "late ", "tell ")):
+        if value == "routed":  # voice.mjs answered the request just heard (its answer, if any, came first)
+            ears.after_turn()
+            continue
+        if value.startswith(("say ", "end ", "late ", "tell ", "ask ", "ack ")):
             verb, text = value.split(" ", 1)
             # With the mic closed no window can open or end, and paused media would never resume.
             ears.mic_open = mic is not None
-            ears.line(text, asked=verb != "tell" and mic is not None, hold=verb in ("late", "tell"), window=verb != "end")
+            ears.line(text, asked=verb != "tell" and mic is not None, hold=verb in ("late", "tell"), window=verb not in ("end", "ack"),
+                      first=verb in ("ask", "ack"))
             continue
         if value in ("on", "off"):
             zeros_since, warned = 0.0, False  # time with the mic closed is not silence

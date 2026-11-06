@@ -77,7 +77,8 @@ export function withFacts(notes, facts) {
 const BANK_HOURS = 12 // an older line isn't news
 const NOT_TOPIC = new Set(`status update progress how hows what whats is are the a an of on with to for and it its going doing
   done finished ready yet still now so far about any news tell me give say please jarvis sir ba na yung ang sa ng po ano kumusta
-  tapos naba do does did can you your my our that this there`.split(/\s+/))
+  tapos naba do does did can you your my our that this there s me who waiting pending wait need needs left sino kailangan
+  naghihintay`.split(/\s+/))
 const topicWords = text => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(w => !NOT_TOPIC.has(w))
 const sameWord = (a, b) => a === b || (Math.min(a.length, b.length) >= 4 && (a.startsWith(b) || b.startsWith(a)))
 
@@ -108,6 +109,20 @@ export function matchLine(lines, said) {
     if ((inTopic || score >= 2) && (score > bestScore || (score === bestScore && e.at > best.at))) [best, bestScore] = [e, score]
   }
   return best
+}
+
+// "What's pending?", "Sino ang naghihintay sa akin?": a question for every waiting line, not one topic's.
+export const asksWaiting = text =>
+  /\b(waiting|pending|wait(s|ing)? (on|for) me|needs? me|on me|naghihintay|hinihintay|kailangan)\b/i.test(text)
+
+// The waiting lines, newest first, as one spoken answer with the title left for titled() to add once.
+export function waitingWords(lines, most = 3) {
+  const waits = lines.filter(e => e.waiting).sort((a, b) => b.at - a.at)
+  if (!waits.length) return ''
+  const plain = waits.slice(0, most).map(e => e.text.replace(/,?\s*\bsir\b,?\s*/gi, ' ').replace(/\s+([.,;!?])/g, '$1').trim().replace(/^\W+/, ''))
+    .filter(Boolean).map(t => t[0].toUpperCase() + t.slice(1))
+  const more = waits.length - most
+  return `Waiting on you: ${plain.join(' ')}${more > 0 ? ` And ${more} more.` : ''}`
 }
 
 // Every age it can say, so they can all be rendered ahead.

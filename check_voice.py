@@ -491,6 +491,46 @@ def listen_after() -> None:
     assert not say(window=False, every=False)[0] and say(every=False)[0]
 
 
+def turn_first() -> None:
+    """2026-11-06: a reminder and a queued reply cut in after the greeting, and a queued line closed the mic on the user.
+    Nothing plays while a request is being answered; the router's answer goes ahead of older news; a line that waited out
+    the user's turn opens a window; the greeting's reminder comes once the request is answered, or when nothing came."""
+    e, played = ears(), []
+    e.say = lambda text, **how: played.append((text, how))
+    e.followup, e.listen_all = 8, False
+    e.wait_for_wake()
+    e.routing_until = time.monotonic() + listener.ROUTE_WAIT  # a request was just heard
+    e.remind_next = "Sir, the draft is ready."
+    with mock.patch.object(listener, "emit"), mock.patch.object(listener.Ears, "prepare", lambda self, text: None):
+        e.line("Sir, older news from the orch.", asked=True, hold=False, window=False)
+        e.flush()
+        assert not played
+        e.line("On it, sir: the teaser.", asked=True, window=False, first=True)
+        e.flush()
+        assert not played
+        e.after_turn()  # `routed`
+        for _ in range(3):
+            e.flush()
+    assert [t for t, _ in played] == ["On it, sir: the teaser.", "Sir, older news from the orch.", "Sir, the draft is ready."], played
+    assert not played[0][1].get("carry_on") and played[1][1].get("carry_on") and not played[2][1].get("carry_on")
+    # Nothing said after the wake word: the reminder comes when the window closes.
+    e, played = ears(), []
+    e.say = lambda text, **how: played.append(text)
+    e.remind_next = "Sir, the draft is ready."
+    with mock.patch.object(listener, "emit"):
+        e.after_turn()
+        e.flush()
+    assert played == ["Sir, the draft is ready."]
+    # carry_on opens the window after a line that asked nothing, as an idle one (news doesn't wait it out).
+    e = ears()
+    e.listen_all, e.mic_open, e.followup = False, True, 8
+    with mock.patch.object(listener, "in_call", lambda: False), mock.patch.object(listener, "emit"), \
+            mock.patch("soundfile.write"), mock.patch.object(listener.os, "replace"), mock.patch.object(listener, "output_problem", lambda: ""), \
+            mock.patch.object(listener, "pause_media", list), mock.patch.object(listener, "resume_media"):
+        e.say("Sir, older news.", window=False, carry_on=True)
+        assert e.on_chunk == e.record_chunk and e.idle_window
+
+
 def settings() -> None:
     """The window's switches reach the running listener, and off means off."""
     with mock.patch.dict(listener.os.environ, {"SOUNDS": "off", "GREETING": "off", "LISTEN_AFTER": "asked", "FOLLOWUP_SECONDS": "20", "CLOSING_CUT": "off"}):
@@ -540,7 +580,9 @@ def bank() -> None:
             e.oww.predict = lambda _: {"jarvis": 0.9}
             e.on_chunk(chunk)
             e.wait_for_wake()
-        return [d["text"] for ev, d in got if ev == "reminder"]
+        said, e.remind_next = ([e.remind_next] if e.remind_next else []), ""  # said after the request, not now
+        assert not [ev for ev, d in got if ev == "reminder"]
+        return said
 
     def ready():
         e = ears()
@@ -548,7 +590,7 @@ def bank() -> None:
         return e
 
     e = ready()
-    assert wake(e) == [review] and e.said == f"Yes, sir. {review}"  # what the mic hears of it stays out of the request
+    assert wake(e) == [review] and e.said == "Yes, sir."  # the user talks next: the reminder waits for after_turn
     assert wake(e) == []  # not again soon
     e.reminded[review] -= listener.REMIND_EVERY + 1
     assert wake(e) == [review]
@@ -792,7 +834,7 @@ def cut_off() -> None:
             back.say_cut_off()
             (text, how), = back.queue
             assert "cut off by a crash" in text and "Last I heard: open the door." in text
-            assert how == {"asked": True, "hold": True, "window": True, "toast": False}
+            assert how == {"asked": True, "hold": True, "window": True, "toast": False, "carry_on": True}  # it waited for them
             assert ("cut_off", {"text": text}) in events and back.user_turn()  # it listens first, in case they're talking
             back.say_cut_off()
             assert len(back.queue) == 1  # once
@@ -1352,7 +1394,8 @@ def main() -> None:
         # Their words are handled: the oldest line goes out. The second opens the window.
         e.wait_for_wake()
         e.flush()
-        assert said() == ["First."] and e.on_chunk == e.wake_chunk
+        # It waited out their words, so a window follows it, to carry on (2026-11-06); an idle one, so news doesn't wait.
+        assert said() == ["First."] and e.on_chunk == e.record_chunk and e.idle_window
         e.flush()
         assert said() == ["First.", "Second?"] and e.on_chunk == e.record_chunk
         # That open window holds the next line too, even before the user says a word, until it closes.
@@ -1587,6 +1630,7 @@ def main() -> None:
     fast_voice()
     resend(recent)
     listen_after()
+    turn_first()
     settings()
     bank()
     fixes()

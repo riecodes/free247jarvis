@@ -168,7 +168,8 @@ Every request waits for a turn of the boss, a few seconds or more. With a TypeSa
 (`TYPESAFE_API_KEY=`), its Jev classifier sorts what you say first, in about 0.2 seconds, and these
 skip the boss:
 
-- **Status** ("status", "who needs me"): read straight from Claude Code's session files.
+- **Status** ("status", "who needs me", "what's pending?"): read straight from Claude Code's session files, plus every
+  progress line marked `--waiting` on either machine.
 - **Small talk** ("how are you", "what time is it"): Claude Haiku answers, with `ANTHROPIC_API_KEY=`.
 - **Unclear speech** (cut off, garbled, the TV): it asks "Say that again?" and listens without the
   wake word.
@@ -177,7 +178,11 @@ skip the boss:
   Haiku answers from them, all sent to Anthropic with each such question. `KNOWLEDGE_FACTS=` is an optional URL of
   live values as flat JSON, for `{placeholders}` in the notes. What the notes don't settle goes to the boss.
 
-Everything else, and everything when Jev isn't sure, goes to the boss as before. To try it without
+Everything else, and everything when Jev isn't sure, goes to the boss as before, and with `ANTHROPIC_API_KEY=` Jarvis
+says a short line at once so you aren't left in silence: "On it, sir: checking the teaser for black frames.", a
+one-sentence read-back of a long instruction (a mishearing shows up before the boss starts), or "Got it, sir: A, the
+teaser video." for an answer to its question. Haiku writes it in about a second; a slow or failed call gets "On it."
+Nothing is said for room talk. To try it without
 the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
 
 ## Near real-time (prototype, optional, paid)
@@ -310,7 +315,8 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - Workers can leave a spoken progress line: `node progress.mjs vlog "The vlog is rendering, five minutes left."` It's
   rendered ahead, so "how's the vlog?" plays it at once with its age ("as of two minutes ago"), with no turn of the boss
   (needs `TYPESAFE_API_KEY`, which sorts the question). A line older than 12 hours is ignored, and a question it has no
-  line for goes to the boss. With `--waiting`, one such line may follow a greeting, the same one at most every 30 minutes
+  line for goes to the boss. `node progress.mjs --list` prints the newest line per topic, waiting ones first. With
+`--waiting`, one such line may follow the request after a greeting (never between the greeting and your words), the same one at most every 30 minutes
   and never in a call (`REMINDERS=off`). With `VOICE_SHARED=`, both PCs' lines count.
 - Say "what?", "huh?", "ha?", "ano?", "again?" or "come again?" within a minute and a half of a line, and it says that line
   again. Other short follow-ups are read as replies to what it just said, and a plain "hmm" or "okay" after a line that

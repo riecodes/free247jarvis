@@ -228,10 +228,11 @@ try {
   // The router, end to end with a stand-in Jev: progress finds the worker's line, from either machine, with its age; a topic
   // with no line, or a plain status, doesn't use the bank. Lines and ages are rendered ahead, and what waits is passed on.
   const { createServer } = await import('node:http')
-  let jevSays = 'progress'
-  const jev = createServer((req, res) => {
+  let jevSays = 'progress', haikuSays = 'On it, sir: the webinar check.'
+  const jev = createServer((req, res) => {  // also the stand-in Haiku, at /haiku
     req.resume()
-    req.on('end', () => res.end(JSON.stringify({ answers: { kind: { choice: jevSays, probabilities: { [jevSays]: 0.95 } } } })))
+    req.on('end', () => res.end(JSON.stringify(req.url === '/haiku' ? { content: [{ type: 'text', text: haikuSays }] }
+      : { answers: { kind: { choice: jevSays, probabilities: { [jevSays]: 0.95 } } } })))
   }).listen(0, '127.0.0.1')
   await new Promise(r => jev.once('listening', r))
   const BANK = join(TMP, 'bankclaims'), IN = join(TMP, 'bank.in')
@@ -245,7 +246,8 @@ try {
   const router = spawn('node', ['voice.mjs'], {
     cwd: HERE, stdio: ['pipe', 'ignore', 'ignore'],
     env: { ...process.env, VOICE_PORT: String(port3), VOICE_MIC: 'off', VOICE_WINDOW: 'off', VOICE_LISTENER: STUB2, VOICE_LOG: LOG, VOICE_TOAST: 'off',
-      VOICE_SHARED: BANK, VOICE_ENV: ENV_COPY, VOICE_JEV_URL: `http://127.0.0.1:${jev.address().port}/`, TYPESAFE_API_KEY: 'stand-in', VOICE_TITLE: 'Sir' },
+      VOICE_SHARED: BANK, VOICE_ENV: ENV_COPY, VOICE_JEV_URL: `http://127.0.0.1:${jev.address().port}/`, TYPESAFE_API_KEY: 'stand-in', VOICE_TITLE: 'Sir',
+      VOICE_HAIKU_URL: `http://127.0.0.1:${jev.address().port}/haiku`, ANTHROPIC_API_KEY: 'stand-in' },
   })
   const heard = async text => {
     for (let i = 0; i < 50; i++) {
@@ -259,7 +261,7 @@ try {
     await heard('how is the vlog going')
     for (let i = 0; i < 40 && !/As of/.test(toListener().replace(/bank .*\n/g, '')); i++) await sleep(100)
     const vlog = withTitle('The vlog is rendering.', 'Sir'), draft = withTitle('The draft is ready.', 'Sir')
-    assert(toLines().includes(`end ${vlog} As of two minutes ago.`), toListener())
+    assert(toLines().includes(`ack ${vlog} As of two minutes ago.`), toListener())  // ahead of older news, no window
     assert(toLines().includes(`bank ${vlog}`))
     assert.match(toListener(), /^bank As of forty-five minutes ago\.$/m)
     // Your own machine's line, marked waiting, arrives within a few seconds, ready to follow a greeting.
@@ -268,13 +270,29 @@ try {
     assert(toLines().includes(`waiting ${JSON.stringify([draft])}`), toListener())
     assert(toLines().includes(`bank ${draft}`))
     const before2 = toListener().length
-    await heard('how is the webinar going')  // nothing on it: the orch
+    const sentAt = Date.now()
+    await heard('how is the webinar going')  // nothing on it: the orch, and at once a line that says what it heard
+    for (let i = 0; i < 30 && !/^ack /m.test(toListener().slice(before2)); i++) await sleep(50)
+    assert(toLines().includes('ack On it, sir: the webinar check.'), toListener().slice(before2))
+    assert(Date.now() - sentAt < 1500 && !/^(end|say|ask) /m.test(toListener().slice(before2)), toListener().slice(before2))
+    assert.match(readFileSync(LOG, 'utf8'), /heard \(mic\): how is the webinar going\n.*\n.*router: bank has nothing/)
+    // The stand-in calls it room talk: nothing said. A dead Haiku: the fixed line.
+    haikuSays = 'NOT_IN_NOTES'
+    const before3 = toListener().length
+    await heard('and then he said the thing about the car')
     await sleep(300)
-    assert(!/^(end|say) /m.test(toListener().slice(before2)), toListener().slice(before2))
+    assert(!/^ack /m.test(toListener().slice(before3)), toListener().slice(before3))
     jevSays = 'status'
-    await heard("what's the status")  // no topic: the sessions' own summary as before
+    await heard("what's the status")  // no topic: the sessions' own summary as before, with what waits on the user
     await sleep(300)
     assert(!/vlog/.test(toListener().slice(before2).replace(/^bank .*$/gm, '')), toListener().slice(before2))
+    assert(/^ack .*Waiting on you: The draft is ready\b/m.test(toListener().slice(before2)), toListener().slice(before2))
+    const before4 = toListener().length
+    jevSays = 'progress'
+    await heard("what's waiting on me")  // every waiting line, not one topic's
+    await sleep(300)
+    assert(/^ack .*Waiting on you: The draft is ready\b/m.test(toListener().slice(before4)), toListener().slice(before4))
+    haikuSays = 'Got it, sir: A.'
     // A choice clicked in the window: it closes the listening window, and goes on as if said.
     const r = await fetch(`http://127.0.0.1:${port3}/choice`, { method: 'POST', body: 'A' })
     assert.strictEqual(r.status, 200)
