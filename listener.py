@@ -224,6 +224,10 @@ TTS_LOCK = threading.Lock()  # SPEAKER and the main loop (greetings, banked line
 GREETING_MAX, GREETING_AWAY, GREETING_SPEED = 1.3, 30 * 60, 1.2
 REMIND_EVERY = 30 * 60  # seconds before the same waiting item can follow a greeting again
 SILENT_WARN = 30  # seconds of pure zeros from the mic before it says the mic seems off
+# No chunk at all (they come every 80 ms) for this long: the stream stalled without an error, as when a change in the Sound
+# panel resets the mic (2026-11-09: 3 hours deaf). It reopens the mic, and after this many tries in a row it exits for
+# voice.mjs to start a fresh listener.
+MIC_STALL, MIC_STALL_TRIES = 5, 3
 PEAK_FLOOR = 0.03  # wake word scores from here up count as a try: its peak goes to the log, to tune WAKE_THRESHOLD by
 NEAR_MISS = 0.12  # a peak from here up to the threshold gets the near-miss tick
 # The name first ("Jarvis, wake up", "OK Jarvis, status"): the wake word model scores those 0.1 to 0.45 in test voices, under
@@ -299,6 +303,7 @@ HEARD_WORDS = 12  # the end of it, which is where to pick up from: never a long 
 LOST_GAP = 20  # seconds between "I lost that" lines: a window catching noise during a Groq limit must not loop on it
 RESTART_QUIET = 60  # `listener.py restart` waits for this many seconds since the last speech
 RESTART_WAIT = 30 * 60  # and gives up after this long
+STUCK_AFTER = 120  # no save in this long, with the listener still running: it's stuck, and a restart stops it anyway
 ASKED, ASKED_WAIT = HERE / "tmp" / "asked", 180  # voice.mjs: a spoken request the orch hasn't answered, for at most this long
 DATA_DAYS = 30  # voice data older than this is deleted
 RECENT_KEEP = 50  # utterances kept in recent_dir(), whatever VOICE_DATA says (RECENT=off: none), to resend one that went wrong
@@ -716,19 +721,34 @@ def quiet_enough(state: dict, now: float, asked: float = 0.0) -> bool:
             and now - state.get("last_speech", 0) >= RESTART_QUIET and not 0 <= now - asked < ASKED_WAIT)
 
 
+def is_listener(pid) -> bool:
+    """`pid` is a running listener.py (or realtime.py, which runs it), not an old pid now someone else's."""
+    import psutil
+
+    try:
+        return any(a.endswith(("listener.py", "realtime.py")) for a in psutil.Process(pid).cmdline())
+    except (psutil.Error, TypeError, ValueError):
+        return False
+
+
+def stuck(state: dict, now: float) -> bool:
+    """Running but not saving for STUCK_AFTER: no reply lasts that long, so it hangs (a stalled mic, before MIC_STALL)."""
+    return now - state.get("at", now) > STUCK_AFTER and is_listener(state.get("pid"))
+
+
 def restart(args: list[str]) -> int:
     """`listener.py restart [--now] [why]`: stops the listener at a quiet moment, for voice.mjs to start it again in a few
     seconds, and it says why it stopped. --now doesn't wait: for testing the line. The only way to restart it."""
     now_please = "--now" in args
     why = " ".join(a for a in args if a != "--now") or "a restart"
     deadline = time.time() + RESTART_WAIT
-    while not now_please and not quiet_enough(read_state(), time.time(), asked_at()):
+    while not now_please and not quiet_enough(read_state(), time.time(), asked_at()) and not stuck(read_state(), time.time()):
         if time.time() > deadline:
             print(f"Not restarted: no quiet minute in {RESTART_WAIT // 60} minutes.")
             return 1
         time.sleep(2)
     state = read_state()
-    if time.time() - state.get("at", 0) > 3 * STATE_EVERY:  # also guards against an old pid, now someone else's
+    if time.time() - state.get("at", 0) > 3 * STATE_EVERY and not stuck(state, time.time()):
         print("Not restarted: the listener isn't saving its state, so it's off, or speaking right now.")
         return 1
     EARS_WHY.write_text(why, encoding="utf-8")
@@ -2088,6 +2108,43 @@ def spare_mic(mic, events: queue.Queue):
     return new
 
 
+class MicWatch:
+    """A stream can stop calling back without an error (Windows resets a mic when its settings change). Then nothing ran
+    the main loop but window clicks: no wake word, and every reply stuck in the queue. This reopens the mic."""
+
+    def __init__(self) -> None:
+        self.last, self.tries = time.monotonic(), 0
+
+    def heard(self, at: float) -> None:
+        self.last, self.tries = at, 0
+
+    def check(self, mic, events: queue.Queue, now: float):
+        """The stream to use from now on: `mic`, or a new one once it has been silent for MIC_STALL. Exits after
+        MIC_STALL_TRIES reopens in a row bring nothing, for voice.mjs to start a fresh listener."""
+        if mic is None or now - self.last < MIC_STALL:
+            return mic
+        self.last, self.tries = now, self.tries + 1
+        if self.tries > MIC_STALL_TRIES:
+            emit("error", message=f"The microphone stalled; {MIC_STALL_TRIES} reopens brought no sound, so the listener exits")
+            EARS_WHY.write_text("the microphone stalling", encoding="utf-8")
+            os._exit(3)  # not sys.exit: PortAudio's exit handler can hang on the dead stream
+        if self.tries == 1:
+            emit("status", text=f"The microphone sent nothing for {MIC_STALL} s: reopening it")
+        closing = threading.Thread(target=mic.close, daemon=True)  # a dead stream's close can hang: it gets 2 s
+        closing.start()
+        closing.join(2)
+        try:
+            import sounddevice as sd
+
+            if not closing.is_alive():  # fresh device list, as a new listener gets; never under a close still running
+                sd._terminate()
+                sd._initialize()
+            return open_mic(events)
+        except Exception as e:
+            emit("error", message=f"Can't reopen the microphone: {e}")
+            return mic  # the next check tries again
+
+
 def main(commands: list[str]) -> None:
     load_env()
     try:
@@ -2120,10 +2177,18 @@ def main(commands: list[str]) -> None:
     zeros_since, warned = 0.0, False
     # ponytail: on the spare until the mic is turned off and on or the voice restarts; no check for the first one's return.
     on_spare = False
+    watch = MicWatch()
     while True:
         ears.flush()
-        kind, value, at = events.get()
+        try:
+            kind, value, at = events.get(timeout=1)
+        except queue.Empty:
+            if (new := watch.check(mic, events, time.monotonic())) is not mic:
+                mic, on_spare = new, False
+                report()
+            continue
         if kind == "audio":
+            watch.heard(at)
             if value.any():
                 zeros_since, warned = 0.0, False
             elif not zeros_since:
@@ -2204,6 +2269,7 @@ def main(commands: list[str]) -> None:
         if value in ("on", "enroll") and mic is None:
             try:
                 mic, on_spare = open_mic(events), False
+                watch.heard(time.monotonic())  # time with the mic closed is not a stall
             except Exception as e:  # no microphone, or Windows privacy settings block desktop apps
                 emit("error", message=f"Can't open the microphone: {e}")
         elif value == "off" and mic is not None:

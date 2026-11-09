@@ -225,6 +225,60 @@ def mic_names() -> None:
         assert listener.mic_name(mock.Mock(device=99)) == ""  # gone: says so, and the voice goes on
 
 
+def mic_stall() -> None:
+    """A stream that stops delivering, with no error, is reopened; reopens that bring nothing end in an exit for voice.mjs to
+    start a fresh listener. `listener.py restart` stops a listener stuck that way instead of refusing."""
+    events, opened, said = listener.queue.Queue(), [], []
+
+    def open_mic(_events, want=None):
+        if fail:
+            raise OSError("device unavailable")
+        opened.append(mock.Mock())
+        return opened[-1]
+
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(listener, "open_mic", open_mic), \
+            mock.patch.object(listener, "emit", lambda ev, **d: said.append(ev)), mock.patch("sounddevice._terminate"), \
+            mock.patch("sounddevice._initialize"), mock.patch.object(listener, "EARS_WHY", Path(tmp) / "ears.why"), \
+            mock.patch.object(listener.os, "_exit", side_effect=SystemExit):
+        fail, w, first = False, listener.MicWatch(), mock.Mock()
+        t = w.last
+        assert w.check(None, events, t + 99) is None  # mic off: nothing to watch
+        w.heard(t)
+        assert w.check(first, events, t + listener.MIC_STALL - 0.1) is first  # chunks are coming
+        mic = w.check(first, events, t + listener.MIC_STALL)  # then none: the Sound panel reset the mic
+        assert first.close.called and mic is opened[0] and said == ["status"], said
+        w.heard(t + 6)  # the reopened stream delivers: the count starts over
+        now, fail = t + 6, True
+        now += listener.MIC_STALL
+        assert w.check(mic, events, now) is mic and said[-1] == "error"  # can't reopen: tries again later
+        fail = False
+        for _ in range(listener.MIC_STALL_TRIES - 1):
+            now += listener.MIC_STALL
+            mic = w.check(mic, events, now)
+        assert len(opened) == listener.MIC_STALL_TRIES and said.count("status") == 2  # once a stall, not every try
+        try:
+            w.check(mic, events, now + listener.MIC_STALL)
+            raise AssertionError("a mic that never comes back must end the listener")
+        except SystemExit:
+            assert listener.EARS_WHY.read_text(encoding="utf-8") == "the microphone stalling"
+
+    # The 2026-11-09 listener: alive, its state 3 hours old. restart stopped nothing ("isn't saving its state").
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(listener, "EARS_STATE", Path(tmp) / "ears.json"), \
+            mock.patch.object(listener, "EARS_WHY", Path(tmp) / "ears.why"), mock.patch.object(listener, "asked_at", lambda: 0.0), \
+            mock.patch.object(listener, "is_listener", lambda pid: pid == 4076), mock.patch("builtins.print"), \
+            mock.patch.object(listener.time, "sleep", side_effect=AssertionError("waited on a stuck listener")):
+        killed = []
+        with mock.patch.object(listener.os, "kill", lambda pid, sig: killed.append(pid)):
+            def stopped(pid: int, age: float, *args: str) -> bool:
+                listener.EARS_STATE.write_text(json.dumps({"pid": pid, "at": time.time() - age, "phase": "idle"}), encoding="utf-8")
+                return listener.restart(list(args)) == 0
+            assert stopped(4076, 3 * 3600, "mic stall watchdog") and killed == [4076]
+            assert stopped(4076, listener.STUCK_AFTER + 1, "--now")
+            assert not stopped(4076, 30, "--now")  # a save 30 s old: speaking, so not cut off
+            assert not stopped(999, 3 * 3600, "--now")  # an old pid, now someone else's
+            assert killed == [4076, 4076]
+
+
 def staying_quiet() -> None:
     """A call or talk around: a stricter wake word, no unasked line, no window."""
     chunk = np.ones(listener.CHUNK, np.int16)
@@ -1638,6 +1692,7 @@ def main() -> None:
     closing_cut()
     echo()
     mic_names()
+    mic_stall()
     staying_quiet()
     print("ok")
 

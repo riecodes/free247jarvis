@@ -361,6 +361,9 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - If the mic sends nothing but silence for 30 seconds (a virtual mic such as Voicemod whose app is
   closed), it says so once. With `MIC_FALLBACK=` in `.env` (part of a second mic's name, such as
   `MIC_FALLBACK=Realtek`) it moves to that mic instead and says so.
+- If the mic stops sending anything for 5 seconds (changing its settings in the Sound panel resets it), the listener
+  reopens it by itself; after 3 failed tries it exits and the voice starts a fresh one. A listener that stopped saving
+  its state for 2 minutes counts as stuck, and `listener.py restart` stops it instead of refusing.
 - Not hearing you at all? Windows may be listening to another mic. Set `MIC_DEVICE=` in `.env` to
   part of your mic's name as Windows Sound settings shows it (such as `MIC_DEVICE=WebCamera`, or
   `MIC_DEVICE=Voicemod` to hear you through Voicemod), then restart the boss. If that device won't open
