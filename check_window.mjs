@@ -52,7 +52,7 @@ for (const t of ['Sir, done.', 'Done, sir.', 'Yes sir, it works.']) assert.stric
 assert.strictEqual(withTitle('Done.', ''), 'Done.')
 assert.strictEqual(withTitle('The vlog is rendering.', 'Sir'), withTitle('The vlog is rendering.', 'Sir'))
 
-const PORT = 8797
+const PORT = Number(process.env.CHECK_PORT) || 8797  // CHECK_PORT: another app holds 8797 to 8799 (a wrangler dev server)
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const TMP = join(HERE, 'tmp', 'check')
 mkdirSync(TMP, { recursive: true })
@@ -228,10 +228,11 @@ try {
   // The router, end to end with a stand-in Jev: progress finds the worker's line, from either machine, with its age; a topic
   // with no line, or a plain status, doesn't use the bank. Lines and ages are rendered ahead, and what waits is passed on.
   const { createServer } = await import('node:http')
-  let jevSays = 'progress', haikuSays = 'On it, sir: the webinar check.'
-  const jev = createServer((req, res) => {  // also the stand-in Haiku, at /haiku
+  let jevSays = 'progress', haikuCalls = 0
+  const jev = createServer((req, res) => {  // also a stand-in Haiku, at /haiku, which a request to the orch must never call
     req.resume()
-    req.on('end', () => res.end(JSON.stringify(req.url === '/haiku' ? { content: [{ type: 'text', text: haikuSays }] }
+    if (req.url === '/haiku') haikuCalls++
+    req.on('end', () => res.end(JSON.stringify(req.url === '/haiku' ? { content: [{ type: 'text', text: 'On it, sir.' }] }
       : { answers: { kind: { choice: jevSays, probabilities: { [jevSays]: 0.95 } } } })))
   }).listen(0, '127.0.0.1')
   await new Promise(r => jev.once('listening', r))
@@ -271,17 +272,12 @@ try {
     assert(toLines().includes(`bank ${draft}`))
     const before2 = toListener().length
     const sentAt = Date.now()
-    await heard('how is the webinar going')  // nothing on it: the orch, and at once a line that says what it heard
-    for (let i = 0; i < 30 && !/^ack /m.test(toListener().slice(before2)); i++) await sleep(50)
-    assert(toLines().includes('ack On it, sir: the webinar check.'), toListener().slice(before2))
-    assert(Date.now() - sentAt < 1500 && !/^(end|say|ask) /m.test(toListener().slice(before2)), toListener().slice(before2))
+    await heard('how is the webinar going')  // nothing on it: the orch, and nothing said here, so only the orch replies
+    await heard('A')  // an answer goes straight to the orch, also unsaid
+    await sleep(600)
+    assert(!/^(ack|end|say|ask|late|tell) /m.test(toListener().slice(before2)) && haikuCalls === 0, toListener().slice(before2))
+    assert(Date.now() - sentAt < 2500)
     assert.match(readFileSync(LOG, 'utf8'), /heard \(mic\): how is the webinar going\n.*\n.*router: bank has nothing/)
-    // The stand-in calls it room talk: nothing said. A dead Haiku: the fixed line.
-    haikuSays = 'NOT_IN_NOTES'
-    const before3 = toListener().length
-    await heard('and then he said the thing about the car')
-    await sleep(300)
-    assert(!/^ack /m.test(toListener().slice(before3)), toListener().slice(before3))
     jevSays = 'status'
     await heard("what's the status")  // no topic: the sessions' own summary as before, with what waits on the user
     await sleep(300)
@@ -292,7 +288,6 @@ try {
     await heard("what's waiting on me")  // every waiting line, not one topic's
     await sleep(300)
     assert(/^ack .*Waiting on you: The draft is ready\b/m.test(toListener().slice(before4)), toListener().slice(before4))
-    haikuSays = 'Got it, sir: A.'
     // A choice clicked in the window: it closes the listening window, and goes on as if said.
     const r = await fetch(`http://127.0.0.1:${port3}/choice`, { method: 'POST', body: 'A' })
     assert.strictEqual(r.status, 200)

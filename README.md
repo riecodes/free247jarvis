@@ -178,12 +178,9 @@ skip the boss:
   Haiku answers from them, all sent to Anthropic with each such question. `KNOWLEDGE_FACTS=` is an optional URL of
   live values as flat JSON, for `{placeholders}` in the notes. What the notes don't settle goes to the boss.
 
-Everything else, and everything when Jev isn't sure, goes to the boss as before, and with `ANTHROPIC_API_KEY=` Jarvis
-says a short line at once so you aren't left in silence: "On it, sir: checking the teaser for black frames.", a
-one-sentence read-back of a long instruction (a mishearing shows up before the boss starts), or "Got it, sir: A, the
-teaser video." for an answer to its question. Haiku writes it in about a second; a slow or failed call gets "On it."
-Nothing is said for room talk. To try it without
-the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
+Everything else, and everything when Jev isn't sure, goes to the boss as before. The "heard" sound that ends your
+request is the only cue until then: nothing is said in between, so the boss's reply is the one spoken answer. To try
+it without the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
 
 ## Near real-time (prototype, optional, paid)
 

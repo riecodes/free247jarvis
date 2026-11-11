@@ -559,13 +559,13 @@ def turn_first() -> None:
         e.line("Sir, older news from the orch.", asked=True, hold=False, window=False)
         e.flush()
         assert not played
-        e.line("On it, sir: the teaser.", asked=True, window=False, first=True)
+        e.line("Sir, the vlog is rendering.", asked=True, window=False, first=True)
         e.flush()
         assert not played
         e.after_turn()  # `routed`
         for _ in range(3):
             e.flush()
-    assert [t for t, _ in played] == ["On it, sir: the teaser.", "Sir, older news from the orch.", "Sir, the draft is ready."], played
+    assert [t for t, _ in played] == ["Sir, the vlog is rendering.", "Sir, older news from the orch.", "Sir, the draft is ready."], played
     assert not played[0][1].get("carry_on") and played[1][1].get("carry_on") and not played[2][1].get("carry_on")
     # Nothing said after the wake word: the reminder comes when the window closes.
     e, played = ears(), []
