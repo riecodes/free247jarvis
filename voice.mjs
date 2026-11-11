@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, bankFile, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts } from './rules.mjs'
+import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -226,6 +226,10 @@ let lastSaid = '', lastSaidAt = 0
 const spoke = text => { [lastSaid, lastSaidAt] = [text, Date.now()] }
 const justSaid = () => (Date.now() - lastSaidAt < FOLLOW_UP ? lastSaid : '')
 
+// A topic answered from the bank this recently and asked about again: the line didn't answer it, so the orch does.
+const ASKED_AGAIN = 10 * 60_000
+const bankSaid = new Map()  // topic -> when its bank line was spoken
+
 async function route(text) {
   log(`heard (mic): ${text}`)
   if (held.length && asksForHeld(text)) return answer(held.splice(0).join(' '))
@@ -279,8 +283,13 @@ async function route(text) {
   if (kind === 'status' || kind === 'progress') {
     const lines = bankLines()
     const line = matchLine(lines, text)
-    log(`router: bank ${line ? `found ${line.topic}` : 'has nothing on it'}`)
-    if (line) return answer(`${titled(line.text)} ${ageWords(Date.now() - line.at)}`)
+    const pass = !line ? '' : asksYesNo(text) ? 'a yes or no' : Date.now() - (bankSaid.get(line.topic) ?? 0) < ASKED_AGAIN ? 'asked again' : ''
+    log(`router: bank ${line ? `found ${line.topic}${pass ? `, but ${pass}: the orch answers` : ''}` : 'has nothing on it'}`)
+    if (pass) return toBoss(text)
+    if (line) {
+      bankSaid.set(line.topic, Date.now())
+      return answer(`${titled(line.text)} ${ageWords(Date.now() - line.at)}`)
+    }
     // "What's waiting on me?": every line marked --waiting, from both machines, and the sessions that need an answer.
     if (kind === 'status' || asksWaiting(text)) return answer(status(waitingWords(lines)) || waitingWords(lines) || 'Nothing is waiting on you.')
     kind = 'work'

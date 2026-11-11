@@ -111,6 +111,11 @@ export function matchLine(lines, said) {
   return best
 }
 
+// "Have you completed the dentaria?", "Is the vlog done?": a yes or no the bank's status line doesn't give (2026-11-12, a
+// six-hour-old dentaria line spoken to "have you completed ... all of doc's handwritten notes?"). The orch answers it.
+export const asksYesNo = text =>
+  /^((so|okay|ok|and|but|hey|jarvis|sir)\b\W*)*(have|has|had|did|does|do|is|are|was|were|will|can|could)\b/i.test(text.trim())
+
 // "What's pending?", "Sino ang naghihintay sa akin?": a question for every waiting line, not one topic's.
 export const asksWaiting = text =>
   /\b(waiting|pending|wait(s|ing)? (on|for) me|needs? me|on me|naghihintay|hinihintay|kailangan)\b/i.test(text)

@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
-import { AGES, ageWords, isFiller, latestLines, matchLine, shortlist, withFacts, withTitle } from './rules.mjs'
+import { AGES, ageWords, asksYesNo, isFiller, latestLines, matchLine, shortlist, withFacts, withTitle } from './rules.mjs'
 
 for (const said of ['Hmm.', 'Mm-hmm.', 'Okay', 'Damn', 'Got it.']) assert(isFiller(said), said)
 for (const said of ['Yes', 'Go', 'Okay, send it', 'What?', 'Hello']) assert(!isFiller(said), said)
@@ -38,6 +38,10 @@ assert.strictEqual(matchLine(lines, "How's the vlog going?")?.topic, 'vlog')
 assert.strictEqual(matchLine(lines, 'tapos na ba yung vlogs')?.topic, 'vlog')
 assert.strictEqual(matchLine(lines, "what's the status of the course")?.topic, 'course')
 for (const none of ['status', "what's the status?", 'how is the webinar going', 'are the tests fine']) assert.strictEqual(matchLine(lines, none), null, none)
+for (const yes of ["Have you completed the Dentaria? That's a question.", 'is the vlog done', 'So, did the course tests pass?', 'Jarvis, are the tests fine'])
+  assert(asksYesNo(yes), yes)
+for (const how of ["How's the vlog going?", "what's the status of the course", 'tapos na ba yung vlogs', "So what's your answer on have you completed it"])
+  assert(!asksYesNo(how), how)
 for (const [m, words] of [[0, 'As of just now.'], [1.5, 'As of a minute ago.'], [2.5, 'As of two minutes ago.'], [9, 'As of five minutes ago.'], [70, 'As of an hour ago.'], [700, 'As of six hours ago.']]) {
   assert.strictEqual(ageWords(m * 60_000), words)
   assert(AGES.includes(words), words)
@@ -274,7 +278,12 @@ try {
     const sentAt = Date.now()
     await heard('how is the webinar going')  // nothing on it: the orch, and nothing said here, so only the orch replies
     await heard('A')  // an answer goes straight to the orch, also unsaid
+    // Asked again: the line didn't answer it. A yes or no: the status line doesn't give one. Both go to the orch, unsaid.
+    await heard("so what's the latest on the vlog")
+    await heard('Is the draft ready?')
     await sleep(600)
+    assert.match(readFileSync(LOG, 'utf8'), /router: bank found vlog, but asked again: the orch answers/)
+    assert.match(readFileSync(LOG, 'utf8'), /router: bank found draft, but a yes or no: the orch answers/)
     assert(!/^(ack|end|say|ask|late|tell) /m.test(toListener().slice(before2)) && haikuCalls === 0, toListener().slice(before2))
     assert(Date.now() - sentAt < 2500)
     assert.match(readFileSync(LOG, 'utf8'), /heard \(mic\): how is the webinar going\n.*\n.*router: bank has nothing/)
