@@ -315,7 +315,8 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   line for goes to the boss. So does a yes or no ("is the vlog done?", "have you finished it?") and the same topic asked
   again within 10 minutes, since the line didn't answer it. `node progress.mjs --list` prints the newest line per topic, waiting ones first. With
 `--waiting`, one such line may follow the request after a greeting (never between the greeting and your words), the same one at most every 30 minutes
-  and never in a call (`REMINDERS=off`). With `VOICE_SHARED=`, both PCs' lines count.
+  and never in a call (`REMINDERS=off`). Only when the voice answered that request itself, or none came: a request the
+  orch takes gets no reminder, since it would play the moment the request left, as if it were the answer. With `VOICE_SHARED=`, both PCs' lines count.
 - Say "what?", "huh?", "ha?", "ano?", "again?" or "come again?" within a minute and a half of a line, and it says that line
   again. Other short follow-ups are read as replies to what it just said, and a plain "hmm" or "okay" after a line that
   asked nothing gets no answer.

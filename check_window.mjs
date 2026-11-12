@@ -285,6 +285,9 @@ try {
     assert.match(readFileSync(LOG, 'utf8'), /router: bank found vlog, but asked again: the orch answers/)
     assert.match(readFileSync(LOG, 'utf8'), /router: bank found draft, but a yes or no: the orch answers/)
     assert(!/^(ack|end|say|ask|late|tell) /m.test(toListener().slice(before2)) && haikuCalls === 0, toListener().slice(before2))
+    // Each went on to the orch: `routed boss`, so the greeting's reminder doesn't play as if it were the answer.
+    assert.strictEqual(toListener().slice(before2).match(/^routed boss$/gm)?.length, 4, toListener().slice(before2))
+    assert.match(toListener().slice(0, before2), /^routed$/m)  // the bank answered the first one itself
     assert(Date.now() - sentAt < 2500)
     assert.match(readFileSync(LOG, 'utf8'), /heard \(mic\): how is the webinar going\n.*\n.*router: bank has nothing/)
     jevSays = 'status'

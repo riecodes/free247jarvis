@@ -11,6 +11,7 @@ and writes one JSON event per stdout line:
             say <text>                          answers a request just heard: said in full, then the follow-up window
             ask <text> | ack <text>             as say | end, from the router: the answer to what was just heard, ahead of older news
             routed                              the request just heard is answered: news and the greeting's reminder may play
+            routed boss                         it went on to the orch: news may play, the greeting's reminder is dropped
             end <text>                          as say, but it closes the exchange: no follow-up window
             late <text>                         an older reply, or a question nobody prompted: held while staying quiet, else as say
             tell <text>                         news nobody asked for: held while staying quiet, else in full; no follow-up window
@@ -1744,9 +1745,13 @@ class Ears:
         now = time.monotonic()
         return now - self.last_speech < SPOKE_WAIT and now - self.queue_since < HOLD_MAX
 
-    def after_turn(self) -> None:
-        """The user's request was answered, or none came: news may play, and the greeting's reminder joins it."""
+    def after_turn(self, remind: bool = True) -> None:
+        """The user's request was answered, or none came: news may play, and the greeting's reminder joins it. Not
+        remind: the request went on to the orch, so the reminder is dropped; it would play as the request left, sounding
+        like the answer to it (2026-11-12)."""
         self.routing_until = 0.0
+        if not remind:
+            self.remind_next = ""
         if self.remind_next:
             emit("reminder", text=self.remind_next)
             self.line(self.remind_next, asked=False, window=False)
@@ -2254,8 +2259,8 @@ def main(commands: list[str]) -> None:
             if not ears.queue and not ears.busy():
                 ears.record(ears.request_done)
             continue
-        if value == "routed":  # voice.mjs answered the request just heard (its answer, if any, came first)
-            ears.after_turn()
+        if value in ("routed", "routed boss"):  # voice.mjs answered the request just heard (its answer, if any, came first)
+            ears.after_turn(remind=value == "routed")  # boss: the orch has it, and a reminder now would sound like its answer
             continue
         if value.startswith(("say ", "end ", "late ", "tell ", "ask ", "ack ")):
             verb, text = value.split(" ", 1)

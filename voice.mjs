@@ -67,9 +67,9 @@ const mcp = new Server(
       'Tagalog or Taglish, with the odd speech-to-text mistake). Act on each one, then answer it out loud with ' +
       'exactly one call to the reply tool: one or two short spoken sentences, no markdown. The mic reopens after ' +
       'a reply only when it asks the user something; when the user just answered your question, your ' +
-      'acknowledgment ends the exchange, so pass listen: false if its wording could read as asking. The voice already ' +
-      'says a short "On it" line with what it heard the moment a request arrives, so your reply carries the result, ' +
-      'the news or the question, not another acknowledgment. ' + SPEAK,
+      'acknowledgment ends the exchange, so pass listen: false if its wording could read as asking. The voice says ' +
+      'nothing between the request and your reply (only a short sound as the request ends), so your reply is the one ' +
+      'spoken answer: make it about what was just asked. ' + SPEAK,
   },
 )
 
@@ -298,12 +298,23 @@ async function route(text) {
   const quick = kind === 'chat' ? await chat(text)
     : picks ? await chat(text, withFacts(picks, await liveFacts())) : ''
   if (quick) return answer(quick)
-  await toBoss(text)
+  return toBoss(text)
 }
 
 // To the boss, and nothing said: the listener's "heard" sound already played as the request ended, and the orch's reply is
 // the only spoken answer. An instant Haiku line here made two messages for every request (2026-11-11).
-const toBoss = text => send(text, 'mic')
+const toBoss = text => send(text, 'mic').then(() => 'boss')
+
+// A request heard, routed, then `routed` to the listener: news may play now. `routed boss` when the orch has it: the
+// greeting's reminder is dropped, since it would play the instant the request left, as if it were the answer (2026-11-12:
+// "restart all the workers" got "switching Barker's main app waits on your A or B"). long: past 90 s without the wake
+// word, so the orch judges and the router doesn't guess.
+function heardSaid(text, long = false) {
+  const routed = long ? toBoss(`${LONG_NOTE} ${text}`)
+    : route(text).catch(err => (log(`router: ${err.message}`), toBoss(text)))
+  return routed.catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
+    .then(to => ears.stdin.write(`routed${to === 'boss' ? ' boss' : ''}\n`))
+}
 
 // Says it without the boss, ahead of older news (ask, ack); `listen` then records the next sentence without the wake word.
 function answer(text, listen = false) {
@@ -414,14 +425,8 @@ function startEars() {
     if (e.event !== 'caption') show(e.event, e)
     if (e.event === 'spoken' || e.event === 'partial') return
     if (e.event === 'quiet') quiet = e.on
-    if (e.event === 'heard' && e.long) {  // past 90 s without the wake word: the orch judges, the router doesn't guess
-      send(`${LONG_NOTE} ${e.text}`, 'mic').catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
-        .finally(() => ears.stdin.write('routed\n'))
-    } else if (e.event === 'heard') {
-      route(e.text).catch(err => (log(`router: ${err.message}`), send(e.text, 'mic')))
-        .catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
-        .finally(() => ears.stdin.write('routed\n'))  // its answer is queued: now news, and the greeting's reminder
-    } else if (e.event === 'caption') {
+    if (e.event === 'heard') heardSaid(e.text, e.long)
+    else if (e.event === 'caption') {
       if (e.remind) showToast(e.text)  // the window already has this line as the reply
       else showCaption(`${e.text}${e.looking && waitingOn() ? ` ${waitingOn()}` : ''}`, e.looking)
     }
@@ -588,7 +593,7 @@ const server = createServer((req, res) => {
       if (mic) (claim(), heldElsewhere = '')
       log(`mic ${text}`)
       ears.stdin.write(`${text}\n`)
-    } else if (req.url === '/heard' && text) await route(text)
+    } else if (req.url === '/heard' && text) await heardSaid(text)
     else if (req.url === '/window') {
       log('window asked for')
       if (!openWindow(true)) return (res.writeHead(404), res.end('no window installed: npm install in window/'))

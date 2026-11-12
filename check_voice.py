@@ -575,6 +575,17 @@ def turn_first() -> None:
         e.after_turn()
         e.flush()
     assert played == ["Sir, the draft is ready."]
+    # The request went on to the orch (`routed boss`): no reminder, now or after its reply. On 2026-11-12 one played the
+    # instant "restart all the workers" left, as if it were the answer.
+    e, played = ears(), []
+    e.say = lambda text, **how: played.append(text)
+    e.remind_next = "Sir, the draft is ready."
+    with mock.patch.object(listener, "emit"):
+        e.after_turn(remind=False)
+        e.flush()
+        e.after_turn()
+        e.flush()
+    assert played == [] and not e.remind_next and not e.routing_until
     # carry_on opens the window after a line that asked nothing, as an idle one (news doesn't wait it out).
     e = ears()
     e.listen_all, e.mic_open, e.followup = False, True, 8
