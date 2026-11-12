@@ -116,6 +116,15 @@ export function matchLine(lines, said) {
 export const asksYesNo = text =>
   /^((so|okay|ok|and|but|hey|jarvis|sir)\b\W*)*(have|has|had|did|does|do|is|are|was|were|will|can|could)\b/i.test(text.trim())
 
+// "Do you have anything pending that's eating tokens?": a yes or no to the status leads with the answer, about what it
+// asks, running or waiting on the user (2026-11-12: the session counts came first and never said no). '' otherwise.
+const ASKS_RUNNING = /\b(run|running|working|busy|tokens?|eating|active)\b/i
+export function yesNoLead(text, busy, waiting) {
+  if (!asksYesNo(text)) return ''
+  if (ASKS_RUNNING.test(text)) return busy ? 'Yes' : 'No, nothing is running'
+  return waiting ? 'Yes' : 'No, nothing is waiting on you'
+}
+
 // "What's pending?", "Sino ang naghihintay sa akin?": a question for every waiting line, not one topic's.
 export const asksWaiting = text =>
   /\b(waiting|pending|wait(s|ing)? (on|for) me|needs? me|on me|naghihintay|hinihintay|kailangan)\b/i.test(text)

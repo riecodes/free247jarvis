@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts } from './rules.mjs'
+import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts, yesNoLead } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -291,7 +291,8 @@ async function route(text) {
       return answer(`${titled(line.text)} ${ageWords(Date.now() - line.at)}`)
     }
     // "What's waiting on me?": every line marked --waiting, from both machines, and the sessions that need an answer.
-    if (kind === 'status' || asksWaiting(text)) return answer(status(waitingWords(lines)) || waitingWords(lines) || 'Nothing is waiting on you.')
+    // 'told': those lines were just said, so the greeting's reminder of one of them doesn't follow.
+    if (kind === 'status' || asksWaiting(text)) return (answer(status(waitingWords(lines), text) || waitingWords(lines) || 'Nothing is waiting on you.'), 'told')
     kind = 'work'
   }
   const picks = kind === 'knowledge' ? shortlist(bank, text) : ''  // none: the boss, or Haiku would answer without notes
@@ -307,13 +308,14 @@ const toBoss = text => send(text, 'mic').then(() => 'boss')
 
 // A request heard, routed, then `routed` to the listener: news may play now. `routed boss` when the orch has it: the
 // greeting's reminder is dropped, since it would play the instant the request left, as if it were the answer (2026-11-12:
-// "restart all the workers" got "switching Barker's main app waits on your A or B"). long: past 90 s without the wake
-// word, so the orch judges and the router doesn't guess.
+// "restart all the workers" got "switching Barker's main app waits on your A or B"). `routed told` when the answer just
+// read the waiting lines: the reminder would repeat one. long: past 90 s without the wake word, so the orch judges and
+// the router doesn't guess.
 function heardSaid(text, long = false) {
   const routed = long ? toBoss(`${LONG_NOTE} ${text}`)
     : route(text).catch(err => (log(`router: ${err.message}`), toBoss(text)))
   return routed.catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
-    .then(to => ears.stdin.write(`routed${to === 'boss' ? ' boss' : ''}\n`))
+    .then(to => ears.stdin.write(`routed${to === 'boss' || to === 'told' ? ` ${to}` : ''}\n`))
 }
 
 // Says it without the boss, ahead of older news (ask, ack); `listen` then records the next sentence without the wake word.
@@ -330,7 +332,7 @@ const NUMBERS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'e
 const count = (n, what) => `${NUMBERS[n] ?? n} ${what}`
 
 // The live sessions from Claude Code's own files, ~/.claude/sessions/<pid>.json, except the boss (our parent).
-function status(waits = '') {
+function status(waits = '', asked = '') {
   const dir = join(homedir(), '.claude', 'sessions')
   const live = readdirSync(dir).flatMap(f => {
     try {
@@ -339,7 +341,10 @@ function status(waits = '') {
       return s.pid === process.ppid ? [] : [s]
     } catch { return [] }
   })
-  if (!live.length) return ''
+  if (!live.length) {
+    const lead = yesNoLead(asked, 0, waits)
+    return lead && `${lead}. ${waits || 'Nothing needs you.'}`
+  }
   // By the name the user gave it, else by its folder: "the course session".
   const label = s => (s.nameSource === 'user' ? s.name : `the ${basename(s.cwd)} session`)
   const waiting = live.filter(s => s.status === 'waiting')
@@ -348,7 +353,8 @@ function status(waits = '') {
     waiting.length && count(waiting.length, 'waiting')].filter(Boolean).join(', ')
   const needs = waiting.map(s => `${label(s)} needs you: ${(s.waitingFor || 'an answer').split(/\s+/).slice(0, 6).join(' ')}.`)
   const sessions = count(live.length, live.length === 1 ? 'session' : 'sessions')
-  return `${sessions[0].toUpperCase() + sessions.slice(1)}: ${counts}. ${[...needs, waits].filter(Boolean).join(' ') || 'Nothing needs you.'}`
+  const lead = yesNoLead(asked, busy, waiting.length || waits)
+  return `${lead ? `${lead}. ` : ''}${sessions[0].toUpperCase() + sessions.slice(1)}: ${counts}. ${[...needs, waits].filter(Boolean).join(' ') || 'Nothing needs you.'}`
 }
 
 // With a bank, it answers only from those notes; what they don't settle goes to the boss.

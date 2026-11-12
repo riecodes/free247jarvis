@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
-import { AGES, ageWords, asksYesNo, isFiller, latestLines, matchLine, shortlist, withFacts, withTitle } from './rules.mjs'
+import { AGES, ageWords, asksYesNo, yesNoLead, isFiller, latestLines, matchLine, shortlist, withFacts, withTitle } from './rules.mjs'
 
 for (const said of ['Hmm.', 'Mm-hmm.', 'Okay', 'Damn', 'Got it.']) assert(isFiller(said), said)
 for (const said of ['Yes', 'Go', 'Okay, send it', 'What?', 'Hello']) assert(!isFiller(said), said)
@@ -42,6 +42,13 @@ for (const yes of ["Have you completed the Dentaria? That's a question.", 'is th
   assert(asksYesNo(yes), yes)
 for (const how of ["How's the vlog going?", "what's the status of the course", 'tapos na ba yung vlogs', "So what's your answer on have you completed it"])
   assert(!asksYesNo(how), how)
+// A yes or no to the status leads with the answer to what it asks (2026-11-12: "eating tokens?" got only the counts).
+const tokens = 'Do I have, do you have any pending that needs my confirm and is eating tokens? No.'
+assert.strictEqual(yesNoLead(tokens, 0, 2), 'No, nothing is running')
+assert.strictEqual(yesNoLead(tokens, 1, 0), 'Yes')
+assert.strictEqual(yesNoLead('is anything waiting on me', 3, 0), 'No, nothing is waiting on you')
+assert.strictEqual(yesNoLead('do I have anything pending', 0, 1), 'Yes')
+assert.strictEqual(yesNoLead("what's pending", 0, 1), '')
 for (const [m, words] of [[0, 'As of just now.'], [1.5, 'As of a minute ago.'], [2.5, 'As of two minutes ago.'], [9, 'As of five minutes ago.'], [70, 'As of an hour ago.'], [700, 'As of six hours ago.']]) {
   assert.strictEqual(ageWords(m * 60_000), words)
   assert(AGES.includes(words), words)
@@ -300,6 +307,14 @@ try {
     await heard("what's waiting on me")  // every waiting line, not one topic's
     await sleep(300)
     assert(/^ack .*Waiting on you: The draft is ready\b/m.test(toListener().slice(before4)), toListener().slice(before4))
+    // It read the waiting lines: `routed told`, so the greeting's reminder doesn't say one again (2026-11-12, 07:55).
+    assert.match(toListener().slice(before4), /^routed told$/m)
+    // A yes or no: the answer first, then the counts. This machine's real sessions, so either answer.
+    const before5 = toListener().length
+    jevSays = 'status'
+    await heard('is anything running')
+    await sleep(300)
+    assert.match(toListener().slice(before5), /^ack (Sir, )?(yes|no, nothing is running)\. \S+ sessions?: /im)
     // A choice clicked in the window: it closes the listening window, and goes on as if said.
     const r = await fetch(`http://127.0.0.1:${port3}/choice`, { method: 'POST', body: 'A' })
     assert.strictEqual(r.status, 200)

@@ -12,6 +12,7 @@ and writes one JSON event per stdout line:
             ask <text> | ack <text>             as say | end, from the router: the answer to what was just heard, ahead of older news
             routed                              the request just heard is answered: news and the greeting's reminder may play
             routed boss                         it went on to the orch: news may play, the greeting's reminder is dropped
+            routed told                         the answer read the waiting lines: the same, so none is said twice
             end <text>                          as say, but it closes the exchange: no follow-up window
             late <text>                         an older reply, or a question nobody prompted: held while staying quiet, else as say
             tell <text>                         news nobody asked for: held while staying quiet, else in full; no follow-up window
@@ -2259,8 +2260,9 @@ def main(commands: list[str]) -> None:
             if not ears.queue and not ears.busy():
                 ears.record(ears.request_done)
             continue
-        if value in ("routed", "routed boss"):  # voice.mjs answered the request just heard (its answer, if any, came first)
-            ears.after_turn(remind=value == "routed")  # boss: the orch has it, and a reminder now would sound like its answer
+        if value in ("routed", "routed boss", "routed told"):  # voice.mjs answered the request just heard (its answer first)
+            # boss: the orch has it, and a reminder now would sound like its answer. told: the answer read the waiting lines.
+            ears.after_turn(remind=value == "routed")
             continue
         if value.startswith(("say ", "end ", "late ", "tell ", "ask ", "ack ")):
             verb, text = value.split(" ", 1)
