@@ -1976,10 +1976,13 @@ class Ears:
             except Exception as e:
                 emit("error", message=f"ElevenLabs voice failed, using Kokoro: {e}")
             voice = os.environ.get("VOICE") or "bm_george"
-        lang = "en-gb" if voice[0] == "b" else "en-us"  # bm_/bf_ voices are British
+        lang = "en-gb" if voice[0] == "b" else "en-us"  # bm_/bf_ voices are British (a blend: its first voice's)
         with TTS_LOCK:
             phonemes = respoken(text, lambda t: self.tts.tokenizer.phonemize(t, lang))
-            samples, rate = self.tts.create(phonemes or text, voice=voice, speed=speed, lang=lang, is_phonemes=bool(phonemes))
+            # "am_puck+af_heart": the voices' styles averaged, a male and a female making one in between. A name twice
+            # weighs double.
+            style = np.mean([self.tts.get_voice_style(v) for v in voice.split("+")], axis=0) if "+" in voice else voice
+            samples, rate = self.tts.create(phonemes or text, voice=style, speed=speed, lang=lang, is_phonemes=bool(phonemes))
         return samples, rate, f"kokoro_{voice}"
 
     # Voice training: five takes of the first wake word and three sentences of other speech teach openWakeWord's

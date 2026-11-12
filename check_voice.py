@@ -749,6 +749,21 @@ def talk_over() -> None:
         assert listener.voice_key() == "elevenlabs_v"
         os.environ["VOICE_TTS"] = "kokoro"
         assert listener.voice_key() == "kokoro_bm_george" and listener.el_key() == "k"  # el_key: Scribe and its live words
+    # VOICE=am_puck+af_heart: one voice between the two, their styles averaged (2026-11-13, "androgynous").
+    got = {}
+    tts = mock.Mock(get_voice_style=lambda v: np.full(3, {"am_puck": 1.0, "af_heart": 3.0, "bm_george": 5.0}[v], np.float32))
+    tts.tokenizer.phonemize.return_value = ""
+    tts.create = lambda text, voice, **how: (got.update(voice=voice, lang=how["lang"]), (np.zeros(10, np.float32), 24000))[1]
+    e = ears()
+    e.tts, e.banked = tts, {}
+    del e.speech  # the real one, not ears()'s stand-in
+    for voice, style, lang in [("am_puck+af_heart", [2.0] * 3, "en-us"), ("bm_george+bm_george+af_heart", [13 / 3] * 3, "en-gb")]:
+        with mock.patch.dict(os.environ, {"VOICE": voice, "VOICE_TTS": "kokoro"}):
+            assert e.speech("Sir, the vlog is up.")[2] == f"kokoro_{voice}"
+        assert np.allclose(got["voice"], style) and got["lang"] == lang, got
+    with mock.patch.dict(os.environ, {"VOICE": "bm_george", "VOICE_TTS": "kokoro"}):
+        e.speech("Sir, the vlog is up.")
+    assert got["voice"] == "bm_george"  # one voice: by name, as before
 
     # The decision: speech only counts when clearly louder than the reply is at the mic.
     def fed(chunks, ratio=2.0):
