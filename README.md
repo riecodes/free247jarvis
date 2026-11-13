@@ -50,6 +50,9 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
   now follows the loudness of its own words at the mic, so a laptop mic right next to the speakers no longer stops
   it. If nobody was talking, it finishes the reply and still listens for your answer.
 - **"What?" repeats.** Say "what?", "huh?" or "come again?" and it says its last line again.
+- **"Later" ends it.** Say "later" (or "cancel", "never mind") as the whole request, over a reply too: nothing goes to
+  the boss, the rest of the reply is dropped, your music resumes, and it waits for the wake word again. When the line
+  it just said has that word ("ship it now or later?"), it's your answer and goes on as one.
 - **Words it says right.** Add `# say:` and the sounds after a word in `words.txt` (`vlog  # say: vlˈɒɡ`) and the
   free voice says it that way.
 - **Mix the voices.** `VOICE_TTS=kokoro` hears you with ElevenLabs and answers with the free voice.

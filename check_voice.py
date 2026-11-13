@@ -107,6 +107,17 @@ def hush() -> None:
         for e, lowered, resumed in wake([video]):
             e.request_done(None)
             assert (lowered, resumed) == both and not e.paused and not e.raised and not e.reply_by
+        # "Later" (2026-11-13, "I'll call you back"): nothing goes on, a reply cut off stays cut, media back at once.
+        for said, heard, dismissed in [("Yes, sir.", "Later.", True), ("Yes, sir.", "Jarvis, never mind.", True),
+                                       ("Yes, sir.", "Cancel, sir.", True), ("Yes, sir.", "Cancel the deploy.", False),
+                                       ("Sir, ship it now or later?", "Later.", False)]:
+            for e, lowered, resumed in wake([video]):
+                e.said, e.cut_rest = said, (np.zeros(10, np.float32), RATE, ("The rest.", 0.0, False, False, False))
+                with mock.patch.object(listener, "transcribe", lambda clip: heard), mock.patch.object(listener, "emit") as sent:
+                    e.request_done(np.zeros(1, np.int16))
+                went = [c.args[0] for c in sent.call_args_list]
+                assert ("heard" not in went and (lowered, resumed) == both and not e.cut_rest) if dismissed else "heard" in went, (heard, went)
+        assert listener.dismisses("nevermind", "") == "nevermind" and not listener.dismisses("later today", "")
         # Only the wake word was said, or noise: the same.
         for e, lowered, resumed in wake([video]):
             with mock.patch.object(listener, "transcribe", lambda clip: "Jarvis"):

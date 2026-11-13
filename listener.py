@@ -801,6 +801,18 @@ def asks_again(heard: str) -> bool:
     return bool(ASK_AGAIN.fullmatch(said)) or (not said and "ulit" in heard.lower()) or heard.strip().lower() == "sorry?"
 
 
+DISMISS = re.compile(r"later|cancel|never ?mind")
+
+
+def dismisses(heard: str, said: str) -> str:
+    """"Later", "cancel", "never mind": the user ends the exchange, as in "I'll call you back". The word said, or ''. Not
+    when the line just said has it: "Ship now or later?" gets "later" as its answer, for the orch."""
+    words = " ".join(w for w in re.findall(r"[\w']+", heard.lower()) if w not in ("um", "uh", "sir", "please", "jarvis", "okay", "ok"))
+    if not DISMISS.fullmatch(words):
+        return ""
+    return "" if DISMISS.search(said.lower()) else words
+
+
 def sounds_like(heard: str, said: str) -> bool:
     """Speech to text spells an echo its own way: "B, no" came back as "Be no", "naghihintay" as "Iihintay"."""
     return heard == said or LETTER_NAMES.get(heard) == said or difflib.SequenceMatcher(None, heard, said).ratio() >= 0.6
@@ -1705,6 +1717,12 @@ class Ears:
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
         if clip is not None and woke and not sure:  # staying quiet: other people may be on the clip
             keep_clip(clip, transcript, text, *woke)
+        if text and (word := dismisses(text, self.said)):  # "later": nothing to the orch, the rest of a reply dropped,
+            self.cut_rest, self.remind_next, self.routing_until = None, "", 0.0  # media back, the wake word next
+            self.release()
+            emit("status", text=f'Dismissed ("{word}"): nothing sent, back to the wake word')
+            emit("nothing")
+            return
         if text:
             self.spoke.clear()  # that was the user talking to it, not people talking
             self.tries = []
