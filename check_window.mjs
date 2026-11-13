@@ -240,11 +240,18 @@ try {
   // with no line, or a plain status, doesn't use the bank. Lines and ages are rendered ahead, and what waits is passed on.
   const { createServer } = await import('node:http')
   let jevSays = 'progress', haikuCalls = 0
-  const jev = createServer((req, res) => {  // also a stand-in Haiku, at /haiku, which a request to the orch must never call
-    req.resume()
+  // Also a stand-in Haiku, at /haiku: with the board it knows only "research", and says NOT_IN_NOTES to anything else.
+  const jev = createServer((req, res) => {
+    let body = ''
+    req.on('data', d => { body += d })
     if (req.url === '/haiku') haikuCalls++
-    req.on('end', () => res.end(JSON.stringify(req.url === '/haiku' ? { content: [{ type: 'text', text: 'On it, sir.' }] }
-      : { answers: { kind: { choice: jevSays, probabilities: { [jevSays]: 0.95 } } } })))
+    req.on('end', () => {
+      const ask = req.url === '/haiku' ? JSON.parse(body) : null
+      const board = ask?.system.includes('<board>'), research = /research/.test(ask?.messages[0].content ?? '')
+      res.end(JSON.stringify(ask ? { content: [{ type: 'text', text: board && !research ? 'NOT_IN_NOTES' : board ? 'Sir, the research session is idle.' : 'On it, sir.' }] }
+        : { answers: { kind: { choice: jevSays, probabilities: { [jevSays]: 0.95 } },
+          ...(jevSays === 'chat' && { canned: { choice: 'thanks', probabilities: { thanks: 0.95 } } }) } }))
+    })
   }).listen(0, '127.0.0.1')
   await new Promise(r => jev.once('listening', r))
   const BANK = join(TMP, 'bankclaims'), IN = join(TMP, 'bank.in')
@@ -291,7 +298,8 @@ try {
     await sleep(600)
     assert.match(readFileSync(LOG, 'utf8'), /router: bank found vlog, but asked again: the orch answers/)
     assert.match(readFileSync(LOG, 'utf8'), /router: bank found draft, but a yes or no: the orch answers/)
-    assert(!/^(ack|end|say|ask|late|tell) /m.test(toListener().slice(before2)) && haikuCalls === 0, toListener().slice(before2))
+    // Only the webinar asked Haiku, with the board, which didn't settle it: so the orch answers, and nothing is said here.
+    assert(!/^(ack|end|say|ask|late|tell) /m.test(toListener().slice(before2)) && haikuCalls === 1, [haikuCalls, toListener().slice(before2)])
     // Each went on to the orch: `routed boss`, so the greeting's reminder doesn't play as if it were the answer.
     assert.strictEqual(toListener().slice(before2).match(/^routed boss$/gm)?.length, 4, toListener().slice(before2))
     assert.match(toListener().slice(0, before2), /^routed$/m)  // the bank answered the first one itself
@@ -309,6 +317,17 @@ try {
     assert(/^ack .*Waiting on you: The draft is ready\b/m.test(toListener().slice(before4)), toListener().slice(before4))
     // It read the waiting lines: `routed told`, so the greeting's reminder doesn't say one again (2026-11-12, 07:55).
     assert.match(toListener().slice(before4), /^routed told$/m)
+    // A session with no line of its own: Haiku answers from the board, without the orch.
+    const before6 = toListener().length
+    await heard('how is the research going')
+    await sleep(300)
+    assert.match(toListener().slice(before6), /^ack Sir, the research session is idle\.$/m)
+    // Small talk with a set answer: Jev's second question settles it, and Haiku isn't asked.
+    const calls = haikuCalls
+    jevSays = 'chat'
+    await heard('thanks for that')
+    await sleep(300)
+    assert(/^ack .*you're welcome/im.test(toListener().slice(before6)) && haikuCalls === calls, toListener().slice(before6))
     // A yes or no: the answer first, then the counts. This machine's real sessions, so either answer.
     const before5 = toListener().length
     jevSays = 'status'
@@ -368,6 +387,13 @@ try {
   const said = await rpc(2, 'tools/call', { name: 'reply', arguments: { text: 'ghost line' } })
   assert.match(said.result.content[0].text, /Not spoken: Jarvis is on OtherPC/)
   assert(!readFileSync(LOG, 'utf8').includes('reply: ghost line'))
+  // The reply tool loads with the session, and each request carries the board, so the orch needn't look it up.
+  const tools = await rpc(3, 'tools/list', {})
+  assert.strictEqual(tools.result.tools[0]._meta?.['anthropic/alwaysLoad'], true, JSON.stringify(tools))
+  await fetch(`http://127.0.0.1:${port2}/`, { method: 'POST', body: 'board check' })
+  const pushed = JSON.parse((await replies.next()).value)
+  assert(pushed.method === 'notifications/claude/channel' && /^board check\n\n\(From the voice, so no lookup is needed for this: sessions on this PC: .*Workers' newest progress lines: /s
+    .test(pushed.params.content), JSON.stringify(pushed))
   // "jarvis on" here moves it, even with the other PC's clock ahead; then the other PC taking it back closes the mic.
   claimBy('OtherPC', Date.now() + 60_000)
   await fetch(`http://127.0.0.1:${port2}/mic`, { method: 'POST', body: 'on' })

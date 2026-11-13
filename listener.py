@@ -821,14 +821,15 @@ def asks_again(heard: str) -> bool:
 
 
 # "Not now", said any way: the exchange ends with nothing for the orch (2026-11-13, "talk to you later, Jarvis"). BRUSH_OFF
-# always; SOFT only when the line just said asked nothing, since "wag na" or "that's all" answers "Shall I deploy it?".
-# "No", "nothing" and "wala" alone are answers, so they're in neither. "Stop listening" and "shutdown" aren't either:
-# those are their own commands.
+# always; SOFT only when the line just said asked nothing, since "wag na", "nothing" or "thanks" answers "Shall I deploy
+# it?" or "Anything else?". With no question open they close it ("No, nothing, thank you."). A bare "no" is in neither.
+# "Stop listening" and "shutdown" aren't either: those are their own commands.
 BRUSH_OFF = """later | talk later | talk to you later | see you later | catch you later | talk to you soon | not now | not right now
   never mind | nevermind | forget it | forget about it | false alarm | not you | not talking to you | im not talking to you
   i wasnt talking to you | wrong | sorry wrong | wrong person | my bad | bye | bye bye | goodbye | mamaya na | mamaya na lang
   saka na | hindi ikaw | di ikaw | sa susunod na lang"""
-SOFT = "im good | thats all | thats it | cancel | wag na | huwag na | wag na lang | huwag na lang | wala lang | okay na | ayos na"
+SOFT = """im good | thats all | thats it | cancel | wag na | huwag na | wag na lang | huwag na lang | wala lang | okay na | ayos na
+  nothing | wala | thank you | thanks | no thanks | salamat"""
 DISMISS_FILLER = set("um uh oh ah hmm yeah yes yep sorry okay ok alright sir jarvis jervis please no nah hey well actually just "
                      "oops sige po".split())
 
@@ -1721,7 +1722,7 @@ class Ears:
             self.stop_live()
             self.ended = (time.monotonic(), self.quiet)  # for the log: how long the quiet ran, and when the text came
             self.on_done(np.concatenate(self.clip) if spoke else None)
-        elif spoke and self.quiet == EARLY_TEXT and self.on_done == self.request_done and groq_room(2):
+        elif spoke and self.quiet == EARLY_TEXT and self.on_done != self.take_done and groq_room(2):  # not voice training
             self.early = (EARLY.submit(transcribe, np.concatenate(self.clip)), len(self.clip))
 
     def sounds_done(self, sure: float) -> bool:

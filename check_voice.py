@@ -28,6 +28,9 @@ os.environ["VOICE_DATA"] = "off"  # no check clip lands in the real voice data
 import listener
 import mishears
 
+# The text a request starts early (EARLY_TEXT) never calls Groq in checks: it fails, and the request's own call, mocked, runs.
+listener.EARLY = mock.Mock(submit=lambda *a, **k: mock.Mock(result=mock.Mock(side_effect=RuntimeError("no early text in checks"))))
+
 HERE = Path(__file__).resolve().parent
 RATE = listener.CHIME_UP[1]
 REAL_OUTPUT_PROBLEM = listener.output_problem
@@ -123,7 +126,9 @@ def hush() -> None:
                       "Sige, mamaya na lang.", "Hindi ikaw.", "Okay, bye.", "I'm good.", "That's all.",
                       "Wag na.", "Okay na po."]:
             assert listener.dismisses(heard, "Yes, sir."), heard
-        for heard, said in [("No.", "Yes, sir."), ("Nothing.", "Yes, sir."), ("Wala.", "Yes, sir."), ("No thanks.", "Sir, anything else?"),
+        for heard in ["No, nothing, thank you.", "Nothing.", "Wala.", "Salamat po.", "Thanks, Jarvis."]:  # no question open: closers
+            assert listener.dismisses(heard, "Sir, the vlog is up."), heard
+        for heard, said in [("No.", "Yes, sir."), ("Nothing.", "Sir, anything else?"), ("Wala.", "Anything else, sir?"), ("No thanks.", "Sir, anything else?"),
                             ("Wag na.", "Shall I deploy it, sir?"), ("I'm good.", "Anything else, sir?"), ("Stop listening.", "Yes, sir."),
                             ("Shutdown.", "Yes, sir."), ("Don't listen.", "Yes, sir."), ("Later, deploy the vlog.", "Yes, sir."),
                             ("Wrong.", "Sir, is that wrong?")]:

@@ -53,9 +53,9 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 - **"Later" ends it.** Brush it off as the whole request, over a reply too: "later", "talk to you later", "not now",
   "never mind", "forget it", "false alarm", "not you", "my bad", "bye", "mamaya na", "hindi ikaw" (the list is
   `BRUSH_OFF` in listener.py). Nothing goes to the boss, the rest of the reply is dropped, your music resumes, and it
-  waits for the wake word again. "I'm good", "that's all", "cancel", "wag na" and "okay na" do the same unless it just
-  asked you something; then they're your answer, as are "no", "nothing" and "wala". So is a phrase its question
-  itself used ("ship it now or later?" "Later.").
+  waits for the wake word again. "I'm good", "that's all", "cancel", "wag na", "okay na", and closers like "no,
+  nothing, thank you", "thanks" or "salamat" do the same unless it just asked you something; then they're your answer,
+  as is a bare "no". So is a phrase its question itself used ("ship it now or later?" "Later.").
 - **Words it says right.** Add `# say:` and the sounds after a word in `words.txt` (`vlog  # say: vlˈɒɡ`) and the
   free voice says it that way.
 - **Mix the voices.** `VOICE_TTS=kokoro` hears you with ElevenLabs and answers with the free voice.
@@ -176,7 +176,11 @@ skip the boss:
 
 - **Status** ("status", "who needs me", "what's pending?"): read straight from Claude Code's session files, plus every
   progress line marked `--waiting` on either machine.
-- **Small talk** ("how are you", "what time is it"): Claude Haiku answers, with `ANTHROPIC_API_KEY=`.
+- **Small talk** ("how are you", "what time is it"): Claude Haiku answers, with `ANTHROPIC_API_KEY=`. A plain "hello",
+  "how are you" or "thanks" gets a set answer at once: Jev picks it in the same call, so Haiku isn't asked.
+- **One session or piece of work** with no progress line of its own ("how's the research going?"): Haiku answers from
+  the board (this PC's sessions and both PCs' newest progress lines, sent to Anthropic with such a question), or passes
+  it to the boss when that doesn't settle it.
 - **Unclear speech** (cut off, garbled, the TV): it asks "Say that again?" and listens without the
   wake word.
 
@@ -187,6 +191,10 @@ skip the boss:
 Everything else, and everything when Jev isn't sure, goes to the boss as before. The "heard" sound that ends your
 request is the only cue until then: nothing is said in between, so the boss's reply is the one spoken answer. To try
 it without the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
+
+Every request the boss gets ends with the board in parentheses (this PC's sessions and the newest progress lines), so
+it can answer without a lookup of its own, and its `reply` tool is always loaded (`anthropic/alwaysLoad`), so it never
+spends a turn finding it.
 
 ## Near real-time (prototype, optional, paid)
 
