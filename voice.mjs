@@ -472,8 +472,11 @@ function syncBank() {
 let ears
 let quitting = false
 function startEars() {
-  // VOICE_LISTENER: realtime.py, or a stub in checks
-  ears = spawn(PYTHON, [env.VOICE_LISTENER || join(HERE, 'listener.py')], { cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  // VOICE_LISTENER: realtime.py, gemini.py, or a stub in checks. Read from .env afresh each start, so switching takes a
+  // listener restart (listener.py restart), not a relaunch of the orch.
+  const fresh = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8').match(/^VOICE_LISTENER=(.*)$/m)?.[1].trim() : ''
+  const script = process.env.VOICE_LISTENER || fresh || join(HERE, 'listener.py')
+  ears = spawn(PYTHON, [script], { cwd: HERE, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   ears.on('error', e => log(`listener failed to start: ${e.message}`))
   ears.stdin.on('error', e => log(`listener stdin: ${e.message}`))
   ears.stderr.on('data', d => appendFileSync(join(HERE, 'tmp', 'listener.log'), d))

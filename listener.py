@@ -747,7 +747,7 @@ def is_listener(pid) -> bool:
     import psutil
 
     try:
-        return any(a.endswith(("listener.py", "realtime.py")) for a in psutil.Process(pid).cmdline())
+        return any(a.endswith(("listener.py", "realtime.py", "gemini.py")) for a in psutil.Process(pid).cmdline())
     except (psutil.Error, TypeError, ValueError):
         return False
 

@@ -220,6 +220,48 @@ fraction of a cent.
 One more, with no OpenAI key: `KNOWLEDGE_DIR=` takes several folders separated by `;`, such as Obsidian vaults: past 8,000 characters only the
 notes sharing words with the question go to Anthropic, plus those they `[[link]]` to.
 
+## Gemini Live (trial, optional, free tier)
+
+`gemini.py` puts Google's Gemini Live in front of the router, after the wake word only (the wake word stays local, and
+nothing reaches Google before it). Gemini hears when you finished and answers small talk itself (a greeting, thanks,
+the time) in its own voice. Anything else it hands over at once, and the request goes on as it does today: your clip to
+Groq for the words, then the router and the orch, spoken by Kokoro. The listener's own end of speech runs alongside, so
+when Gemini fails or stays quiet, the request ends as it always has.
+
+```
+VOICE_LISTENER=gemini.py
+GEMINI_API_KEY=...
+```
+
+Then restart the listener. A free key from aistudio.google.com/apikey, on a project with no billing, stays on the free
+tier: no daily cap on Live, 65,000 tokens a minute (about 25 minutes of audio a minute, far more than one voice needs).
+**On the free tier Google may use what you send to improve its products**, and people may read it: every request
+from the wake word to its end goes there. Leave `VOICE_LISTENER` empty to stop.
+
+Measured on 2026-11-13 with your own kept requests, from the last word (20 of the newest with a pause of 1.5 s or
+more, as 81% of them have):
+
+| | Today | With Gemini |
+|---|---|---|
+| Small talk, first sound | about 6 s (3.5 s of quiet, text, router, Kokoro) | 1.1 to 1.8 s |
+| Request reaches the router | about 4.5 s (3.5 s of quiet, then the text) | 2.5 to 3.5 s for about half; the rest as today |
+| Cut off mid-request | 6.6% of all requests | none of the 20 |
+
+Gemini alone cut off 5 of the 20 (3 with 2.5 s of quiet, at a second slower). So its hand-over counts only when the
+local Smart Turn also hears you finished (`GEMINI_GATE=`, 0.35); the 5 it cut off all scored lower, and a hand-over it
+turns down leaves the request to the listener's own 4 s of quiet, as today.
+
+What to know before keeping it:
+
+- Two voices: Gemini's (`GEMINI_VOICE=`, Puck by default) for small talk, Kokoro for everything else.
+- Taglish: Gemini's own transcript of it is poor ("Pakisabi mo kay terminal 2, ..." came back as "Terminal 2"), which is
+  why hand-offs use Groq's. It may still take a Taglish greeting for work, which only costs the usual path.
+- It is told to answer small talk only. Told to answer general questions too, it made up a ferry schedule and said "No
+  response needed" aloud, so keep it that way.
+- Long pauses: Gemini hands over after 1.5 s of quiet (`GEMINI_SILENCE_MS=`). If it still cuts you off, raise
+  `GEMINI_GATE=` (fewer fast hand-overs) or the quiet (slower ones).
+- `GEMINI_LIVE_MODEL=` changes the model (gemini-3.8-live by default; it needs one with non-blocking tools).
+
 ## Window (optional)
 
 A small window is a chat of what it heard and what it answered, with its state, your words as you speak, and a Settings
@@ -459,6 +501,7 @@ free247jarvis/
   voice.mjs      the voice channel (MCP server); runs listener.py
   listener.py    wake word, end of speech, speech to text, Kokoro voice, voice training
   realtime.py    prototype: listener.py with OpenAI's Realtime API for ears and mouth
+  gemini.py      trial: listener.py with Gemini Live hearing the end and answering small talk
   words.txt      words speech to text should spell right
   mishears.py    lists likely mishears from the voice data, for review
   spawn.ps1      opens worker terminals t1 to t6 in their grid cells
