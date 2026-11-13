@@ -387,9 +387,7 @@ try {
   const said = await rpc(2, 'tools/call', { name: 'reply', arguments: { text: 'ghost line' } })
   assert.match(said.result.content[0].text, /Not spoken: Jarvis is on OtherPC/)
   assert(!readFileSync(LOG, 'utf8').includes('reply: ghost line'))
-  // The reply tool loads with the session, and each request carries the board, so the orch needn't look it up.
-  const tools = await rpc(3, 'tools/list', {})
-  assert.strictEqual(tools.result.tools[0]._meta?.['anthropic/alwaysLoad'], true, JSON.stringify(tools))
+  // Each request carries the board, so the orch needn't look it up.
   await fetch(`http://127.0.0.1:${port2}/`, { method: 'POST', body: 'board check' })
   const pushed = JSON.parse((await replies.next()).value)
   assert(pushed.method === 'notifications/claude/channel' && /^board check\n\n\(From the voice, so no lookup is needed for this: sessions on this PC: .*Workers' newest progress lines: /s

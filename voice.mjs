@@ -78,8 +78,6 @@ const mcp = new Server(
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [{
     name: 'reply',
-    // Loaded with the session, not found by a tool search first: 9 of 76 voice turns spent a round on that (2026-11-13).
-    _meta: { 'anthropic/alwaysLoad': true },
     description: 'Say something out loud to the user. Plain spoken sentences only: no markdown, code, or long paths.',
     inputSchema: {
       type: 'object',

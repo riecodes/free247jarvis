@@ -193,8 +193,7 @@ request is the only cue until then: nothing is said in between, so the boss's re
 it without the mic: `curl -d "status" http://127.0.0.1:8790/heard`.
 
 Every request the boss gets ends with the board in parentheses (this PC's sessions and the newest progress lines), so
-it can answer without a lookup of its own, and its `reply` tool is always loaded (`anthropic/alwaysLoad`), so it never
-spends a turn finding it.
+it can answer without a lookup of its own.
 
 ## Near real-time (prototype, optional, paid)
 
