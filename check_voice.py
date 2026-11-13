@@ -1555,7 +1555,8 @@ def main() -> None:
     # The tick against the three sounds the user knows.
     known = [pitch(s) for s in (listener.CHIME_UP, listener.CHIME_DOWN, listener.CHIME_CLOSE)]
     # Silent files in sounds/local, the user's choice, have no pitch to compare.
-    assert not max(known) or pitch(listener.CHIME_NEAR) > 1.5 * max(known), known
+    near = pitch(listener.CHIME_NEAR)
+    assert not max(known) or not near or near > 1.5 * max(known), (known, near)
 
     subprocess.run(["node", "--input-type=module", "-e", """
         import assert from 'node:assert'

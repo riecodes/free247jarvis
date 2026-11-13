@@ -1366,6 +1366,11 @@ class Ears:
         ears, mouth = "Scribe" if el_key() else "Groq", "ElevenLabs" if voice_key().startswith("elevenlabs") else "Kokoro"
         emit("status", text=f"Voice: {ears} and {mouth}")
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
+        # A silent file in sounds/local mutes that cue for good, so the log says which: on 2026-11-13 the heard and done
+        # sounds had been silent for eleven days, and nothing told why.
+        if muted := [n for n, (s, _) in zip(("listen", "heard", "close", "near"), (CHIME_UP, CHIME_DOWN, CHIME_CLOSE, CHIME_NEAR))
+                     if not np.abs(s).max()]:
+            emit("status", text=f"Silent cue sounds (sounds/local): {', '.join(muted)}")
         self.acks = {WAKES[w][0]: self.load_ack(WAKES[w][1]) for w in self.words}  # by model name, as scores are
         self.read_settings()
         self.deaf_until = 0.0  # audio recorded before this moment was our own voice coming out of the speaker

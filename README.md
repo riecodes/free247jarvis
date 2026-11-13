@@ -273,6 +273,9 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   `bm_fable`, `bm_lewis`, or the old American `af_heart`, then restart the boss. Join voices with `+` to blend them
   evenly (a name twice weighs double): `am_puck+af_heart` sits between a male and a female voice (about 150 Hz,
   where George is 140 and Heart 192) and rises and falls more than George does.
+- No sound after a request, or when it stops listening? A file in `sounds/local` (`listen.wav`, `heard.wav`,
+  `close.wav`, `near.wav`) replaces the shipped one, and a silent one mutes that cue. The log says which at start
+  ("Silent cue sounds"); delete the file to get the shipped sound back.
 - If the wake word misses you, set `WAKE_THRESHOLD=0.25` in `.env`, or train it on your voice. A faint
   high tick means it almost heard you (a score of 0.12 up to the threshold): say it again. Every try's
   score and level are in `tmp\voice.log` as `wake peak:`, to tune the threshold by. "Hey Jarvis" scores
