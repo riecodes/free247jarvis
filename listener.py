@@ -801,16 +801,39 @@ def asks_again(heard: str) -> bool:
     return bool(ASK_AGAIN.fullmatch(said)) or (not said and "ulit" in heard.lower()) or heard.strip().lower() == "sorry?"
 
 
-DISMISS = re.compile(r"later|cancel|never ?mind")
+# "Not now", said any way: the exchange ends with nothing for the orch (2026-11-13, "talk to you later, Jarvis"). BRUSH_OFF
+# always; SOFT only when the line just said asked nothing, since "wag na" or "that's all" answers "Shall I deploy it?".
+# "No", "nothing" and "wala" alone are answers, so they're in neither. "Stop listening" and "shutdown" aren't either:
+# those are their own commands.
+BRUSH_OFF = """later | talk later | talk to you later | see you later | catch you later | talk to you soon | not now | not right now
+  never mind | nevermind | forget it | forget about it | false alarm | not you | not talking to you | im not talking to you
+  i wasnt talking to you | wrong | sorry wrong | wrong person | my bad | bye | bye bye | goodbye | mamaya na | mamaya na lang
+  saka na | hindi ikaw | di ikaw | sa susunod na lang"""
+SOFT = "im good | thats all | thats it | cancel | wag na | huwag na | wag na lang | huwag na lang | wala lang | okay na | ayos na"
+DISMISS_FILLER = set("um uh oh ah hmm yeah yes yep sorry okay ok alright sir jarvis jervis please no nah hey well actually just "
+                     "oops sige po".split())
+
+
+def phrases(text: str) -> list[tuple[str, ...]]:
+    return sorted((tuple(p.split()) for p in re.split(r"\s*\|\s*|\n", text) if p.strip()), key=len, reverse=True)
 
 
 def dismisses(heard: str, said: str) -> str:
-    """"Later", "cancel", "never mind": the user ends the exchange, as in "I'll call you back". The word said, or ''. Not
-    when the line just said has it: "Ship now or later?" gets "later" as its answer, for the orch."""
-    words = " ".join(w for w in re.findall(r"[\w']+", heard.lower()) if w not in ("um", "uh", "sir", "please", "jarvis", "okay", "ok"))
-    if not DISMISS.fullmatch(words):
-        return ""
-    return "" if DISMISS.search(said.lower()) else words
+    """The brush-off heard, or '': the whole utterance is brush-off phrases and filler ("Yeah, sorry, talk to you later,
+    Jarvis"). Not when the line just said has the phrase: "Ship now or later?" gets "later" as its answer, for the orch."""
+    words = re.findall(r"\w+", heard.lower().replace("'", "").replace("’", ""))
+    allowed = phrases(BRUSH_OFF) + ([] if "?" in said else phrases(SOFT))
+    found, i = [], 0
+    while i < len(words):
+        if hit := next((p for p in allowed if tuple(words[i:i + len(p)]) == p), None):
+            found.append(" ".join(hit))
+            i += len(hit)
+        elif words[i] in DISMISS_FILLER:
+            i += 1
+        else:
+            return ""
+    plain = " ".join(re.findall(r"\w+", said.lower().replace("'", "")))
+    return "" if not found or any(re.search(rf"\b{f}\b", plain) for f in found) else ", ".join(found)
 
 
 def sounds_like(heard: str, said: str) -> bool:

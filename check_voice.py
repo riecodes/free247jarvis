@@ -118,6 +118,17 @@ def hush() -> None:
                 went = [c.args[0] for c in sent.call_args_list]
                 assert ("heard" not in went and (lowered, resumed) == both and not e.cut_rest) if dismissed else "heard" in went, (heard, went)
         assert listener.dismisses("nevermind", "") == "nevermind" and not listener.dismisses("later today", "")
+        # Any brush-off, in English or Tagalog, with filler around it; an answer to an open question is the orch's.
+        for heard in ["Yeah, sorry, talk to you later, Jervis.", "Not now.", "False alarm.", "My bad, not you.", "Forget it.",
+                      "Sige, mamaya na lang.", "Hindi ikaw.", "Okay, bye.", "I'm good.", "That's all.",
+                      "Wag na.", "Okay na po."]:
+            assert listener.dismisses(heard, "Yes, sir."), heard
+        for heard, said in [("No.", "Yes, sir."), ("Nothing.", "Yes, sir."), ("Wala.", "Yes, sir."), ("No thanks.", "Sir, anything else?"),
+                            ("Wag na.", "Shall I deploy it, sir?"), ("I'm good.", "Anything else, sir?"), ("Stop listening.", "Yes, sir."),
+                            ("Shutdown.", "Yes, sir."), ("Don't listen.", "Yes, sir."), ("Later, deploy the vlog.", "Yes, sir."),
+                            ("Wrong.", "Sir, is that wrong?")]:
+            assert not listener.dismisses(heard, said), heard
+        assert listener.dismisses("Not now.", "Shall I deploy it, sir?")  # a clear brush-off, even with a question open
         # Only the wake word was said, or noise: the same.
         for e, lowered, resumed in wake([video]):
             with mock.patch.object(listener, "transcribe", lambda clip: "Jarvis"):
