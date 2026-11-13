@@ -183,7 +183,10 @@ QUIET_EVERY = 5  # seconds between checks for the window
 SHORT_CLIP = 1125
 GRACE = 5  # speech within this many chunks of the wake is one breath ("Hey Jarvis, status"): no "Jarvis here"
 MIN_VOICED = 3  # less speech than this is a click or a cough, not a request
-END_QUIET = 62  # about 5s of quiet ends a request (1s cut people off mid-sentence, 2s still cut thinking pauses)
+# About 4 s of quiet ends a request (END_WAIT in .env, in seconds). 1 s cut people off mid-sentence, 2 s still cut
+# thinking pauses; 5 s until 2026-11-13, when the user's own 319 requests showed 4 s with the Smart Turn checks below cuts
+# 6.6% of them short (4.1% before) for a wait a second shorter (3.53 s on average from the last word, 4.56 before).
+END_QUIET = 50
 ECHO = 1.0  # seconds the mic stays deaf after a sound, unless the caller says otherwise
 # How long before a reply's last word the mic counts again (LISTEN_LEAD in .env; 0: at the last word, less: after it). Sound
 # recorded while it speaks waits in the queue, so this keeps what the user said over the end, with no echo canceller. A
@@ -203,6 +206,15 @@ LETTER_NAMES = {"ay": "a", "eh": "a", "be": "b", "bee": "b", "see": "c", "sea": 
 # the last one counted as unfinished) and sent 14% 3 s sooner. The first TURN_SKIP chunks are the greeting, which sounds
 # done. It replaced a check of the words for "do it", "go ahead" and "thank you", which cost a Groq request each pause.
 CLOSING_GAP, TURN_SURE, TURN_SKIP = 2.0, 0.95, 38
+# Not sooner (2026-11-13, the same requests, 315 of them): sent at 0.8 s when Smart Turn is 0.98 sure, 8% were cut short
+# (4% now) and the mean wait fell only from 4.56 s to 4.39; at 0.95, 14% were cut short. Instead, speech to text starts
+# at EARLY_TEXT of quiet, in the background, and the request uses it when no speech came after: the 5 s wait no longer
+# has a second of transcribing after it.
+EARLY_TEXT = 25  # chunks: 2 s, as long as a request Smart Turn sends has, so the clip ends as those do
+EARLY = ThreadPoolExecutor(1)
+# A second look at 3 s of quiet with a lower bar: from the same requests, 0.7 there moved the average wait from 4.19 s to
+# 3.53 s with END_QUIET at 4 s; 0.5 cut 7.2% short, 0.3 7.5%.
+TURN_LATE_GAP, TURN_LATE = 37, 0.7
 # Said on waking, with VOICE_TITLE after the comma. Rendered once per voice, in tmp/, so they play with no wait. Longer than
 # GREETING_MAX and it's skipped: it would talk over the request. No "Jarvis", and two words or more, so
 # strip_echo can tell one when the mic hears it. After GREETING_AWAY of nothing, the time of day leads.
@@ -642,7 +654,14 @@ def greeting_text(word: str, title: str, front: bool = False) -> str:
 def split_lead(text: str) -> tuple[str, str]:
     """The first sentence and the rest, or (text, "") for one sentence. "1.5" and "tmp/a.wav" don't split: no space."""
     m = re.match(r"(.+?[.!?])\s+(\S.*)", text, re.DOTALL)
-    return (m[1], m[2]) if m else (text, "")
+    lead, rest = (m[1], m[2]) if m else (text, "")
+    # A long first sentence starts at its first clause: Kokoro takes about 0.05 s a word, so 16 words were 0.8 s of
+    # silence first (2026-11-13). The clause plays about 0.3 s a word, so it covers rendering five times its words.
+    if len(lead.split()) > 10 and (c := re.match(r"((?:\S+\s+){3,}?\S+?[,;:])\s+(\S.*)", lead, re.DOTALL)):
+        after = f"{c[2]} {rest}".strip()
+        if len(c[1].split()) <= 10 and len(after.split()) <= 5 * len(c[1].split()):
+            return c[1], after
+    return lead, rest
 
 
 def mel_filters() -> np.ndarray:
@@ -820,7 +839,8 @@ def phrases(text: str) -> list[tuple[str, ...]]:
 
 def dismisses(heard: str, said: str) -> str:
     """The brush-off heard, or '': the whole utterance is brush-off phrases and filler ("Yeah, sorry, talk to you later,
-    Jarvis"). Not when the line just said has the phrase: "Ship now or later?" gets "later" as its answer, for the orch."""
+    Jarvis"). Not when the line just said asked with the phrase: "Ship now or later?" gets "later" as its answer, for the
+    orch. A line that only mentions it ("...like not just later.") asked nothing (2026-11-13, "Okay, later." went on)."""
     words = re.findall(r"\w+", heard.lower().replace("'", "").replace("’", ""))
     allowed = phrases(BRUSH_OFF) + ([] if "?" in said else phrases(SOFT))
     found, i = [], 0
@@ -833,7 +853,7 @@ def dismisses(heard: str, said: str) -> str:
         else:
             return ""
     plain = " ".join(re.findall(r"\w+", said.lower().replace("'", "")))
-    return "" if not found or any(re.search(rf"\b{f}\b", plain) for f in found) else ", ".join(found)
+    return "" if not found or ("?" in said and any(re.search(rf"\b{f}\b", plain) for f in found)) else ", ".join(found)
 
 
 def sounds_like(heard: str, said: str) -> bool:
@@ -1283,6 +1303,7 @@ class Ears:
     reminders = True  # REMINDERS=off: never
     idle_window = False  # the window now open follows a line that asked nothing
     sounds = True  # False: no chimes, whatever the files say (SOUNDS=off)
+    end_quiet = END_QUIET  # END_WAIT in .env
     listen_all, mic_open = True, True  # listen_all: a window after every line (LISTEN_AFTER=asked: only after a question)
     closing_gap, voiced_at, turn = round(CLOSING_GAP / 0.08), 0, None  # voiced_at: chunks in when the speech last was
     greetings, greetings_at, greeted, last_greetings = (), {}, 0.0, []  # all rendered; greetings is empty with GREETING=off
@@ -1576,6 +1597,7 @@ class Ears:
         self.followup = round(float(env.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         # 0 chunks: no cut-off.
         self.closing_gap = 0 if env.get("CLOSING_CUT", "").lower() == "off" else round(float(env.get("CLOSING_GAP") or CLOSING_GAP) / 0.08)
+        self.end_quiet = round(float(env.get("END_WAIT") or END_QUIET * 0.08) / 0.08)
         if env.get("GREETING", "").lower() == "off":
             self.greetings, self.greetings_at = (), {}
         elif not self.greetings:
@@ -1669,7 +1691,7 @@ class Ears:
         self.stop_live()
         self.vad.reset_states()
         self.clip, self.voiced, self.quiet, self.on_done, self.give_up = list(start), 0, 0, on_done, give_up
-        self.voiced_at, self.window_from = 0, 0.0
+        self.voiced_at, self.window_from, self.early = 0, 0.0, None
         self.cap = MAX_CLIP if self.woke and not self.sure else SHORT_CLIP
         self.ran_long = False
         self.on_chunk = self.record_chunk
@@ -1678,7 +1700,7 @@ class Ears:
         self.clip.append(chunk)
         if self.is_speech(chunk):
             self.voiced, self.quiet = self.voiced + 1, 0
-            self.voiced_at = len(self.clip)
+            self.voiced_at, self.early = len(self.clip), None  # they went on: the early text is short of it
             self.last_speech = time.monotonic()
             # From the first speech, so a false wake or an unused follow-up window costs nothing. Not voice training.
             if self.voiced == 1 and self.watching and not self.live and self.on_done != self.take_done:
@@ -1693,38 +1715,59 @@ class Ears:
         if self.cap < MAX_CLIP and len(self.clip) >= self.cap:  # see SHORT_CLIP
             emit("status", text="Long for a reply: recording to the pause, and the orch hears it may be people talking")
             self.cap, self.ran_long = MAX_CLIP, True
-        if (spoke and self.quiet >= END_QUIET) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP \
-                or (spoke and self.quiet == self.closing_gap and self.sounds_done()):
+        if (spoke and self.quiet >= self.end_quiet) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP \
+                or (spoke and self.quiet == self.closing_gap and self.sounds_done(TURN_SURE)) \
+                or (spoke and self.closing_gap and self.quiet == TURN_LATE_GAP and self.sounds_done(TURN_LATE)):
             self.stop_live()
+            self.ended = (time.monotonic(), self.quiet)  # for the log: how long the quiet ran, and when the text came
             self.on_done(np.concatenate(self.clip) if spoke else None)
+        elif spoke and self.quiet == EARLY_TEXT and self.on_done == self.request_done and groq_room(2):
+            self.early = (EARLY.submit(transcribe, np.concatenate(self.clip)), len(self.clip))
 
-    def sounds_done(self) -> bool:
-        """Smart Turn hears the request finished (CLOSING_GAP above). Blocks for about 0.1 s; the mic's chunks wait in the
-        queue. Unsure, past nothing but the greeting, or any failure: silence decides."""
-        if not self.closing_gap or not self.turn or self.on_done == self.take_done or len(self.clip) < TURN_SKIP:
+    def sounds_done(self, sure: float) -> bool:
+        """Smart Turn hears the request finished, at least `sure` (CLOSING_GAP above). Blocks for about 0.1 s; the mic's
+        chunks wait in the queue. Unsure, past nothing but the greeting, or any failure: silence decides."""
+        # The greeting: no speech after it yet (by where the speech was, so 3 s of quiet after it doesn't count).
+        if not self.closing_gap or not self.turn or self.on_done == self.take_done or self.voiced_at < TURN_SKIP:
             return False
         try:
             done = float(self.turn.run(None, {"input_features": turn_features(np.concatenate(self.clip[-100:]))})[0].ravel()[0])
         except Exception as e:
             emit("status", text=f"End of the request not checked: {e}")
             return False
-        if done < TURN_SURE:
+        if done < sure:
             return False
-        emit("status", text=f"Sounds done ({done:.2f}): sent without waiting for the silence")
+        emit("status", text=f"Sounds done ({done:.2f} after {self.quiet * CHUNK / RATE:.1f} s): sent without waiting for the silence")
         return True
 
+    def early_text(self, early: tuple | None, clip: np.ndarray) -> str:
+        """The text started at EARLY_TEXT of quiet, when nothing was said after it (else it was dropped); a failed one is
+        done again. Else speech to text now."""
+        if early:
+            future, chunks = early
+            try:
+                if len(clip) >= chunks * CHUNK:
+                    return future.result()
+            except Exception as e:
+                emit("status", text=f"Early text failed, trying again: {e}")
+        return transcribe(clip)
+
     def request_done(self, clip: np.ndarray | None) -> None:
-        began = (self.window_from or time.monotonic() - len(clip) / RATE) if clip is not None else 0.0
+        began =(self.window_from or time.monotonic() - len(clip) / RATE) if clip is not None else 0.0
         late = began + self.voiced_at * CHUNK / RATE > self.words_end + ECHO_ROOM
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
         woke, sure = self.woke, self.sure
         ran_long = self.ran_long
         self.wait_for_wake(keep=clip is not None)  # first, so a failed transcription still leaves the ears listening
+        early, self.early = getattr(self, "early", None), None
         kept = keep_recent(clip) if clip is not None else None
         try:
-            transcript = transcribe(clip) if clip is not None else ""
+            transcript = self.early_text(early, clip) if clip is not None else ""
         except Exception as e:
             return self.lost(e)
+        if clip is not None and (ended := getattr(self, "ended", None)):
+            emit("status", text=f"Text {time.monotonic() - ended[0]:.2f} s after {ended[1] * CHUNK / RATE:.1f} s of quiet"
+                                f"{' (started early)' if early else ''}")
         if kept and transcript:
             kept.with_suffix(".txt").write_text(transcript, encoding="utf-8")
         text = strip_wake(transcript)

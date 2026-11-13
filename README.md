@@ -54,8 +54,8 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
   "never mind", "forget it", "false alarm", "not you", "my bad", "bye", "mamaya na", "hindi ikaw" (the list is
   `BRUSH_OFF` in listener.py). Nothing goes to the boss, the rest of the reply is dropped, your music resumes, and it
   waits for the wake word again. "I'm good", "that's all", "cancel", "wag na" and "okay na" do the same unless it just
-  asked you something; then they're your answer, as are "no", "nothing" and "wala". So is a phrase the line itself used
-  ("ship it now or later?" "Later.").
+  asked you something; then they're your answer, as are "no", "nothing" and "wala". So is a phrase its question
+  itself used ("ship it now or later?" "Later.").
 - **Words it says right.** Add `# say:` and the sounds after a word in `words.txt` (`vlog  # say: vlˈɒɡ`) and the
   free voice says it that way.
 - **Mix the voices.** `VOICE_TTS=kokoro` hears you with ElevenLabs and answers with the free voice.
@@ -311,12 +311,15 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   of your request, in order and allowing for spelling ("Be no. Yes" for "B, no." comes out as "Yes"). Words timed after it
   finished speaking are always yours, even if you read its reply aloud. Loud speakers next to the mic can still open a
   listening window by themselves: lower `LISTEN_LEAD=` then.
-- A request that sounds finished goes after 2 seconds of quiet instead of 5. At that pause, [Smart Turn](https://github.com/pipecat-ai/smart-turn)
+- A request that sounds finished goes after 2 seconds of quiet instead of 4. At that pause, [Smart Turn](https://github.com/pipecat-ai/smart-turn)
   v3.2 (BSD 2-Clause, 8.7 MB, downloaded by `listener.py fetch`) judges the last 8 seconds of your voice on the
-  processor, in about a tenth of a second, from how you said it rather than the words. Only a sure "done" sends early;
-  anything less waits the 5 seconds. Over the 231 kept requests of its first tuning, it cut 2% of them short and sent 14%
-  sooner. Its languages include English but not Tagalog; those numbers are from English and Taglish requests both. `CLOSING_GAP=` sets the pause,
-  `CLOSING_CUT=off` leaves it all to the silence. No speech to text is asked, so it costs nothing on Groq.
+  processor, in about a tenth of a second, from how you said it rather than the words. A sure "done" (0.95) sends at 2
+  seconds, a likely one (0.7) at 3, and anything less waits the 4 seconds (`END_WAIT=`, 5 until November 13). Over 319 kept
+  requests, that cut 6.6% of them short (4.1% with the old 5 s) and brought the average wait after the last word from
+  4.6 to 3.5 seconds. Sooner doesn't work for this voice: at 0.8 seconds even a 0.98 bar cut twice as many short for a
+  sixth of a second. Its languages include English but not Tagalog; those numbers are from English and Taglish requests both. `CLOSING_GAP=` sets the pause,
+  `CLOSING_CUT=off` leaves it all to the silence. Speech to text starts in the background at 2 seconds of quiet, so the
+  text is ready when the wait ends (about a second sooner); if you go on talking, that try is dropped.
 - On waking it says a short line, never one of the last twenty, and the time of day when it's been a while. They're rendered once
   per voice, so they play at once with no turn of the boss, and you can talk over them. While you're with someone: only the
   chime. `GREETING=off` for the chime always.

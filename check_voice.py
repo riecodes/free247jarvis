@@ -129,6 +129,7 @@ def hush() -> None:
                             ("Wrong.", "Sir, is that wrong?")]:
             assert not listener.dismisses(heard, said), heard
         assert listener.dismisses("Not now.", "Shall I deploy it, sir?")  # a clear brush-off, even with a question open
+        assert listener.dismisses("Okay, later.", "Last I heard: suggest more words, like not just later.")  # it asked nothing
         # Only the wake word was said, or noise: the same.
         for e, lowered, resumed in wake([video]):
             with mock.patch.object(listener, "transcribe", lambda clip: "Jarvis"):
@@ -1091,9 +1092,32 @@ def closing_cut() -> None:
     turn = Turn()
     n, sent = talk(turn)
     assert n == 10 and len(sent) == 1 and turn.heard == [(1, 80, 800)], (n, turn.heard)  # Whisper's 8 s of log mel
-    for kw in ({"done": 0.9}, {"fail": True}):  # unsure, or broken: the full silence
+    n, sent = talk(Turn(done=0.9))  # unsure at first, sure enough for the second look at 3 s
+    assert n == listener.TURN_LATE_GAP and len(sent) == 1, n
+    for kw in ({"done": 0.5}, {"fail": True}):  # unsure, or broken: the full silence
         n, sent = talk(Turn(**kw))
         assert n == listener.END_QUIET and len(sent) == 1, (kw, n)
+    # The text starts at 2 s of quiet, and is dropped when they go on; the request uses it, with no second call.
+    e = ears()
+    e.closing_gap, e.turn = 0, None
+    done = mock.Mock(result=lambda: "open notepad")
+    with mock.patch.object(listener.EARLY, "submit", lambda f, clip: done), mock.patch.object(listener, "groq_room", lambda spare: True), \
+            mock.patch.object(listener, "emit", lambda *a, **k: None):
+        e.record(e.request_done)
+        e.vad.predict = lambda *a, **k: 0.9
+        for _ in range(listener.TURN_SKIP):
+            e.on_chunk(chunk)
+        e.vad.predict = lambda *a, **k: 0.0
+        for _ in range(listener.EARLY_TEXT):
+            e.on_chunk(chunk)
+        assert e.early and e.early[0] is done
+        e.vad.predict = lambda *a, **k: 0.9
+        e.on_chunk(chunk)
+        assert e.early is None  # they went on
+        with mock.patch.object(listener, "transcribe", side_effect=AssertionError):
+            assert e.early_text((done, 10), np.zeros(10 * listener.CHUNK, np.int16)) == "open notepad"
+        with mock.patch.object(listener, "transcribe", lambda clip: "again"):
+            assert e.early_text((mock.Mock(result=mock.Mock(side_effect=RuntimeError)), 10), np.zeros(10 * listener.CHUNK, np.int16)) == "again"
     turn = Turn()
     n, sent = talk(turn, speech=4)  # only the greeting so far: it sounds done, and isn't
     assert n == listener.END_QUIET and not turn.heard
@@ -1110,10 +1134,10 @@ def closing_cut() -> None:
     e = ears()
     assert e.closing_gap == 0
     e.record(lambda clip: None)
-    assert not e.sounds_done()
+    assert not e.sounds_done(listener.TURN_SURE)
     e = ears()
     e.closing_gap, e.on_done, e.turn = 5, e.take_done, Turn()
-    assert not e.sounds_done()
+    assert not e.sounds_done(listener.TURN_SURE)
     # The features match transformers' WhisperFeatureExtractor (checked to 4e-6 on 2026-11-04): shape, range, and silence.
     x = listener.turn_features(np.random.default_rng(3).normal(0, 3000, 3 * listener.RATE).astype(np.int16))
     assert x.shape == (1, 80, 800) and x.dtype == np.float32 and -1.5 < x.min() and x.max() < 3
