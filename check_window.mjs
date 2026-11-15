@@ -229,6 +229,17 @@ try {
   assert.strictEqual(await post('/settings', { Origin: 'https://evil.example' }), 403)
   assert.strictEqual(readFileSync(ENV_COPY, 'utf8'), 'GROQ_API_KEY=secret\r\nGREETING=off\r\n# a comment\r\nFOLLOWUP_SECONDS=20\r\n')
   assert((await (await fetch(url('/settings'))).json()).some(s => s.key === 'GREETING' && s.value === 'off'))
+  // The mic and output pickers: this machine's devices, freshly listed, and only a name or '' (Windows default) is saved.
+  const devs = (await (await fetch(url('/settings'))).json()).filter(s => s.device)
+  assert.deepStrictEqual(devs.map(s => [s.key, s.value, Array.isArray(s.choices)]), [['MIC_DEVICE', '', true], ['OUTPUT_DEVICE', '', true]])
+  assert.strictEqual(await setting('OUTPUT_DEVICE', 'Speakers (Realtek(R) Audio)'), 200)
+  assert.strictEqual(await setting('OUTPUT_DEVICE', 'A $& B'), 200)  // saved as typed, not read as a replace pattern
+  assert(readFileSync(ENV_COPY, 'utf8').includes('OUTPUT_DEVICE=A $& B\r\n'))
+  assert.strictEqual(await setting('OUTPUT_DEVICE', 'Speakers (Realtek(R) Audio)'), 200)
+  assert.strictEqual(await setting('MIC_DEVICE', ''), 200)
+  assert.strictEqual(await setting('MIC_DEVICE', 'x\nGROQ_API_KEY'), 400)
+  assert.strictEqual(await setting('MIC_DEVICE', 7), 400)
+  assert(readFileSync(ENV_COPY, 'utf8').endsWith('FOLLOWUP_SECONDS=20\r\nOUTPUT_DEVICE=Speakers (Realtek(R) Audio)\r\nMIC_DEVICE=\r\n'))
   assert.match(html, /id="panel"/)
 
   // This check's lines stay out of the live log.

@@ -428,6 +428,9 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
 - If the mic stops sending anything for 5 seconds (changing its settings in the Sound panel resets it), the listener
   reopens it by itself; after 3 failed tries it exits and the voice starts a fresh one. A listener that stopped saving
   its state for 2 minutes counts as stuck, and `listener.py restart` stops it instead of refusing.
+- Wrong mic or speaker? Pick them under Microphone and Output in the window's Settings: it applies at once, with no
+  restart, and saves `MIC_DEVICE` and `OUTPUT_DEVICE` in this computer's `.env`. With Output on Windows default, it
+  follows Windows when the sound moves (Bluetooth headphones connecting) within a few quiet seconds.
 - Not hearing you at all? Windows may be listening to another mic. Set `MIC_DEVICE=` in `.env` to
   part of your mic's name as Windows Sound settings shows it (such as `MIC_DEVICE=WebCamera`, or
   `MIC_DEVICE=Voicemod` to hear you through Voicemod), then restart the boss. If that device won't open

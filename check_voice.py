@@ -243,7 +243,25 @@ def looking() -> None:
 
     assert problem() == ""
     assert "muted" in problem(mute=1) and "zero" in problem(level=0.0) and "no speaker" in problem(device=False)
-    assert "switched" in problem(name="Headphones (WH-1000XM4)")
+    # Said once, not before every line: again only after it cleared. A new Windows default isn't a problem (main() follows it).
+    assert "muted" in problem(mute=1) and problem(mute=1) == "" and problem() == "" and "muted" in problem(mute=1)
+    assert problem(name="Headphones (WH-1000XM4)") == ""
+
+    # OUTPUT_DEVICE: replies play on it, found by part of its name; Windows' mute is about another speaker, so it's no problem.
+    devs = [{"name": "Mic", "max_output_channels": 0}, {"name": "Speakers (Realtek(R) Audio)", "max_output_channels": 2},
+            {"name": "Headphones (OpenMove by Shokz)", "max_output_channels": 2}]
+    with mock.patch("sounddevice.query_devices", side_effect=lambda i=None, kind=None: devs if i is None else devs[i]):
+        assert listener.speaker() is None
+        with mock.patch.dict(listener.os.environ, {"OUTPUT_DEVICE": "openmove"}):
+            assert listener.speaker() == 2
+            speakers = mock.Mock(FriendlyName="Speakers (Realtek(R) Audio)")
+            speakers.EndpointVolume.GetMute.return_value = 1
+            with mock.patch("pycaw.pycaw.AudioUtilities.GetSpeakers", return_value=speakers):
+                assert listener.sound_problem() == ""
+                speakers.FriendlyName = "Headphones (OpenMove by Shokz)"
+                assert "muted" in listener.sound_problem()
+        with mock.patch.dict(listener.os.environ, {"OUTPUT_DEVICE": "gone"}):
+            assert listener.speaker() is None  # unplugged: Windows' default
 
 
 def mic_names() -> None:
@@ -251,6 +269,22 @@ def mic_names() -> None:
     with mock.patch("sounddevice.query_devices", side_effect={4: {"name": "Mic A"}}.__getitem__), mock.patch.object(listener, "emit", lambda *a, **k: None):
         assert listener.mic_name(mock.Mock(device=4)) == "Mic A"
         assert listener.mic_name(mock.Mock(device=99)) == ""  # gone: says so, and the voice goes on
+    # The window's pickers: names from the default host API, each once, without Windows' mapper entries.
+    devs = [{"name": "Microsoft Sound Mapper - Input", "hostapi": 0, "max_input_channels": 2, "max_output_channels": 0},
+            {"name": "Mic A", "hostapi": 0, "max_input_channels": 1, "max_output_channels": 0},
+            {"name": "Speakers", "hostapi": 0, "max_input_channels": 0, "max_output_channels": 2},
+            {"name": "Mic A", "hostapi": 1, "max_input_channels": 1, "max_output_channels": 0}]
+    with mock.patch("sounddevice.query_devices", return_value=devs), mock.patch("sounddevice.default", mock.Mock(hostapi=0)):
+        assert listener.devices() == {"input": ["Mic A"], "output": ["Speakers"]}
+    # A pick reopens the mic on a fresh device list; a closed mic stays closed, and one that won't open is None, said.
+    old, new, said = mock.Mock(), mock.Mock(), []
+    with mock.patch("sounddevice._terminate"), mock.patch("sounddevice._initialize") as init, \
+            mock.patch.object(listener, "emit", lambda *a, **k: said.append(a)):
+        with mock.patch.object(listener, "open_mic", return_value=new):
+            assert listener.reopen(old, listener.queue.Queue()) is new and old.close.called and init.called
+            assert listener.reopen(None, listener.queue.Queue()) is None
+        with mock.patch.object(listener, "open_mic", side_effect=OSError("gone")):
+            assert listener.reopen(mock.Mock(), listener.queue.Queue()) is None and said
 
 
 def mic_stall() -> None:

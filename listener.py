@@ -317,6 +317,7 @@ HEARD_WORDS = 12  # the end of it, which is where to pick up from: never a long 
 LOST_GAP = 20  # seconds between "I lost that" lines: a window catching noise during a Groq limit must not loop on it
 RESTART_QUIET = 60  # `listener.py restart` waits for this many seconds since the last speech
 RESTART_WAIT = 30 * 60  # and gives up after this long
+FOLLOW_EVERY = 3  # seconds between looks at Windows' default speaker, while idle
 STUCK_AFTER = 120  # no save in this long, with the listener still running: it's stuck, and a restart stops it anyway
 ASKED, ASKED_WAIT = HERE / "tmp" / "asked", 180  # voice.mjs: a spoken request the orch hasn't answered, for at most this long
 DATA_DAYS = 30  # voice data older than this is deleted
@@ -440,9 +441,20 @@ def mic_holder() -> str:
     return ""
 
 
+told_problem = ""
+
+
 def output_problem() -> str:
+    """sound_problem(), said once: again only after it cleared or changed, never before every line."""
+    global told_problem
+    problem = sound_problem()
+    told_problem, new = problem, problem != told_problem
+    return problem if new else ""
+
+
+def sound_problem() -> str:
     """Why the user can't hear a line, when Windows can tell; empty when it can't (a speaker switched off at its
-    knob looks like any other). PortAudio keeps the output it found at start, so a new Windows default is not used."""
+    knob looks like any other). A new Windows default speaker is followed by main(), not reported."""
     if MAC:
         try:
             return mac_sound_problem(osascript("get volume settings"))
@@ -458,17 +470,28 @@ def output_problem() -> str:
             name = device.FriendlyName
         except Exception:
             return "Windows has no speaker right now: plug one in or turn it on."
+        if speaker() is not None and not name.startswith(sd.query_devices(speaker())["name"]):
+            return ""  # OUTPUT_DEVICE plays elsewhere: Windows' mute and volume aren't its own
         volume = device.EndpointVolume
         if volume.GetMute():
             return "Your PC's sound is muted: unmute it to hear me."
         if volume.GetMasterVolumeLevelScalar() < 0.02:
             return "Your PC's volume is at zero: turn it up to hear me."
-        mine = sd.query_devices(kind="output")["name"]
-        if mine[:20] not in name:  # MME cuts names at 31 characters
-            return f"Windows switched its sound to {name}, but I still play on {mine}: switch back, or restart me."
     except Exception as e:  # can't tell: the same as nothing wrong
         emit("error", message=f"Can't check the speaker: {e}")
     return ""
+
+
+def windows_output() -> str:
+    """The name of Windows' default speaker now; "" when it can't tell (macOS, no speaker)."""
+    if MAC:
+        return ""  # ponytail: Windows only; macOS keeps the start's default until a restart
+    try:
+        from pycaw.pycaw import AudioUtilities
+
+        return AudioUtilities.GetSpeakers().FriendlyName
+    except Exception:
+        return ""
 
 
 def osascript(script: str) -> str:
@@ -2006,7 +2029,7 @@ class Ears:
             import sounddevice as sd
 
             self.play_began = time.monotonic()
-            sd.play(np.concatenate([samples, np.zeros(int(rate * DRAIN), samples.dtype)]) if drain else samples, rate)
+            sd.play(np.concatenate([samples, np.zeros(int(rate * DRAIN), samples.dtype)]) if drain else samples, rate, device=speaker())
             if over:
                 stream = sd.get_stream()
                 self.listen_over(*over, lambda: stream.active, sd.stop, envelope(samples, rate))
@@ -2150,6 +2173,47 @@ def mic_device(want: str | None = None):
                  and want.lower() in d["name"].lower()), None)
 
 
+def speaker():
+    """The first output whose name contains OUTPUT_DEVICE from .env (picked in the window), else None: Windows' default."""
+    import sounddevice as sd
+
+    want = (os.environ.get("OUTPUT_DEVICE") or "").lower()
+    return next((i for i, d in enumerate(sd.query_devices()) if want and d["max_output_channels"] > 0 and want in d["name"].lower()), None)
+
+
+def devices() -> dict:
+    """`listener.py devices`: the inputs and outputs the window offers, by name, from the default host API (MME on Windows,
+    the entries MIC_DEVICE and OUTPUT_DEVICE match first). A fresh list each run, and it opens nothing."""
+    import sounddevice as sd
+
+    found: dict = {"input": [], "output": []}
+    for d in sd.query_devices():
+        if d["hostapi"] != sd.default.hostapi or d["name"].startswith("Microsoft Sound Mapper"):
+            continue
+        for kind, names in found.items():
+            if d[f"max_{kind}_channels"] > 0 and d["name"] not in names:
+                names.append(d["name"])
+    return found
+
+
+def reopen(mic, events: queue.Queue):
+    """A fresh device list, as a new listener gets, and the mic opened again on it if it was open; None if it won't.
+    After a pick in the window, or Windows' default speaker changing. Never while a reply plays: main() runs both."""
+    import sounddevice as sd
+
+    if mic is not None:
+        mic.close()
+    sd._terminate()
+    sd._initialize()
+    if mic is None:
+        return None
+    try:
+        return open_mic(events)
+    except Exception as e:
+        emit("error", message=f"Can't open the microphone: {e}")
+        return None
+
+
 def open_mic(events: queue.Queue, want: str | None = None):
     """Opens `want` (MIC_DEVICE by default), else MIC_FALLBACK, else Windows' default, and says when it had to move on.
     MIC_DEVICE can match an input that won't open at 16 kHz (Voicemod's WDM-KS entry when its app is closed)."""
@@ -2277,8 +2341,20 @@ def main(commands: list[str]) -> None:
     # ponytail: on the spare until the mic is turned off and on or the voice restarts; no check for the first one's return.
     on_spare = False
     watch = MicWatch()
+    # Windows' default speaker as PortAudio found it. When it changes (headphones connected), a quiet moment brings a fresh
+    # device list, so "Windows default" follows it, unless OUTPUT_DEVICE picked one.
+    windows_out, follow_at = windows_output(), 0.0
     while True:
         ears.flush()
+        if time.monotonic() > follow_at and ears.phase() == "idle" and not ears.queue:
+            follow_at = time.monotonic() + FOLLOW_EVERY
+            if (now_out := windows_output()) and now_out != windows_out:
+                windows_out = now_out
+                if speaker() is None:
+                    mic, on_spare = reopen(mic, events), False
+                    watch.heard(time.monotonic())
+                    emit("status", text=f"Windows' sound moved to {now_out}: playing there now")
+                    report()
         try:
             kind, value, at = events.get(timeout=1)
         except queue.Empty:
@@ -2334,6 +2410,11 @@ def main(commands: list[str]) -> None:
             _, key, *rest = value.split(" ", 2)
             os.environ[key] = rest[0] if rest else ""
             ears.read_settings()
+            if key in ("MIC_DEVICE", "OUTPUT_DEVICE"):  # picked in the window: on at once, with no restart
+                mic, on_spare = reopen(mic, events), False
+                watch.heard(time.monotonic())
+                windows_out = windows_output()
+                report()
             continue
         if value == "looking":
             emit("caption", text=ears.looking(), looking=True)
@@ -2412,6 +2493,8 @@ if __name__ == "__main__":
         train()
     elif arg == "restart":
         sys.exit(restart(sys.argv[2:]))
+    elif arg == "devices":
+        print(json.dumps(devices()))
     else:
         try:
             main([])

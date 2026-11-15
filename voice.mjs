@@ -4,7 +4,7 @@
 // and also takes typed requests on POST http://127.0.0.1:8790/ from local tools like curl (no Origin header), never from a web page.
 // Everything it hears and says is logged to tmp/voice.log.
 // With a TypeSafe key in .env, a router answers quick requests itself, without a turn of the boss (see route).
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, hostname } from 'node:os'
@@ -181,14 +181,22 @@ function showToast(text) {
     .on('error', e => log(`toast failed: ${e.message}`)).unref()
 }
 
-// What the user may be waiting on, for a caption shown because they are looking for the voice.
+// What the user may be waiting on, for a caption shown because they are looking for the voice. The orch's wait is told
+// once per request, not on every try at the wake word.
+let waitTold = 0
 function waitingOn() {
   const minutes = Math.round((Date.now() - askedAt) / 60_000)
+  const orch = askedAt && minutes >= 1 && waitTold !== askedAt
+  if (orch) waitTold = askedAt
   return [
     held.length && `I held ${count(held.length, held.length === 1 ? 'line' : 'lines')} for your call: say "what's the update".`,
-    askedAt && minutes >= 1 && `The orch has had your last request for ${count(minutes, minutes === 1 ? 'minute' : 'minutes')}: check its window if no answer comes.`,
+    orch && `The orch has had your last request for ${count(minutes, minutes === 1 ? 'minute' : 'minutes')}: check its window if no answer comes.`,
   ].filter(Boolean).join(' ')
 }
+// "I can hear you", shown when tries at the wake word get nowhere: once per LOOK_GAP, not on every try, unless it says
+// something new (a sound problem).
+const LOOK_GAP = 5 * 60_000
+let lookedAt = 0, looked = ''
 
 // The router, for spoken requests. With TYPESAFE_API_KEY in .env, Jev (TypeSafe's classifier) sorts each one, and
 // quick ones are answered here, about a second after they're heard, without a turn of the boss: the sessions'
@@ -487,7 +495,11 @@ function startEars() {
     if (e.event === 'heard') heardSaid(e.text, e.long)
     else if (e.event === 'caption') {
       if (e.remind) showToast(e.text)  // the window already has this line as the reply
-      else showCaption(`${e.text}${e.looking && waitingOn() ? ` ${waitingOn()}` : ''}`, e.looking)
+      else if (!e.looking) showCaption(e.text)
+      else if (e.text !== looked || Date.now() - lookedAt > LOOK_GAP) {
+        [looked, lookedAt] = [e.text, Date.now()]
+        showCaption([e.text, waitingOn()].filter(Boolean).join(' '), true)
+      }
     }
     else if (e.event === 'held') (held.push(e.text), log(`held for after the call: ${e.text}`))
     else if (e.event === 'peak') log(`wake peak: ${e.word} ${e.score} level ${e.level}`)
@@ -584,14 +596,23 @@ const SETTINGS = [
   { key: 'CLAP', label: 'Clap twice to wake it', hint: 'Works like "Hey Jarvis". Two snaps or tongue clicks wake it too.', options: ['on', 'off'], fallback: 'off' },
   { key: 'TALK_OVER', label: 'Talk over it to stop it', hint: 'Off: only "Hey Jarvis" stops a reply.', options: ['on', 'off'] },
   { key: 'CUT_OFF', label: 'Say when it got cut off', hint: 'After its ears stop, or a request is lost: says so, and the last thing it heard.', options: ['on', 'off'] },
+  { key: 'MIC_DEVICE', label: 'Microphone', hint: 'Applies at once, on this computer only.', device: 'input' },
+  { key: 'OUTPUT_DEVICE', label: 'Output', hint: 'Windows default follows Windows when it switches.', device: 'output' },
 ]
-const settingValue = s => env[s.key] || s.fallback || s.options[0]
-const settingOk = (s, v) => s && (s.options ? s.options.includes(v) : /^\d{1,3}$/.test(v) && +v >= s.min && +v <= s.max)
+const settingValue = s => s.device ? env[s.key] ?? '' : env[s.key] || s.fallback || s.options[0]
+// A device is saved by its name, or '' for Windows default; nothing that could start another line of .env.
+const settingOk = (s, v) => s && (s.device ? typeof v === 'string' && /^[^\x00-\x1f=#]{0,100}$/.test(v)
+  : s.options ? s.options.includes(v) : /^\d{1,3}$/.test(v) && +v >= s.min && +v <= s.max)
+// The microphones and outputs, listed afresh by the listener's Python (it opens nothing); none if it can't.
+const listDevices = () => new Promise(resolve => execFile(PYTHON, [join(HERE, 'listener.py'), 'devices'],
+  { cwd: HERE, timeout: 10_000, windowsHide: true }, (err, out) => {
+    try { resolve(JSON.parse(out)) } catch { resolve({ input: [], output: [] }) }
+  }))
 function saveSetting(key, value) {
   const text = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
   const line = new RegExp(`^${key}=.*$`, 'm')
   const eol = text.includes('\r\n') ? '\r\n' : '\n'
-  const next = line.test(text) ? text.replace(line, `${key}=${value}`) : `${text}${text && !text.endsWith('\n') ? eol : ''}${key}=${value}${eol}`
+  const next = line.test(text) ? text.replace(line, () => `${key}=${value}`) : `${text}${text && !text.endsWith('\n') ? eol : ''}${key}=${value}${eol}`
   writeFileSync(`${ENV_FILE}.partial`, next)
   renameSync(`${ENV_FILE}.partial`, ENV_FILE)
   env[key] = value
@@ -624,8 +645,10 @@ const server = createServer((req, res) => {
     })
   }
   if (here && req.method === 'GET' && req.url === '/settings') {
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-    return res.end(JSON.stringify(SETTINGS.map(s => ({ ...s, value: settingValue(s) }))))
+    return listDevices().then(found => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+      res.end(JSON.stringify(SETTINGS.map(s => ({ ...s, value: settingValue(s), ...(s.device && { choices: found[s.device] ?? [] }) }))))
+    })
   }
   if (req.method === 'GET') return res.end(here && req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
   // Every POST reaches a session with permissions off, so only from this address and never from a web page: a browser
