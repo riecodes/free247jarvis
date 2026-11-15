@@ -276,6 +276,9 @@ def mic_names() -> None:
             {"name": "Mic A", "hostapi": 1, "max_input_channels": 1, "max_output_channels": 0}]
     with mock.patch("sounddevice.query_devices", return_value=devs), mock.patch("sounddevice.default", mock.Mock(hostapi=0)):
         assert listener.devices() == {"input": ["Mic A"], "output": ["Speakers"]}
+    # ... and `listener.py devices` prints them on stdout, which voice.mjs reads (in there sys.stdout is stderr).
+    out = subprocess.run([sys.executable, str(HERE / "listener.py"), "devices"], capture_output=True, text=True, timeout=30)
+    assert set(json.loads(out.stdout)) == {"input", "output"}, out
     # A pick reopens the mic on a fresh device list; a closed mic stays closed, and one that won't open is None, said.
     old, new, said = mock.Mock(), mock.Mock(), []
     with mock.patch("sounddevice._terminate"), mock.patch("sounddevice._initialize") as init, \

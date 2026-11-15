@@ -414,9 +414,11 @@
       hint.textContent = s.hint
       words.append(name, hint)
       if (s.device) {  // '' is Windows default; a saved device that's unplugged stays listed, so the pick shows
-        const names = s.value && !s.choices.includes(s.value) ? [...s.choices, s.value] : s.choices
+        // .env may hold part of a name (MIC_DEVICE=Shokz): the first device containing it is the one in use
+        const value = s.value && (s.choices.find(c => c.toLowerCase().includes(s.value.toLowerCase())) ?? s.value)
+        const names = value && !s.choices.includes(value) ? [...s.choices, value] : s.choices
         input.append(...['', ...names].map(n => new Option(n || 'Windows default', n)))
-        input.value = s.value
+        input.value = value
         input.onchange = () => saveSetting(s.key, input.value)
       } else if (s.options) {
         input.type = 'checkbox'

@@ -238,6 +238,7 @@ try {
   assert.strictEqual(await setting('OUTPUT_DEVICE', 'Speakers (Realtek(R) Audio)'), 200)
   assert.strictEqual(await setting('MIC_DEVICE', ''), 200)
   assert.strictEqual(await setting('MIC_DEVICE', 'x\nGROQ_API_KEY'), 400)
+  assert.strictEqual(await setting('MIC_DEVICE', '-3'), 400)  // an old window's number box
   assert.strictEqual(await setting('MIC_DEVICE', 7), 400)
   assert(readFileSync(ENV_COPY, 'utf8').endsWith('FOLLOWUP_SECONDS=20\r\nOUTPUT_DEVICE=Speakers (Realtek(R) Audio)\r\nMIC_DEVICE=\r\n'))
   assert.match(html, /id="panel"/)

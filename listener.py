@@ -2494,7 +2494,7 @@ if __name__ == "__main__":
     elif arg == "restart":
         sys.exit(restart(sys.argv[2:]))
     elif arg == "devices":
-        print(json.dumps(devices()))
+        print(json.dumps(devices()), file=EVENTS)  # sys.stdout is stderr here; voice.mjs reads stdout
     else:
         try:
             main([])

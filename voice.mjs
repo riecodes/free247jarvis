@@ -600,8 +600,9 @@ const SETTINGS = [
   { key: 'OUTPUT_DEVICE', label: 'Output', hint: 'Windows default follows Windows when it switches.', device: 'output' },
 ]
 const settingValue = s => s.device ? env[s.key] ?? '' : env[s.key] || s.fallback || s.options[0]
-// A device is saved by its name, or '' for Windows default; nothing that could start another line of .env.
-const settingOk = (s, v) => s && (s.device ? typeof v === 'string' && /^[^\x00-\x1f=#]{0,100}$/.test(v)
+// A device is saved by its name, or '' for Windows default; nothing that could start another line of .env, and no bare
+// number (a window page from before the pickers drew them as number boxes, and its clicks were saved).
+const settingOk = (s, v) => s && (s.device ? typeof v === 'string' && /^[^\x00-\x1f=#]{0,100}$/.test(v) && !/^\s*-?\d+\s*$/.test(v)
   : s.options ? s.options.includes(v) : /^\d{1,3}$/.test(v) && +v >= s.min && +v <= s.max)
 // The microphones and outputs, listed afresh by the listener's Python (it opens nothing); none if it can't.
 const listDevices = () => new Promise(resolve => execFile(PYTHON, [join(HERE, 'listener.py'), 'devices'],
