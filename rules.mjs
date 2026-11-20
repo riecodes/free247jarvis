@@ -82,7 +82,16 @@ const NOT_TOPIC = new Set(`status update progress how hows what whats is are the
 const topicWords = text => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(w => !NOT_TOPIC.has(w))
 const sameWord = (a, b) => a === b || (Math.min(a.length, b.length) >= 4 && (a.startsWith(b) || b.startsWith(a)))
 
-export const bankFile = (shared, host, here, exists) => exists(shared) ? `${shared}/${host}/status.jsonl` : `${here}/tmp/status.jsonl`
+// A PC's voice claim (its <host>/jarvis.json text): when it claimed, or 0. A released one (/shutdown: that PC is
+// powering off) counts as none, so the other PC's voice opens its mic.
+export function claimAt(text) {
+  try {
+    const c = JSON.parse(text)
+    return c.released ? 0 : Date.parse(c.claimed) || 0
+  } catch { return 0 }
+}
+
+export const bankFile =(shared, host, here, exists) => exists(shared) ? `${shared}/${host}/status.jsonl` : `${here}/tmp/status.jsonl`
 
 // The newest line per topic across the machines' files' text.
 export function latestLines(files, now = Date.now()) {

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts, yesNoLead } from './rules.mjs'
+import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, claimAt, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts, yesNoLead } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -532,7 +532,7 @@ function claims() {
   try {
     return readdirSync(SHARED).flatMap(host => {
       try {
-        const at = Date.parse(JSON.parse(readFileSync(join(SHARED, host, 'jarvis.json'), 'utf8')).claimed)
+        const at = claimAt(readFileSync(join(SHARED, host, 'jarvis.json'), 'utf8'))
         return at ? [{ host, at }] : []
       } catch { return [] }
     })
@@ -549,6 +549,10 @@ function claim() {
   const at = Math.max(Date.now(), ...claims().map(c => c.at + 1))
   writeFileSync(join(SHARED, hostname(), 'jarvis.json'), JSON.stringify({ claimed: new Date(at).toISOString() }))
 }
+// Said so in its file, not just unreadable for a moment (a sync swapping it in): that must not move the voice.
+const released = host => {
+  try { return !!JSON.parse(readFileSync(join(SHARED, host, 'jarvis.json'), 'utf8')).released } catch { return false }
+}
 let heldElsewhere = claimedBy()
 // VOICE_MIC=off starts with the microphone closed; POST on or off to /mic opens or closes it, no restart needed.
 let mic = process.env.VOICE_MIC !== 'off' && !heldElsewhere
@@ -559,12 +563,19 @@ const quietHere = () => {
 }
 if (heldElsewhere) quietHere()
 // The other PC took it (ponytail: as fast as the sync; a transfer also closes this mic by POST, see the /orch skill).
+// The other PC let go of it (release.mjs, before it powers off): it moves here, unless VOICE_MIC=off.
 setInterval(() => {
   const by = claimedBy()
   if (by && !heldElsewhere) {
     heldElsewhere = by
     if (mic) (mic = false, ears?.stdin.write('off\n'))
     quietHere()
+  } else if (!by && heldElsewhere && released(heldElsewhere) && process.env.VOICE_MIC !== 'off') {
+    log(`${heldElsewhere} let go of the voice: mic on here`)
+    heldElsewhere = ''
+    mic = true
+    claim()
+    ears?.stdin.write('on\n')
   } else heldElsewhere = by
 }, 3000).unref()
 
