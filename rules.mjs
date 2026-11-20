@@ -82,6 +82,15 @@ const NOT_TOPIC = new Set(`status update progress how hows what whats is are the
 const topicWords = text => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(w => !NOT_TOPIC.has(w))
 const sameWord = (a, b) => a === b || (Math.min(a.length, b.length) >= 4 && (a.startsWith(b) || b.startsWith(a)))
 
+// What an orch reply opens with when it could pass for the answer to a newer request: held while the user spoke on, or
+// written after a second request came in (2026-11-20: three replies in a row sounded like answers to the next question).
+// re: what it answers, from the orch. answers: it answers a request, not news. A reply that names its topic needs none.
+export function leadFor(text, re = '', answers = true) {
+  if (/^\W*(about|regarding|re)\b/i.test(text)) return ''
+  const topic = re.trim().replace(/[\s.:,;]+$/, '')
+  return topic ? `About ${topic}:` : answers ? 'About your earlier request:' : 'Separately:'
+}
+
 // A PC's voice claim (its <host>/jarvis.json text): when it claimed, or 0. A released one (/shutdown: that PC is
 // powering off) counts as none, so the other PC's voice opens its mic.
 export function claimAt(text) {

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, claimAt, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts, yesNoLead } from './rules.mjs'
+import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, claimAt, leadFor, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts, yesNoLead } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -69,7 +69,7 @@ const mcp = new Server(
       'a reply only when it asks the user something; when the user just answered your question, your ' +
       'acknowledgment ends the exchange, so pass listen: false if its wording could read as asking. The voice says ' +
       'nothing between the request and your reply (only a short sound as the request ends), so your reply is the one ' +
-      'spoken answer: make it about what was just asked. Each request ends with the board in parentheses (this PC\'s ' +
+      'spoken answer: make it about what was just asked, and pass re (what it answers, 2 to 4 words). Each request ends with the board in parentheses (this PC\'s ' +
       'sessions and the newest progress lines): answer from it when it settles the question instead of looking it up, ' +
       'and call reply as soon as you know the answer or have handed the task on; do any bookkeeping after it. ' + SPEAK,
   },
@@ -87,6 +87,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           type: 'boolean',
           description: 'Keep the mic open a few seconds after this reply. Default: only when the line asks something ' +
             '(a question, or "say ..."). False on an acknowledgment of an answer the user just gave.',
+        },
+        re: {
+          type: 'string',
+          description: 'What this reply answers or is about, in 2 to 4 words ("the MacBook ideas", "dentease"). When the ' +
+            'user spoke again before it could play, or a newer request came in first, it is said as "About <re>: ..." so ' +
+            'it is not taken for the answer to the newer one. Always pass it.',
         },
         options: {
           type: 'array', items: { type: 'string' }, maxItems: 8,
@@ -114,8 +120,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
     show('reply', { text: written, by: 'claude',
       ...(Array.isArray(options) && { options: options.slice(0, 8).map(o => String(o).trim().slice(0, 80)).filter(Boolean) }) })
     spoke(text)
-    ears.stdin.write(`${verbFor(askedAt, req.params.arguments?.listen ?? asksSomething(text))} ${text}\n`)
+    // A second request came in before this reply: with its topic it's said with it at once. Else the listener adds the
+    // lead only if the user speaks a new request before this plays (after a tab: the line itself is on one line).
+    const re = String(req.params.arguments?.re ?? '')
+    const lead = leadFor(text, re, askedAt > 0)
+    const now = lead && unanswered > 1 && re.trim()
+    const verb = verbFor(askedAt, req.params.arguments?.listen ?? asksSomething(text))
+    ears.stdin.write(`${verb} ${now ? `${lead} ${text}` : text}${lead && !now ? `\t${lead}` : ''}\n`)
+    const many = unanswered > 1 && !re.trim()
     setAsked(0) // one reply answers the request; later lines are the boss's own news
+    if (many) return { content: [{ type: 'text', text: 'Speaking. More than one request was waiting, so pass re (what ' +
+      'this answers, 2 to 4 words) in every reply: it is said first when the reply could pass for the answer to another.' }] }
   }
   return { content: [{ type: 'text', text: 'Speaking.' }] }
 })
@@ -128,8 +143,10 @@ async function push(text, via) {
 let askedAt = 0 // when the boss last got a spoken request it has not answered yet
 // Also in tmp/asked, so `listener.py restart` waits for the answer instead of cutting it off (2026-11-04, 15:44).
 const ASKED = process.env.VOICE_LOG ? `${process.env.VOICE_LOG}.asked` : join(HERE, 'tmp', 'asked') // a check's apart too
+let unanswered = 0 // spoken requests sent to the orch since its last reply
 function setAsked(at) {
   askedAt = at
+  unanswered = at ? unanswered + 1 : 0
   try { at ? writeFileSync(ASKED, String(at)) : rmSync(ASKED, { force: true }) } catch (e) { log(`asked mark: ${e.message}`) }
 }
 setAsked(0) // a mark left by a voice that stopped answers nothing now
@@ -227,6 +244,11 @@ async function liveFacts() {
   return facts
 }
 const NOT_IN_NOTES = 'NOT_IN_NOTES'
+// Room talk, not said to Jarvis: nothing is said and nothing goes to the orch (2026-11-20, 15:42: the router chatted back
+// at "Hindi ko alam ... secret conversation eh. Hahaha", someone else in the room).
+const NOT_FOR_ME = 'NOT_FOR_ME'
+const ROOM = ` If the words are not said to you (people talking to each other, laughing, a story or a remark with no ` +
+  `question or request for you), reply with exactly ${NOT_FOR_ME} and nothing else.`
 const KNOWLEDGE = "A question the user's own notes answer: their course or webinar, what it needs, its price, refunds, " +
   'recordings, schedule or one-on-one sessions. Not a task, and not about the sessions or terminals.'
 // Small talk with a set answer, asked of Jev in the same call as the kind: [when it fits, what's said]. 'other': Haiku.
@@ -343,6 +365,7 @@ async function route(text) {
   const picks = kind === 'knowledge' ? shortlist(bank, text) : ''  // none: the boss, or Haiku would answer without notes
   const quick = kind === 'chat' ? await chat(text)
     : picks ? await chat(text, withFacts(picks, await liveFacts())) : ''
+  if (quick === NOT_FOR_ME) return (log('router: room talk, not said to Jarvis: nothing said'), show('nothing', {}))
   if (quick) return answer(quick)
   return toBoss(text)
 }
@@ -436,7 +459,7 @@ async function chat(text, bank = '', from = 'notes') {
               `the notes are in Taglish. Add nothing they don't say: free247editor is a product's name, not a price. ` +
               `A word in {braces} is a value you do not have. If the notes don't settle the question, or the answer ` +
               `needs a value in braces, reply with exactly ${NOT_IN_NOTES} and nothing else.\n\n` +
-              `<notes>\n${bank}\n</notes>` : ''),
+              `<notes>\n${bank}\n</notes>` : ROOM),
         messages: [{ role: 'user', content: text }],
       }),
       signal: AbortSignal.timeout(6000),
@@ -444,6 +467,7 @@ async function chat(text, bank = '', from = 'notes') {
     const data = await r.json()
     if (!r.ok) log(`router: Haiku returned ${r.status}: ${data.error?.message ?? ''}`)
     const said = r.ok ? (data.content?.find(c => c.type === 'text')?.text ?? '').replace(/\s+/g, ' ').trim() : ''
+    if (!bank && said.includes(NOT_FOR_ME)) return NOT_FOR_ME
     if (said && !said.includes(NOT_IN_NOTES) && !said.includes('{')) return said
     log(`router: passed to the boss, Haiku said "${said}" (${data.stop_reason}, ${data.content?.map(c => c.type)})`)
     return ''

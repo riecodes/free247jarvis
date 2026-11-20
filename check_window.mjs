@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert'
-import { AGES, ageWords, asksYesNo, yesNoLead, isFiller, latestLines, matchLine, shortlist, withFacts, withTitle } from './rules.mjs'
+import { AGES, ageWords, asksYesNo, yesNoLead, isFiller, latestLines, leadFor, matchLine, shortlist, withFacts, withTitle } from './rules.mjs'
 
 for (const said of ['Hmm.', 'Mm-hmm.', 'Okay', 'Damn', 'Got it.']) assert(isFiller(said), said)
 for (const said of ['Yes', 'Go', 'Okay, send it', 'What?', 'Hello']) assert(!isFiller(said), said)
@@ -260,9 +260,11 @@ try {
     req.on('end', () => {
       const ask = req.url === '/haiku' ? JSON.parse(body) : null
       const board = ask?.system.includes('<board>'), research = /research/.test(ask?.messages[0].content ?? '')
-      res.end(JSON.stringify(ask ? { content: [{ type: 'text', text: board && !research ? 'NOT_IN_NOTES' : board ? 'Sir, the research session is idle.' : 'On it, sir.' }] }
+      // Room talk: told it may pass on words not said to it, it does.
+      const room = !board && ask?.system.includes('NOT_FOR_ME') && /hahaha/i.test(ask?.messages[0].content ?? '')
+      res.end(JSON.stringify(ask ? { content: [{ type: 'text', text: room ? 'NOT_FOR_ME' : board && !research ? 'NOT_IN_NOTES' : board ? 'Sir, the research session is idle.' : 'On it, sir.' }] }
         : { answers: { kind: { choice: jevSays, probabilities: { [jevSays]: 0.95 } },
-          ...(jevSays === 'chat' && { canned: { choice: 'thanks', probabilities: { thanks: 0.95 } } }) } }))
+          ...(jevSays === 'chat' && /thanks/.test(JSON.parse(body).state?.heard ?? '') && { canned: { choice: 'thanks', probabilities: { thanks: 0.95 } } }) } }))
     })
   }).listen(0, '127.0.0.1')
   await new Promise(r => jev.once('listening', r))
@@ -275,7 +277,7 @@ try {
   writeFileSync(STUB2, `import sys\nfor line in sys.stdin:\n    open(${JSON.stringify(IN)}, "a", encoding="utf-8").write(line)\n`)
   const port3 = PORT + 2
   const router = spawn('node', ['voice.mjs'], {
-    cwd: HERE, stdio: ['pipe', 'ignore', 'ignore'],
+    cwd: HERE, stdio: ['pipe', 'pipe', 'ignore'],
     env: { ...process.env, VOICE_PORT: String(port3), VOICE_MIC: 'off', VOICE_WINDOW: 'off', VOICE_LISTENER: STUB2, VOICE_LOG: LOG, VOICE_TOAST: 'off',
       VOICE_SHARED: BANK, VOICE_ENV: ENV_COPY, VOICE_JEV_URL: `http://127.0.0.1:${jev.address().port}/`, TYPESAFE_API_KEY: 'stand-in', VOICE_TITLE: 'Sir',
       VOICE_HAIKU_URL: `http://127.0.0.1:${jev.address().port}/haiku`, ANTHROPIC_API_KEY: 'stand-in' },
@@ -340,6 +342,12 @@ try {
     await heard('thanks for that')
     await sleep(300)
     assert(/^ack .*you're welcome/im.test(toListener().slice(before6)) && haikuCalls === calls, toListener().slice(before6))
+    // Room talk, not said to Jarvis (2026-11-20, 15:42): nothing said, and nothing to the orch.
+    const before7 = toListener().length
+    await heard('Oh! Hindi ko alam. Secret conversation eh. Hahaha.')
+    await sleep(300)
+    assert(!/^(ack|ask|say|routed boss)/m.test(toListener().slice(before7)) && /^routed$/m.test(toListener().slice(before7)), toListener().slice(before7))
+    assert.match(readFileSync(LOG, 'utf8'), /router: room talk, not said to Jarvis/)
     // A yes or no: the answer first, then the counts. This machine's real sessions, so either answer.
     const before5 = toListener().length
     jevSays = 'status'
@@ -356,11 +364,46 @@ try {
     assert.strictEqual((await fetch(`http://127.0.0.1:${port3}/resend-last`, { method: 'POST' })).status, 200)
     for (let i = 0; i < 20 && !/^resend$/m.test(toListener()); i++) await sleep(100)
     assert.match(toListener(), /^resend$/m)
+    // An orch reply that could pass for the answer to a newer request: its re goes along as the lead (after a tab) for the
+    // listener to say if the user asks something new first; with a second request already in, it's said with it at once.
+    const out = createInterface({ input: router.stdout })[Symbol.asyncIterator]()
+    const call = async (id, method, params) => {
+      router.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+      for (;;) { const m = JSON.parse((await out.next()).value); if (m.id === id) return m }
+    }
+    await call(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'check', version: '1' } })
+    const reply = (id, args) => call(id, 'tools/call', { name: 'reply', arguments: args })
+    await reply(2, { text: 'Clearing.', listen: false })
+    jevSays = 'work'
+    const before8 = toListener().length
+    await heard('tell the course session to ship')
+    await reply(3, { text: 'Sent it to the course session.', re: 'the course', listen: false })
+    await heard('deploy dentease')
+    await heard('and the vlog?')
+    await reply(4, { text: 'Deployed it.', re: 'dentease.', listen: false })
+    await heard('one more')
+    await heard('and another')
+    const unnamed = await reply(5, { text: 'Done.', listen: false })
+    await reply(6, { text: 'About the vlog: it renders.', re: 'the vlog', listen: false })
+    await sleep(200)
+    const said8 = toListener().slice(before8).split(/\r?\n/).filter(l => /^(end|tell) /.test(l))
+    assert.match(said8[0], /^end [^\t]*course session[^\t]*\tAbout the course:$/, said8.join(' | '))  // one request in: the lead goes along
+    assert.match(said8[1], /^end About dentease: [^\t]*deployed it[^\t]*$/i, said8.join(' | '))  // a second came in first: said at once
+    assert.match(said8[2], /^end Done[^\t]*\tAbout your earlier request:$/, said8.join(' | '))  // two in, no topic: only if needed
+    assert.match(unnamed.result.content[0].text, /pass re/)
+    assert.match(said8[3], /^tell About the vlog: it renders[^\t]*$/, said8.join(' | '))  // it named its topic itself
   } finally {
     router.stdin.end()
     router.kill()
     jev.close()
   }
+
+  // The lead an orch reply may open with: its topic, else what it is; none when it names its topic itself.
+  assert.strictEqual(leadFor('Noted, sir.', 'the MacBook ideas'), 'About the MacBook ideas:')
+  assert.strictEqual(leadFor('Noted, sir.', 'dentease. '), 'About dentease:')
+  assert.strictEqual(leadFor('Noted, sir.'), 'About your earlier request:')
+  assert.strictEqual(leadFor('Dentease is done.', '', false), 'Separately:')
+  assert.strictEqual(leadFor('About the mix-up, sir: they came late.', 'the mix-up'), '')
 
   // One voice across two PCs. The latest claim holds it, and an old one still counts: a PC booting late must not speak.
   const claimBy = (host, when) => {

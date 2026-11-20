@@ -1877,6 +1877,8 @@ class Ears:
         so they can go on with what they were saying: on 2026-11-06 one closed the mic on them."""
         if not self.queue:
             self.queue_since = time.monotonic()
+        if how.get("lead"):
+            how["since"] = self.heard_at
         if not first and self.user_turn():
             how["carry_on"] = True
         self.queue.insert(sum(1 for _, h in self.queue if h.get("first")) if first else len(self.queue), (text, {**how, **({"first": True} if first else {})}))
@@ -1888,6 +1890,10 @@ class Ears:
         """Says the oldest waiting line once the user is done. The main loop calls this after every event."""
         if self.queue and not self.user_turn():
             text, how = self.queue.pop(0)
+            lead, since = how.pop("lead", ""), how.pop("since", 0.0)
+            if lead and self.heard_at > since:  # the user asked something new while it waited: it would pass for that answer
+                self.ready.pop(text, None)
+                text = f"{lead} {text}"
             try:
                 self.say(text, **how)
             except Exception as e:
@@ -2440,10 +2446,11 @@ def main(commands: list[str]) -> None:
             continue
         if value.startswith(("say ", "end ", "late ", "tell ", "ask ", "ack ")):
             verb, text = value.split(" ", 1)
+            text, _, lead = text.partition("\t")  # lead: said first if a newer request is heard before this plays
             # With the mic closed no window can open or end, and paused media would never resume.
             ears.mic_open = mic is not None
             ears.line(text, asked=verb != "tell" and mic is not None, hold=verb in ("late", "tell"), window=verb not in ("end", "ack"),
-                      first=verb in ("ask", "ack"))
+                      first=verb in ("ask", "ack"), **({"lead": lead.strip()} if lead.strip() else {}))
             continue
         if value in ("on", "off"):
             zeros_since, warned = 0.0, False  # time with the mic closed is not silence

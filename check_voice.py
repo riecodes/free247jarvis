@@ -661,6 +661,24 @@ def turn_first() -> None:
         assert e.on_chunk == e.record_chunk and e.idle_window
 
 
+def late_lead() -> None:
+    """2026-11-20: an orch reply held while the user spoke on played right after their next question, as if it answered
+    it. Its lead ("About ...:") is said first only when a newer request was heard while it waited."""
+    e, played = ears(), []
+    e.say = lambda text, **how: played.append((text, how))
+    e.wait_for_wake()
+    with mock.patch.object(listener, "emit"), mock.patch.object(listener.Ears, "prepare", lambda self, text: None):
+        e.routing_until = time.monotonic() + listener.ROUTE_WAIT  # the user has the floor
+        e.line("Noted, sir.", asked=True, lead="About the MacBook:")
+        e.heard_at = time.time() + 1  # their next request is heard
+        e.after_turn()
+        e.flush()
+        e.line("Done, sir.", asked=True, lead="About dentease:")  # nothing new heard meanwhile: said as it is
+        e.flush()
+    assert [t for t, _ in played] == ["About the MacBook: Noted, sir.", "Done, sir."], played
+    assert all("lead" not in how and "since" not in how for _, how in played)
+
+
 def settings() -> None:
     """The window's switches reach the running listener, and off means off."""
     with mock.patch.dict(listener.os.environ, {"SOUNDS": "off", "GREETING": "off", "LISTEN_AFTER": "asked", "FOLLOWUP_SECONDS": "20", "CLOSING_CUT": "off"}):
@@ -1800,6 +1818,7 @@ def main() -> None:
     resend(recent)
     listen_after()
     turn_first()
+    late_lead()
     settings()
     bank()
     fixes()
