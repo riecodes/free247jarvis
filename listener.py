@@ -310,13 +310,27 @@ _STORY_ENDS = r"that'?s it|that'?s all|that'?s the story|(i'?m|i am) (done|finis
 _STORY_SURE = r"(end|stop|finish|close) (the |my )?story( mode)?|story (mode )?(over|done|off)"
 _STORY_CANCEL = r"(cancel|scrap|discard|delete|forget|drop) (the |my |that |this )?story( mode)?"
 _JARVIS = r"(hey |hi |okay |ok |yo )?(jarvis|jervis)"
-STORY_START = re.compile(rf"(({_JARVIS}|okay|ok|so|please|let'?s) )*((start|begin|open|turn on|go into|enter|do) (a |the )?)?"
-                         r"story ?(telling)?( (mode|time))?( (on|please|now|na))*")
+# Asking for story mode: the phrase anywhere in a short utterance whose other words only ask for it. On 2026-11-23 "So
+# yeah let's let's get to story mode." went to the orch as a request. "Fix the story mode bug" or "stop story mode" has a
+# word outside STORY_ASK, so it stays a request.
+STORY_PHRASE = re.compile(r"\bstory ?(mode|time|telling)\b|\b(start|begin) (a |the |my )?story\b|^story$")
+STORY_ASK = set("""so yeah yes yep okay ok alright sige um uh and now please na tayo po let's lets let us we i you can could
+    want wanna gonna going to go get into in do start begin open turn on switch enter time a the my mode story telling
+    storytelling hey hi yo jarvis jervis ahead it's its for""".split())
+STORY_ASK_MAX = 12  # words: a longer utterance is about something else, not a request for it
+
+
+def story_asked(text: str) -> bool:
+    norm = story_norm(text)
+    words = norm.split()
+    return bool(STORY_PHRASE.search(norm)) and len(words) <= STORY_ASK_MAX and set(words) <= STORY_ASK
 # Said at the very end of a part: _STORY_ENDS alone ends only once STORY_CONFIRM passes with nothing said after it,
 # since "and that's it, we left" is part of a story. With the name, or the sure words, it ends at once.
 STORY_TAIL = re.compile(rf"(^| )(?P<name>(jarvis|jervis) )?((?P<cancel>{_STORY_CANCEL})|(?P<sure>{_STORY_SURE})|(?P<end>{_STORY_ENDS}))"
                         rf"(?P<after> (jarvis|jervis))?( (please|na|po))?$")
 # "... Hey Jarvis, open Notepad": at a sentence's start, with the opener, a request that ends the story and goes on after it.
+# Only when the wake word also fired in that part: on 2026-11-23 "...is it correct? Okay Jarvis, yes." in the words alone
+# ended the first real story after 11 words and sent "Yes." to the orch.
 STORY_CALL = re.compile(r"(^|(?<=[.!?])\s+)(hey|hi|okay|ok|yo)[,\s]+(jarvis|jervis)\b[\s,.!?]*(?P<cmd>.*)$", re.IGNORECASE | re.DOTALL)
 
 
@@ -1856,7 +1870,7 @@ class Ears:
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
         if clip is not None and woke and not sure:  # staying quiet: other people may be on the clip
             keep_clip(clip, transcript, text, *woke)
-        if text and STORY_START.fullmatch(story_norm(text)):
+        if text and story_asked(text):  # by the wake word or in a follow-up window; never mid-story (story_chunk has it)
             self.cut_rest, self.remind_next, self.routing_until = None, "", 0.0
             return self.story_start()
         if text and (word := dismisses(text, self.said)):  # "later": nothing to the orch, the rest of a reply dropped,
@@ -1905,7 +1919,7 @@ class Ears:
         STORY_DIR.mkdir(parents=True, exist_ok=True)
         self.story = STORY_DIR / time.strftime("%Y-%m-%d-%H%M%S.txt")
         self.story.write_text("", encoding="utf-8")
-        self.story_parts, self.story_jobs, self.story_maybe, self.story_silent = [], [], False, 0
+        self.story_parts, self.story_jobs, self.story_maybe, self.story_silent, self.story_fired = [], [], False, 0, False
         self.story_began = time.monotonic()
         emit("story_on", file=str(self.story))
         try:
@@ -1924,6 +1938,8 @@ class Ears:
             self.story_maybe = False  # they went on: that "that's it" was part of the story
         else:
             self.quiet, self.story_silent = self.quiet + 1, self.story_silent + 1
+        if max(self.oww.predict(chunk).values()) >= self.threshold:  # a real "Hey Jarvis" in this part (see STORY_CALL)
+            self.story_fired = True
         n, q = len(self.clip), self.quiet
         if self.voiced >= MIN_VOICED:
             if q >= STORY_LONG_PAUSE or (n >= STORY_MIN and q >= STORY_PAUSE) or (n >= STORY_CUT and q >= STORY_BREATH) or n >= STORY_MAX:
@@ -1939,13 +1955,14 @@ class Ears:
     def story_part(self) -> None:
         clip = np.concatenate(self.clip)
         self.clip, self.voiced = [], 0
-        self.story_jobs.append((STORY_EARS.submit(transcribe, clip), clip))
+        self.story_jobs.append((STORY_EARS.submit(transcribe, clip), clip, self.story_fired))
+        self.story_fired = False
 
     def story_heard(self, wait: bool = False) -> tuple[str, str]:
         """Writes the parts heard so far to the file, in order (all of them with wait). Returns the first end word's kind
         and any request after it; the parts after an end word are dropped."""
         while self.story_jobs and (wait or self.story_jobs[0][0].done()):
-            future, clip = self.story_jobs.pop(0)
+            future, clip, fired = self.story_jobs.pop(0)
             try:
                 text = future.result()
             except Exception:
@@ -1959,6 +1976,9 @@ class Ears:
             if not text:
                 continue
             kind, part, request = story_word(text)
+            if kind == "call" and not fired:  # the name in the words, but no wake word: part of the story
+                emit("status", text="Heard Jarvis named mid-story, but no wake word: kept as story")
+                kind, part, request = "", text, ""
             if part:
                 self.story_parts.append(part)
                 with open(self.story, "a", encoding="utf-8") as f:

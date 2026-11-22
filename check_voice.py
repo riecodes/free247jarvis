@@ -1524,8 +1524,13 @@ def story() -> None:
     a request after it, cancel, POST end and long silence each end it the right way."""
     from concurrent.futures import Future
     for said, start in [("Story mode.", True), ("Start story", True), ("Okay, start a story.", True), ("story time", True),
-                        ("Start story mode please", True), ("Tell the story worker to ship", False), ("story mode bug fix", False)]:
-        assert bool(listener.STORY_START.fullmatch(listener.story_norm(said))) == start, said
+                        ("Start story mode please", True), ("Tell the story worker to ship", False), ("story mode bug fix", False),
+                        # 2026-11-23, in a follow-up window: it went to the orch as a request.
+                        ("So yeah let's let's get to story mode.", True), ("Let's do story mode.", True), ("Story mode na.", True),
+                        ("Hey Jarvis, can we go into story mode now?", True), ("Stop story mode.", False),
+                        ("Fix the story mode bug in the listener.", False), ("Is story mode live yet?", False),
+                        ("I told my team about story time with my kids yesterday.", False)]:
+        assert listener.story_asked(said) == start, said
     for text, kind in [("And we left. That's it.", "maybe"), ("I'm done, Jarvis.", "end"), ("End story.", "end"),
                        ("Okay, stop the story.", "end"), ("Jarvis, that's it.", "end"), ("Tapos na.", "maybe"),
                        ("Cancel story.", "cancel"), ("That's it, we won the round and went home.", ""),
@@ -1542,21 +1547,24 @@ def story() -> None:
         return fut
     loud, hush = np.full(1280, 3000, np.int16), np.zeros(1280, np.int16)
 
-    def telling(parts: list[str], after: int = listener.STORY_LONG_PAUSE, start: str = "start"):
-        """Starts a story, then says each part (2 s of speech, then STORY_LONG_PAUSE of quiet, `after` for the last), heard as that text."""
-        said, events, folder = iter(parts), [], Path(tempfile.mkdtemp())
+    def telling(parts: list[str], after: int = listener.STORY_LONG_PAUSE, start: str = "start", woke: tuple = ()):
+        """Starts a story, then says each part (2 s of speech, then STORY_LONG_PAUSE of quiet, `after` for the last), heard as
+        that text. The wake word fires in the parts numbered in `woke` (from 0)."""
+        said, events, folder, waking = iter(parts), [], Path(tempfile.mkdtemp()), [False]
         with mock.patch.object(listener, "STORY_EARS", mock.Mock(submit=now)), mock.patch.object(listener, "STORY_DIR", folder), \
                 mock.patch.object(listener, "transcribe", lambda clip: next(said)), mock.patch.object(listener, "pause_media", lambda: []), \
                 mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))):
             e = ears()
             e.vad.predict = lambda chunk, **k: 0.9 if chunk.any() else 0.0
+            e.oww.predict = lambda chunk: {"jarvis": 0.9 if waking[0] and chunk.any() else 0.0}
             if start == "voice":
-                with mock.patch.object(listener, "transcribe", lambda clip: "Jarvis, story mode."):
+                with mock.patch.object(listener, "transcribe", lambda clip: "So yeah let's let's get to story mode."):
                     e.request_done(np.zeros(1, np.int16))
             else:
                 e.story_start()
             assert e.phase() == "story" and listener.STORY_ON in e.spoken
             for i in range(len(parts)):
+                waking[0] = i in woke
                 for _ in range(25):
                     e.on_chunk(loud)
                 for _ in range(listener.STORY_LONG_PAUSE if i < len(parts) - 1 else after):
@@ -1582,10 +1590,17 @@ def story() -> None:
         e.story_end()
     assert [d["text"] for ev, d in events if ev == "story"] == ["And that's it. Then we went home. The last bit."]
     # A request after the story: the story first, then the request, as heard.
-    e, events, _ = telling(["Part one.", "So that was it. Hey Jarvis, open Notepad."])
+    e, events, _ = telling(["Part one.", "So that was it. Hey Jarvis, open Notepad."], woke=(1,))
     went = [(ev, d.get("text")) for ev, d in events if ev in ("story", "heard")]
     assert went == [("story", "Part one. So that was it."), ("heard", "open Notepad.")], went
+    # 2026-11-23: "Okay Jarvis" in the words with no wake word, then "Yes.", ended the first real story. Now it's story.
+    e, events, text = telling(["Okay, okay, okay, so you're recording right now, is it correct? Okay Jarvis, yes.", "Yes."])
+    assert e.phase() == "story" and not [ev for ev, _ in events if ev in ("story", "heard")], events
+    assert text == "Okay, okay, okay, so you're recording right now, is it correct? Okay Jarvis, yes.\nYes.\n", text
     # Cancel: nothing sent, the file kept.
+    # "Story mode" said mid-story is part of the story: no second start.
+    e, events, text = telling(["Let's do story mode.", "Then more."])
+    assert [ev for ev, _ in events].count("story_on") == 1 and e.phase() == "story" and "Let's do story mode." in text
     e, events, text = telling(["Part one.", "Cancel story."])
     assert "story" not in [ev for ev, _ in events] and "story_cancelled" in [ev for ev, _ in events] and "Part one." in text
     # Ten minutes of silence sends what was told; a part that can't be heard keeps its audio and says so.
