@@ -1598,6 +1598,24 @@ def story() -> None:
     assert e.phase() == "story" and not [ev for ev, _ in events if ev in ("story", "heard")], events
     assert text == "Okay, okay, okay, so you're recording right now, is it correct? Okay Jarvis, yes.\nYes.\n", text
     # Cancel: nothing sent, the file kept.
+    # With the window open: live words for the part being said, started over at each part, and each part shown when heard.
+    lives = []
+
+    class Live:
+        def __init__(self, spare):
+            self.spare, self.got, self.stopped = spare, 0, False
+            lives.append(self)
+
+        def feed(self, chunk):
+            self.got += 1
+
+        def stop(self):
+            self.stopped = True
+    with mock.patch.object(listener.Ears, "watching", True), mock.patch.object(listener, "live_words", Live):
+        e, events, _ = telling(["Part one.", "Part two."], after=1)
+    assert len(lives) == 2 and lives[0].stopped and not lives[1].stopped and lives[0].spare == listener.STORY_LIVE_SPARE
+    assert lives[0].got == 25 + listener.STORY_LONG_PAUSE and e.live is lives[1], [l.got for l in lives]
+    assert [d for ev, d in events if ev == "story_part"] == [{"text": "Part one.", "words": 2}]
     # "Story mode" said mid-story is part of the story: no second start.
     e, events, text = telling(["Let's do story mode.", "Then more."])
     assert [ev for ev, _ in events].count("story_on") == 1 and e.phase() == "story" and "Let's do story mode." in text

@@ -353,7 +353,38 @@
     if (buttons.length) (retire(), picks = buttons)
   }
 
+  // Story mode: each part joins the chat once heard, the part being said shows live below it, and the header counts.
+  let storyAt = 0, storyWords = 0, storyTimer = 0
+  function storyTick() {
+    if (!storyAt) return clearInterval(storyTimer)
+    const s = Math.max(0, Math.round((Date.now() - storyAt) / 1000))
+    state('listen', 'Story mode', `${storyWords} words, ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`)
+  }
+  function storyOver(note, at) {
+    storyAt = 0
+    clearInterval(storyTimer)
+    hide(draft)
+    add('note', note, at)
+    rest()
+  }
+
   const HANDLERS = {
+    story_on: e => {
+      [storyAt, storyWords] = [e.at, 0]
+      add('note', 'Story mode: each part shows here as it is heard. Say "end story" when you are done.', e.at)
+      listening()
+      clearInterval(storyTimer)
+      storyTimer = setInterval(storyTick, 1000)
+      storyTick()
+    },
+    story_part: e => {
+      storyWords = e.words
+      add('msg you', e.text, e.at)
+      if (storyAt) (listening(), storyTick())  // the live words start over for the next part
+    },
+    story: e => storyOver(`Story sent to the orch: ${e.words} words, ${e.minutes} min.`, e.at),
+    story_cancelled: e => storyOver('Story cancelled: nothing sent, the file is kept.', e.at),
+    story_empty: e => storyOver('Story mode off: nothing was heard.', e.at),
     state: e => {
       on = e.on
       rest()
@@ -374,7 +405,7 @@
     route: e => $('detail').textContent = `${e.kind}, ${e.ms} ms`,
     sent: e => {
       retire()
-      if (e.via !== 'mic') add('msg you', e.text, e.at)
+      if (e.via !== 'mic' && e.via !== 'story') add('msg you', e.text, e.at)  // a story's parts are in the chat already
       show(dots)
       state('work', 'Claude is working')
     },

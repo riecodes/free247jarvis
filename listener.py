@@ -306,6 +306,7 @@ STORY_CUT, STORY_BREATH = 375, 8  # past 30 s a part closes at a 0.6 s breath
 STORY_MAX = 750  # and never runs past 60 s
 STORY_SILENT = 7500  # 10 min with no speech: what was told is sent, not dropped
 STORY_EARS = ThreadPoolExecutor(1)  # one part heard at a time, in order, while the mic keeps recording
+STORY_LIVE_SPARE = 12  # the window's live words ask only while under 8 Groq requests in the last minute: the parts come first
 _STORY_ENDS = r"that'?s it|that'?s all|that'?s the story|(i'?m|i am) (done|finished)|the end|tapos na|yun lang|yun na yun|ayun lang"
 _STORY_SURE = r"(end|stop|finish|close) (the |my )?story( mode)?|story (mode )?(over|done|off)"
 _STORY_CANCEL = r"(cancel|scrap|discard|delete|forget|drop) (the |my |that |this )?story( mode)?"
@@ -1284,14 +1285,14 @@ class GroqLive:
     """The free voice's live words: Groq takes only finished files, so the last LIVE_CLIP chunks go up every LIVE_EVERY
     chunks, one at a time. For show only, as in ScribeLive."""
 
-    def __init__(self) -> None:
+    def __init__(self, spare: int = LIVE_SPARE) -> None:
         self.clip: deque[np.ndarray] = deque(maxlen=LIVE_CLIP)
-        self.waiting, self.busy, self.stopped = 0, False, False
+        self.waiting, self.busy, self.stopped, self.spare = 0, False, False, spare
 
     def feed(self, chunk: np.ndarray) -> None:
         self.clip.append(chunk)
         self.waiting += 1
-        if self.waiting >= LIVE_EVERY and not self.busy and groq_room(LIVE_SPARE):
+        if self.waiting >= LIVE_EVERY and not self.busy and groq_room(self.spare):
             self.waiting, self.busy = 0, True
             threading.Thread(target=self.ask, args=(np.concatenate(self.clip),), daemon=True).start()
 
@@ -1309,11 +1310,11 @@ class GroqLive:
             self.busy = False
 
 
-def live_words():
-    """Live words for the voice in use; None when there is no key for them."""
+def live_words(spare: int = LIVE_SPARE):
+    """Live words for the voice in use; None when there is no key for them. spare: Groq requests a minute they leave free."""
     if key := el_key():
         return ScribeLive(key)
-    return GroqLive() if os.environ.get("GROQ_API_KEY") else None
+    return GroqLive(spare) if os.environ.get("GROQ_API_KEY") else None
 
 
 class Claps:
@@ -1936,8 +1937,14 @@ class Ears:
             self.voiced, self.quiet, self.story_silent = self.voiced + 1, 0, 0
             self.last_speech = time.monotonic()
             self.story_maybe = False  # they went on: that "that's it" was part of the story
+            if self.watching and not self.live:  # the window shows the part being said, as in a request
+                self.live = live_words(STORY_LIVE_SPARE)
+                for earlier in self.clip[:-1]:
+                    self.live and self.live.feed(earlier)
         else:
             self.quiet, self.story_silent = self.quiet + 1, self.story_silent + 1
+        if self.live:
+            self.live.feed(chunk)
         if max(self.oww.predict(chunk).values()) >= self.threshold:  # a real "Hey Jarvis" in this part (see STORY_CALL)
             self.story_fired = True
         n, q = len(self.clip), self.quiet
@@ -1955,6 +1962,7 @@ class Ears:
     def story_part(self) -> None:
         clip = np.concatenate(self.clip)
         self.clip, self.voiced = [], 0
+        self.stop_live()  # the next part gets its own live words
         self.story_jobs.append((STORY_EARS.submit(transcribe, clip), clip, self.story_fired))
         self.story_fired = False
 
@@ -1983,7 +1991,9 @@ class Ears:
                 self.story_parts.append(part)
                 with open(self.story, "a", encoding="utf-8") as f:
                     f.write(part + "\n")
-                emit("status", text=f"Story: part {len(self.story_parts)}, {len(' '.join(self.story_parts).split())} words so far")
+                words = len(" ".join(self.story_parts).split())
+                emit("story_part", text=part, words=words)  # the window adds it to the story
+                emit("status", text=f"Story: part {len(self.story_parts)}, {words} words so far")
             if kind in ("cancel", "end", "call"):
                 self.story_jobs = []
                 return kind, request
