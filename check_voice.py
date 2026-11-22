@@ -1528,6 +1528,7 @@ def story() -> None:
                         # 2026-11-23, in a follow-up window: it went to the orch as a request.
                         ("So yeah let's let's get to story mode.", True), ("Let's do story mode.", True), ("Story mode na.", True),
                         ("Hey Jarvis, can we go into story mode now?", True), ("Stop story mode.", False),
+                        ("Oke, JARVIS, story mode.", True), ("Uhm, okey, Hey Jarvis, story mode po.", True),
                         ("Fix the story mode bug in the listener.", False), ("Is story mode live yet?", False),
                         ("I told my team about story time with my kids yesterday.", False)]:
         assert listener.story_asked(said) == start, said

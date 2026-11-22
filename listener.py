@@ -315,7 +315,9 @@ _JARVIS = r"(hey |hi |okay |ok |yo )?(jarvis|jervis)"
 # yeah let's let's get to story mode." went to the orch as a request. "Fix the story mode bug" or "stop story mode" has a
 # word outside STORY_ASK, so it stays a request.
 STORY_PHRASE = re.compile(r"\bstory ?(mode|time|telling)\b|\b(start|begin) (a |the |my )?story\b|^story$")
-STORY_ASK = set("""so yeah yes yep okay ok alright sige um uh and now please na tayo po let's lets let us we i you can could
+# Speech to text spells the fillers many ways: on 2026-11-23 "Oke, JARVIS, story mode." went to the orch.
+STORY_ASK = set("""so yeah yes yep okay ok oke okey okie okej kay alright alrighty sige um umm uh uhm hmm mm ah eh uy oy
+    and now please na tayo po let's lets let us we i you can could
     want wanna gonna going to go get into in do start begin open turn on switch enter time a the my mode story telling
     storytelling hey hi yo jarvis jervis ahead it's its for""".split())
 STORY_ASK_MAX = 12  # words: a longer utterance is about something else, not a request for it
