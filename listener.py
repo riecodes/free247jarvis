@@ -292,6 +292,50 @@ def phantom(text: str) -> bool:
     letters = [c for c in text if c.isalpha()]
     latin = sum(ord(c) < 0x250 or 0x1E00 <= ord(c) < 0x1F00 for c in letters)  # Latin with its accents
     return " ".join(re.findall(r"[¿¡]?\w+", text.lower())) in HALLUCINATIONS or latin * 2 < len(letters)
+
+# Story mode ("Jarvis, story mode", or POST /story start): a long telling, written down part by part as it comes, with no
+# wake word and no room-talk filter, then sent to the orch as one message when it ends. Parts close at pauses so each is
+# heard well and the file grows as the user talks; a crash loses only the part in progress. Pauses never end the story.
+STORY_DIR = HERE / "tmp" / "stories"
+STORY_ON = "Story mode. I'm writing it all down. Say that's it, or end story, when you're done."
+STORY_MIN = 100  # chunks (8 s): a part this long closes at a STORY_PAUSE; a shorter one waits for STORY_LONG_PAUSE, which
+STORY_PAUSE = 19  # (1.5 s) keeps parts at about 6 a minute at most, well inside Groq's 20
+STORY_LONG_PAUSE = 38  # 3 s: closes any part with speech in it
+STORY_CONFIRM = 62  # 5 s of quiet after a plain "that's it" ends the story; any speech before then and the story goes on
+STORY_CUT, STORY_BREATH = 375, 8  # past 30 s a part closes at a 0.6 s breath
+STORY_MAX = 750  # and never runs past 60 s
+STORY_SILENT = 7500  # 10 min with no speech: what was told is sent, not dropped
+STORY_EARS = ThreadPoolExecutor(1)  # one part heard at a time, in order, while the mic keeps recording
+_STORY_ENDS = r"that'?s it|that'?s all|that'?s the story|(i'?m|i am) (done|finished)|the end|tapos na|yun lang|yun na yun|ayun lang"
+_STORY_SURE = r"(end|stop|finish|close) (the |my )?story( mode)?|story (mode )?(over|done|off)"
+_STORY_CANCEL = r"(cancel|scrap|discard|delete|forget|drop) (the |my |that |this )?story( mode)?"
+_JARVIS = r"(hey |hi |okay |ok |yo )?(jarvis|jervis)"
+STORY_START = re.compile(rf"(({_JARVIS}|okay|ok|so|please|let'?s) )*((start|begin|open|turn on|go into|enter|do) (a |the )?)?"
+                         r"story ?(telling)?( (mode|time))?( (on|please|now|na))*")
+# Said at the very end of a part: _STORY_ENDS alone ends only once STORY_CONFIRM passes with nothing said after it,
+# since "and that's it, we left" is part of a story. With the name, or the sure words, it ends at once.
+STORY_TAIL = re.compile(rf"(^| )(?P<name>(jarvis|jervis) )?((?P<cancel>{_STORY_CANCEL})|(?P<sure>{_STORY_SURE})|(?P<end>{_STORY_ENDS}))"
+                        rf"(?P<after> (jarvis|jervis))?( (please|na|po))?$")
+# "... Hey Jarvis, open Notepad": at a sentence's start, with the opener, a request that ends the story and goes on after it.
+STORY_CALL = re.compile(r"(^|(?<=[.!?])\s+)(hey|hi|okay|ok|yo)[,\s]+(jarvis|jervis)\b[\s,.!?]*(?P<cmd>.*)$", re.IGNORECASE | re.DOTALL)
+
+
+def story_norm(text: str) -> str:
+    return " ".join(re.sub(r"[^\w\s']", " ", text.lower()).split())
+
+
+def story_word(text: str) -> tuple[str, str, str]:
+    """What a story part says about the story: (kind, the part's words for the story, a request after it). kind is
+    "cancel", "end" (now), "maybe" (end if nothing more is said), "call" (end, then the request goes on), or ""."""
+    if m := STORY_TAIL.search(story_norm(text)):
+        if m["cancel"]:
+            return "cancel", text, ""
+        return ("end" if m["sure"] or m["name"] or m["after"] else "maybe"), text, ""
+    if (m := STORY_CALL.search(text)) and m["cmd"].strip():
+        return "call", text[:m.start()].strip(), m["cmd"].strip()
+    return "", text, ""
+
+
 GIVE_UP = 62  # about 5s without speech after waking: nobody is talking
 MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV tops Groq's free 25 MB at 13 min)
 # Free voice's live words, in chunks: every 4 s is 15 requests a minute, leaving room in Groq's 20 for the request itself.
@@ -728,6 +772,8 @@ def cut_off_line(state: dict, why: str, now: float, title: str = "") -> tuple[st
     parts = [f"{sorry(title)} I got cut off{f' by {why}' if why else ''}."]
     if phase == "talking":
         parts.append("I lost what you were just saying.")
+    if phase == "story":
+        parts.append("Story mode stopped. What I wrote down is in the stories folder, and the orch didn't get it.")
     if said := last_heard(state.get("heard", ""), state.get("heard_at", 0), now):
         parts.append(said)
     if phase in ("talking", "window"):
@@ -1342,8 +1388,11 @@ class Ears:
     said_reach = ECHO_WORDS  # how much of `said` a clip can open with (strip_echo)
     window_from = 0.0  # when the clip being recorded began, if it follows a reply: from the mic, not worked out from its length
     barge, play_began, cut_rest = 0.0, 0.0, None  # when someone began talking over the reply; what's left of it, if it was nobody
+    story = None  # story mode's transcript file while it is on; see story_start
 
     def phase(self) -> str:
+        if self.story:
+            return "story"
         if self.on_chunk == self.wake_chunk or self.on_done == self.take_done:
             return "idle"
         return "talking" if self.voiced >= MIN_VOICED else "window"
@@ -1807,6 +1856,9 @@ class Ears:
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
         if clip is not None and woke and not sure:  # staying quiet: other people may be on the clip
             keep_clip(clip, transcript, text, *woke)
+        if text and STORY_START.fullmatch(story_norm(text)):
+            self.cut_rest, self.remind_next, self.routing_until = None, "", 0.0
+            return self.story_start()
         if text and (word := dismisses(text, self.said)):  # "later": nothing to the orch, the rest of a reply dropped,
             self.cut_rest, self.remind_next, self.routing_until = None, "", 0.0  # media back, the wake word next
             self.release()
@@ -1842,6 +1894,117 @@ class Ears:
             emit("nothing")
             self.after_turn()
             self.tried()  # such as "Jarvis, Jarvis", which leaves no words once the wake word is taken out
+
+    def story_start(self) -> None:
+        """Story mode on: the start cue, then every chunk goes to story_chunk until an end word, POST /story end or
+        cancel, the mic going off, or STORY_SILENT. Media stays paused, so a video isn't written into the story."""
+        if self.story:
+            return
+        self.wait_for_wake(keep=True)
+        self.paused += pause_media()
+        STORY_DIR.mkdir(parents=True, exist_ok=True)
+        self.story = STORY_DIR / time.strftime("%Y-%m-%d-%H%M%S.txt")
+        self.story.write_text("", encoding="utf-8")
+        self.story_parts, self.story_jobs, self.story_maybe, self.story_silent = [], [], False, 0
+        self.story_began = time.monotonic()
+        emit("story_on", file=str(self.story))
+        try:
+            self.play(*self.speech(STORY_ON)[:2])
+        except Exception as e:  # no voice: it records anyway, and the window says so
+            emit("caption", text=f"Story mode is on (my voice failed: {e}). Say that's it when you're done.")
+        self.vad.reset_states()
+        self.clip, self.voiced, self.quiet = [], 0, 0
+        self.on_chunk = self.story_chunk
+
+    def story_chunk(self, chunk: np.ndarray) -> None:
+        self.clip.append(chunk)
+        if self.is_speech(chunk):
+            self.voiced, self.quiet, self.story_silent = self.voiced + 1, 0, 0
+            self.last_speech = time.monotonic()
+            self.story_maybe = False  # they went on: that "that's it" was part of the story
+        else:
+            self.quiet, self.story_silent = self.quiet + 1, self.story_silent + 1
+        n, q = len(self.clip), self.quiet
+        if self.voiced >= MIN_VOICED:
+            if q >= STORY_LONG_PAUSE or (n >= STORY_MIN and q >= STORY_PAUSE) or (n >= STORY_CUT and q >= STORY_BREATH) or n >= STORY_MAX:
+                self.story_part()
+        elif q >= STORY_LONG_PAUSE:  # a click or a cough: only a moment of lead-in is kept
+            self.clip, self.voiced = self.clip[-STORY_BREATH:], 0
+        kind, request = self.story_heard()
+        if kind:
+            self.story_stop(send=kind != "cancel", then=request)
+        elif (self.story_maybe and q >= STORY_CONFIRM) or self.story_silent >= STORY_SILENT:
+            self.story_end()
+
+    def story_part(self) -> None:
+        clip = np.concatenate(self.clip)
+        self.clip, self.voiced = [], 0
+        self.story_jobs.append((STORY_EARS.submit(transcribe, clip), clip))
+
+    def story_heard(self, wait: bool = False) -> tuple[str, str]:
+        """Writes the parts heard so far to the file, in order (all of them with wait). Returns the first end word's kind
+        and any request after it; the parts after an end word are dropped."""
+        while self.story_jobs and (wait or self.story_jobs[0][0].done()):
+            future, clip = self.story_jobs.pop(0)
+            try:
+                text = future.result()
+            except Exception:
+                try:
+                    text = transcribe(clip)  # once more, now
+                except Exception as e:  # its audio is kept, and the story says where
+                    wav = self.story.with_name(f"{self.story.stem}-{len(self.story_parts) + 1}.wav")
+                    wav.write_bytes(wav_bytes(clip))
+                    text = f"[{len(clip) / RATE:.0f} s not heard ({why_lost(e)}); the audio is in {wav.name}]"
+            text = "" if phantom(text) else fix_words(text.strip())
+            if not text:
+                continue
+            kind, part, request = story_word(text)
+            if part:
+                self.story_parts.append(part)
+                with open(self.story, "a", encoding="utf-8") as f:
+                    f.write(part + "\n")
+                emit("status", text=f"Story: part {len(self.story_parts)}, {len(' '.join(self.story_parts).split())} words so far")
+            if kind in ("cancel", "end", "call"):
+                self.story_jobs = []
+                return kind, request
+            if kind == "maybe" and self.voiced < MIN_VOICED:  # nothing said since that part closed
+                self.story_maybe = True
+        return "", ""
+
+    def story_end(self) -> None:
+        """Ends the story from outside its words (POST /story end, the mic going off, STORY_SILENT): what was said up to
+        now counts, so the part in progress is heard too."""
+        if not self.story:
+            return
+        if self.voiced >= MIN_VOICED:
+            self.story_part()
+        kind, request = self.story_heard(wait=True)
+        self.story_stop(send=kind != "cancel", then=request)
+
+    def story_stop(self, send: bool = True, then: str = "") -> None:
+        """Story mode off: the whole story to the orch as one message (event story), unless cancelled. The file stays either
+        way. The end cue waits like any line; a request said after the story ("Hey Jarvis, ...") goes on next."""
+        if not self.story:
+            return
+        text, file = " ".join(self.story_parts).strip(), self.story
+        minutes = round((time.monotonic() - self.story_began) / 60, 1)
+        self.story, self.story_jobs, self.story_maybe = None, [], False
+        self.spoke.clear()  # that was the user telling it, not people talking
+        self.wait_for_wake()
+        if not send:
+            emit("story_cancelled", file=str(file))
+            cue = "Story cancelled. Nothing was sent, and what I wrote down is kept in the file."
+        elif not text:
+            emit("story_empty", file=str(file))
+            cue = "Story mode is off. I heard nothing to send."
+        else:
+            emit("story", text=text, words=len(text.split()), minutes=minutes, file=str(file))
+            cue = f"Got it, {len(text.split())} words. It's with the orch."
+        self.line(cue, first=True, asked=False, window=False)
+        if then:
+            self.heard_last, self.heard_at, self.saved_at = then, time.time(), 0.0
+            self.routing_until = time.monotonic() + ROUTE_WAIT
+            emit("heard", text=then)
 
     def close(self) -> None:
         """The follow-up window ran out with nothing said: the done sound, then back to the wake word."""
@@ -2397,6 +2560,8 @@ def main(commands: list[str]) -> None:
                     ears.feed(value)
                 except Exception as e:  # one failed request or training run must not stop the listening
                     emit("error", message=str(e))
+                    if ears.story:  # what was told is in its file; the orch gets what was heard of it
+                        ears.story_stop()
                     ears.wait_for_wake()
                 ears.save_state()
             continue
@@ -2436,8 +2601,19 @@ def main(commands: list[str]) -> None:
                 ears.wait_for_wake(keep=True)
                 ears.reply_by = time.monotonic() + REPLY_HOLD  # a video paused for the exchange stays paused for the reply
             continue
+        if value.startswith("story "):  # POST /story: start, end or cancel
+            what = value[6:]
+            if what == "start" and mic is None:
+                emit("caption", text="The microphone is off here, so story mode can't start.")
+            elif what == "start":
+                ears.story_start()
+            elif what == "end":
+                ears.story_end()
+            elif what == "cancel":
+                ears.story_stop(send=False)
+            continue
         if value == "listen":  # after "Say that again?": record the next sentence without the wake word
-            if not ears.queue and not ears.busy():
+            if not ears.queue and not ears.busy() and not ears.story:
                 ears.record(ears.request_done)
             continue
         if value in ("routed", "routed boss", "routed told"):  # voice.mjs answered the request just heard (its answer first)
@@ -2461,6 +2637,7 @@ def main(commands: list[str]) -> None:
             except Exception as e:  # no microphone, or Windows privacy settings block desktop apps
                 emit("error", message=f"Can't open the microphone: {e}")
         elif value == "off" and mic is not None:
+            ears.story_end()  # the voice moving to the other PC still sends the story told so far
             mic.close()
             mic = None
         if value == "enroll" and mic is not None:

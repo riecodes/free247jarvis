@@ -12,6 +12,7 @@
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
   scan   the real WASAPI and media session calls run on this machine (nothing is paused)
   data   only wake word clips are kept, and pruned; words.txt feeds the prompt; a prompt handed back goes nowhere
+  story  story mode writes each part down as heard, and ends on its words, a request, cancel, POST end or long silence
 """
 import json
 import os
@@ -1518,6 +1519,93 @@ def resend(folder: Path) -> None:
         assert events[0][0] == "caption"
 
 
+def story() -> None:
+    """Story mode: started by voice or POST; each part lands in the file as it is heard; pauses never end it; an end word,
+    a request after it, cancel, POST end and long silence each end it the right way."""
+    from concurrent.futures import Future
+    for said, start in [("Story mode.", True), ("Start story", True), ("Okay, start a story.", True), ("story time", True),
+                        ("Start story mode please", True), ("Tell the story worker to ship", False), ("story mode bug fix", False)]:
+        assert bool(listener.STORY_START.fullmatch(listener.story_norm(said))) == start, said
+    for text, kind in [("And we left. That's it.", "maybe"), ("I'm done, Jarvis.", "end"), ("End story.", "end"),
+                       ("Okay, stop the story.", "end"), ("Jarvis, that's it.", "end"), ("Tapos na.", "maybe"),
+                       ("Cancel story.", "cancel"), ("That's it, we won the round and went home.", ""),
+                       ("We told Jarvis to wait.", ""), ("So that was it. Hey Jarvis, open Notepad.", "call")]:
+        assert listener.story_word(text)[0] == kind, (text, listener.story_word(text))
+    assert listener.story_word("So that was it. Hey Jarvis, open Notepad.")[1:] == ("So that was it.", "open Notepad.")
+
+    def now(f, *a):  # each part heard at once, in order
+        fut = Future()
+        try:
+            fut.set_result(f(*a))
+        except Exception as e:
+            fut.set_exception(e)
+        return fut
+    loud, hush = np.full(1280, 3000, np.int16), np.zeros(1280, np.int16)
+
+    def telling(parts: list[str], after: int = listener.STORY_LONG_PAUSE, start: str = "start"):
+        """Starts a story, then says each part (2 s of speech, then STORY_LONG_PAUSE of quiet, `after` for the last), heard as that text."""
+        said, events, folder = iter(parts), [], Path(tempfile.mkdtemp())
+        with mock.patch.object(listener, "STORY_EARS", mock.Mock(submit=now)), mock.patch.object(listener, "STORY_DIR", folder), \
+                mock.patch.object(listener, "transcribe", lambda clip: next(said)), mock.patch.object(listener, "pause_media", lambda: []), \
+                mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))):
+            e = ears()
+            e.vad.predict = lambda chunk, **k: 0.9 if chunk.any() else 0.0
+            if start == "voice":
+                with mock.patch.object(listener, "transcribe", lambda clip: "Jarvis, story mode."):
+                    e.request_done(np.zeros(1, np.int16))
+            else:
+                e.story_start()
+            assert e.phase() == "story" and listener.STORY_ON in e.spoken
+            for i in range(len(parts)):
+                for _ in range(25):
+                    e.on_chunk(loud)
+                for _ in range(listener.STORY_LONG_PAUSE if i < len(parts) - 1 else after):
+                    e.on_chunk(hush)
+            files = list(folder.glob("*.txt"))
+            return e, events, files[0].read_text(encoding="utf-8") if files else ""
+
+    # A pause in the middle, then "that's it" with nothing after it: one message, the file written as it went.
+    e, events, text = telling(["Once upon a time.", "We won. That's it."], after=listener.STORY_CONFIRM, start="voice")
+    sent = [d for ev, d in events if ev == "story"]
+    assert len(sent) == 1 and sent[0]["text"] == "Once upon a time. We won. That's it." and sent[0]["words"] == 8, events
+    assert text == "Once upon a time.\nWe won. That's it.\n" and e.phase() == "idle" and not e.story
+    assert e.queue and e.queue[0][0].startswith("Got it, 8 words"), e.queue  # the end cue, once the user's turn is over
+    assert "heard" not in [ev for ev, _ in events]  # "story mode" itself went nowhere
+    # "That's it" and then more story: it goes on.
+    e, events, text = telling(["And that's it.", "Then we went home."])
+    assert e.phase() == "story" and "story" not in [ev for ev, _ in events] and text.count("\n") == 2
+    # POST /story end with a part still being said: that part counts too.
+    with mock.patch.object(listener, "transcribe", lambda clip: "The last bit."), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+            mock.patch.object(listener, "STORY_EARS", mock.Mock(submit=now)):
+        for _ in range(10):
+            e.on_chunk(loud)
+        e.story_end()
+    assert [d["text"] for ev, d in events if ev == "story"] == ["And that's it. Then we went home. The last bit."]
+    # A request after the story: the story first, then the request, as heard.
+    e, events, _ = telling(["Part one.", "So that was it. Hey Jarvis, open Notepad."])
+    went = [(ev, d.get("text")) for ev, d in events if ev in ("story", "heard")]
+    assert went == [("story", "Part one. So that was it."), ("heard", "open Notepad.")], went
+    # Cancel: nothing sent, the file kept.
+    e, events, text = telling(["Part one.", "Cancel story."])
+    assert "story" not in [ev for ev, _ in events] and "story_cancelled" in [ev for ev, _ in events] and "Part one." in text
+    # Ten minutes of silence sends what was told; a part that can't be heard keeps its audio and says so.
+    with mock.patch.object(listener, "STORY_SILENT", 100):
+        e, events, text = telling(["Part one."], after=100)
+    assert [d["text"] for ev, d in events if ev == "story"] == ["Part one."]
+
+    def deaf(clip):
+        raise RuntimeError("no network")
+    e, events, _ = telling(["Part one."])
+    with mock.patch.object(listener, "transcribe", deaf), mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), \
+            mock.patch.object(listener, "STORY_EARS", mock.Mock(submit=now)):
+        for _ in range(25):
+            e.on_chunk(loud)
+        story_file = e.story
+        e.story_end()
+    told = [d["text"] for ev, d in events if ev == "story"][0]
+    assert told.startswith("Part one. [2 s not heard") and list(story_file.parent.glob("*-2.wav")), told
+
+
 def main() -> None:
     video = object()
     mac()  # before the stand-ins below replace what it checks
@@ -1828,6 +1916,7 @@ def main() -> None:
     mic_names()
     mic_stall()
     staying_quiet()
+    story()
     print("ok")
 
 

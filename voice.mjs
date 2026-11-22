@@ -156,7 +156,7 @@ const LONG_NOTE = '(From the voice: this ran past 90 seconds in the listening wi
   'be people talking nearby rather than a request. If it is not one, say briefly that you heard a long stretch and ask ' +
   'whether to act on it.)'
 const send = (text, via) => {
-  if (via === 'mic') setAsked(Date.now())
+  if (via === 'mic' || via === 'story') setAsked(Date.now())
   show('sent', { text, via })
   const content = `${text}\n\n${board()}`  // so the orch answers without a turn of its own to look (about 10 s, 2026-11-13)
   return mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { via } } })
@@ -517,6 +517,13 @@ function startEars() {
     if (e.event === 'spoken' || e.event === 'partial') return
     if (e.event === 'quiet') quiet = e.on
     if (e.event === 'heard') heardSaid(e.text, e.long)
+    else if (e.event === 'story') {  // story mode ended: the whole telling as one message, straight to the orch
+      log(`story: ${e.words} words, ${e.minutes} min, ${e.file}`)
+      send(`(From the voice: story mode. The user told this in one go, ${e.words} words over ${e.minutes} min, also saved ` +
+        `in ${e.file}. It is one long story, not a list of requests: say in one short line that you have it, then do what ` +
+        `it asks for as a whole, or ask what to do with it.)\n\n${e.text}`, 'story')
+        .catch(() => showCaption(`I couldn't reach the orch with your story. It's saved in ${e.file}.`))
+    }
     else if (e.event === 'caption') {
       if (e.remind) showToast(e.text)  // the window already has this line as the reply
       else if (!e.looking) showCaption(e.text)
@@ -658,7 +665,7 @@ function saveSetting(key, value) {
 
 // POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /choice: a choice clicked in
 // the window, the same. POST /resend-last: the last thing the user said, sent again. POST /window: the window opened, or
-// brought to the front. POST /mic: on or off.
+// brought to the front. POST /mic: on or off. POST /story: start, end or cancel story mode.
 // GET and POST /settings: the window's settings panel.
 // GET /window and /events: the window and its live events, for this address only, so a web page can't read them
 // by pointing its own domain name at this machine.
@@ -711,6 +718,10 @@ const server = createServer((req, res) => {
       if (mic) (claim(), heldElsewhere = '')
       log(`mic ${text}`)
       ears.stdin.write(`${text}\n`)
+    } else if (req.url === '/story' && /^(start|end|cancel)$/.test(text)) {  // the /story skill
+      if (text === 'start' && !mic) return (res.writeHead(409), res.end(heldElsewhere ? `the voice is on ${heldElsewhere}` : 'the mic is off'))
+      log(`story ${text}`)
+      ears.stdin.write(`story ${text}\n`)
     } else if (req.url === '/heard' && text) await heardSaid(text)
     else if (req.url === '/window') {
       log('window asked for')

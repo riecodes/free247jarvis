@@ -21,6 +21,12 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **Story mode.** Say "Hey Jarvis, story mode" (or "start story"), or type `/story`, and tell something long: no wake
+  word, pauses never end it, and every part is written to `tmp/stories/<date-time>.txt` as it is heard. "End story",
+  "I'm done, Jarvis", or a plain "that's it" followed by 5 seconds of quiet sends the whole telling to the orch as one
+  message. "Hey Jarvis, ..." mid-story ends it the same way, then that request goes on. "Cancel story" sends nothing and
+  keeps the file. Ten minutes of silence sends what was told. `POST /story` with `start`, `end` or `cancel` does the same
+  from a script.
 - **It knows when you're done.** A small local model hears whether a request sounds finished, so a finished one
   goes after 2 seconds of quiet instead of 5, with no Groq request. Unsure, it waits as before.
 - **The double clap is off by default.** `CLAP=on` turns it on, and it now hears through a fan's or a PC's hum, which
