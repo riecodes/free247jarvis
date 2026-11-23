@@ -217,9 +217,18 @@ EARLY = ThreadPoolExecutor(1)
 TURN_LATE_GAP, TURN_LATE = 37, 0.7
 # FAST_END=on (2026-11-23), opt-in: the words decide an early end, and a resume window takes what comes after it. In the
 # 401 kept requests, an inner pause of 1.5 s or more is in 49% of them (383 pauses, about one a request); inner pauses of
-# 2 s or more last a median 2.56 s, p90 3.99 s, max 5.84 s, so the window is END_WAIT less the early end (4.5 s at 6 s).
-# 72.6% of requests are under 30 s; past FAST_MAX there is no early text, so a long dictation doesn't re-send itself.
-FAST_TEXT = 19  # chunks: 1.5 s of quiet before the words are judged; also the earliest an early end comes
+# 2 s or more last a median 2.56 s, p90 3.99 s, max 5.84 s, so the window (END_WAIT less the early end, 2.4 s at 6 s)
+# takes the rest of each. 72.6% of requests are under 30 s; past FAST_MAX there is no early text, so a long dictation
+# doesn't re-send itself.
+# Measured that day on the words of those requests (648 Haiku calls, pauses placed in the text by the share of speech
+# before them, since the kept text has no times): DONE on 80% of the 300 whose end is judged, so 52% of all requests go
+# sooner, 3.6 s after the last word (FAST_TEXT, 0.95 s of speech to text, 1.13 s for the judge: p90 1.28 s, 0.6% over
+# JUDGE_TIMEOUT). The words before a pause of 3 s or more read whole to it 3 to 6 times in 10, a sentence that ended
+# before more came, and a pause that outlasts the send splits the request: 7 or 8 of the 401. Sooner splits more, so
+# neither was done: the judge on a connection kept open (0.78 s) sends at 3.3 s and splits 11 to 15, and FAST_TEXT at 1 s
+# with it sends at 2.8 s and splits 16 to 20, at 2.4 checks a request for 1.4. One weakness: whole sentences and then a
+# cut-off start of the next ("... Kindly check") got DONE 7 times in 33.
+FAST_TEXT = 19  # chunks: 1.5 s of quiet before the words are judged
 FAST_MAX = 375  # chunks: 30 s
 JUDGE_MODEL, JUDGE_TIMEOUT = "claude-haiku-5-5", 2  # as front.mjs (thinking off); a slower answer counts as MORE
 JUDGE_URL = "https://api.anthropic.com/v1/messages"
@@ -1258,11 +1267,16 @@ def keep_clip(clip: np.ndarray, transcript: str, text: str, score: float, level:
 
 
 def judge_key() -> str:
-    """The Anthropic key for the words judge (FAST_END): ANTHROPIC_API_KEY, or the file ANTHROPIC_API_KEY_FILE names."""
+    """The Anthropic key for the words judge (FAST_END), read as voice.mjs reads it (secret): ANTHROPIC_API_KEY, or the file
+    ANTHROPIC_API_KEY_FILE names, which holds the key alone or an ANTHROPIC_API_KEY=... line (another app's .env). Only one
+    unbroken run of printable characters is a key: anything else fails as a header, and that error quotes it. 2026-11-23:
+    the whole of another app's .env was taken as the key, so no call could be made and its error held every line of it."""
     key, path = os.environ.get("ANTHROPIC_API_KEY", ""), os.environ.get("ANTHROPIC_API_KEY_FILE", "")
     if not key and path and Path(path).is_file():
-        key = Path(path).read_text(encoding="utf-8").strip()
-    return key
+        text = Path(path).read_text(encoding="utf-8-sig")
+        line = re.search(r"^ANTHROPIC_API_KEY=(.*)$", text, re.MULTILINE)
+        key = (line.group(1) if line else text).strip().strip('"')
+    return key if re.fullmatch(r"[\x21-\x7e]+", key) else ""
 
 
 def judge_text(text: str) -> str:
@@ -1291,8 +1305,9 @@ def judge_words(early, said: str = "") -> str:
         if not re.search(r"\w", text):
             return "MORE"
         return "DONE" if judge_text(text).startswith("DONE") else "MORE"
-    except Exception as e:
-        emit("status", text=f"Words not judged, waiting as before: {e}")
+    except Exception as e:  # never the error's own words: an HTTP library's can quote the request, key and all
+        why = f"HTTP {e.response.status_code}" if getattr(e, "response", None) is not None else type(e).__name__
+        emit("status", text=f"Words not judged, waiting as before: {why}")
         return "MORE"
 
 

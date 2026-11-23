@@ -642,7 +642,7 @@ const SETTINGS = [
   { key: 'LISTEN_AFTER', label: 'Listen after every line', hint: 'Off: only after a line that asks you something.', options: ['all', 'asked'] },
   { key: 'FOLLOWUP_SECONDS', label: 'Listening window', hint: 'Seconds it waits for you after speaking. 0: none.', min: 0, max: 120, fallback: '8' },
   { key: 'CLOSING_CUT', label: 'Send when you sound done', hint: 'A finished request goes after 2 s of quiet, not 5. Unsure, it waits.', options: ['on', 'off'] },
-  { key: 'FAST_END', label: 'Send when your words are whole', hint: 'About 2.5 s after your last word, and you can still go on. Needs an Anthropic key.', options: ['on', 'off'], fallback: 'off' },
+  { key: 'FAST_END', label: 'Send when your words are whole', hint: 'About 3.6 s after your last word, and you can still go on. Needs an Anthropic key.', options: ['on', 'off'], fallback: 'off' },
   { key: 'REMINDERS', label: 'Reminders', hint: 'After a greeting, one thing that is waiting on you.', options: ['on', 'off'] },
   { key: 'CLAP', label: 'Clap twice to wake it', hint: 'Works like "Hey Jarvis". Two snaps or tongue clicks wake it too.', options: ['on', 'off'], fallback: 'off' },
   { key: 'TALK_OVER', label: 'Talk over it to stop it', hint: 'Off: only "Hey Jarvis" stops a reply.', options: ['on', 'off'] },

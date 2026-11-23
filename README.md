@@ -22,8 +22,9 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 ## What's new
 
 - **It can send as soon as your words are whole.** With `FAST_END=on` and an Anthropic key, Claude Haiku reads your
-  words at each pause, and a whole request goes about 2.5 seconds after your last word instead of waiting out the
-  quiet. You can still go on: what you add follows as the rest of the same request. Off by default ("Good to know").
+  words at each pause, and a whole request goes about 3.6 seconds after your last word instead of waiting out the
+  quiet, which pays when `END_WAIT` is long. You can still go on: what you add follows as the rest of the same
+  request. Off by default ("Good to know").
 - **Only your voice.** With `VOICE_MATCH=on`, a request that is clearly not in your voice is dropped, by a small model
   on this PC and a voiceprint made from your kept requests. Unsure, it goes as before. Off by default ("Voice match").
 - **Story mode.** Say "Hey Jarvis, story mode" (or "start story"), or type `/story`, and tell something long: no wake
@@ -383,16 +384,22 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   text is ready when the wait ends (about a second sooner); if you go on talking, that try is dropped.
 - `FAST_END=on` (off by default; "Send when your words are whole" in the window's Settings) lets the words decide,
   not the sound. At 1.5 seconds of quiet, speech to text runs on what you've said so far and Claude Haiku answers one
-  word, DONE or MORE, for English, Tagalog or Taglish. On DONE the request goes at once, about 2.5 seconds after your
-  last word, and the mic stays open until `END_WAIT` of quiet in all: what you say then goes to the orch as the rest of
-  the same request, with the first part quoted beside it. On MORE, no answer in 2 seconds, an error or no key, the
-  rules above decide as before. It stays out of calls, people talking, story mode, voice training, requests past 30
-  seconds, and `FOLLOWUP_SECONDS=0`. It needs `ANTHROPIC_API_KEY`, sends the words of each request to Anthropic, and
-  costs one small Haiku request and one more speech-to-text request per pause of 1.5 seconds or more: about two a
-  request here, since half of 401 kept requests hold such a pause. Sound alone can't do this for this voice: at 2
-  seconds of quiet Smart Turn tells a pause from an ending with an AUC of 0.69, so every earlier bar cut more requests
-  short. Not measured yet: how often Haiku is right on real requests. A wrong DONE means the orch gets a request in
-  two parts, and may have started on the first.
+  word, DONE or MORE, for English, Tagalog or Taglish. On DONE the request goes at once, about 3.6 seconds after your
+  last word (the 1.5 of quiet, a second of speech to text, 1.1 for Haiku), and the mic stays open until `END_WAIT` of
+  quiet in all: what you say then goes to the orch as the rest of the same request, with the first part quoted beside
+  it. So it pays when `END_WAIT` is long: at 6 seconds it sends 2.4 sooner, at the default 4 hardly at all. On MORE, no
+  answer in 2 seconds, an error or no key, the rules above decide as before. It stays out of calls, people talking,
+  story mode, voice training, requests past 30 seconds, and `FOLLOWUP_SECONDS=0`. It needs `ANTHROPIC_API_KEY`, sends
+  the words of each request to Anthropic, and costs one small Haiku request and one more speech-to-text request per
+  pause of 1.5 seconds or more: about one and a half a request here, since half of 401 kept requests hold such a
+  pause. Sound alone can't do this for this voice: at 2 seconds of quiet Smart Turn tells a pause from an ending with
+  an AUC of 0.69, so every earlier bar cut more requests short. Measured on November 23 on the words of those 401
+  requests (648 Haiku calls, under 2 cents): Haiku says DONE on 80% of the 300 that end within 30 seconds, so 52% of
+  all requests go sooner, and with `END_WAIT=6` the average wait after the last word falls from 5.4 to 4.3 seconds. A
+  wrong DONE is a pause after words that read whole, with more to come: the words before a pause of 3 seconds or more
+  read whole to it 3 to 6 times in 10. Few pauses outlast 3.6 seconds, so about 2 requests in 100 reach the orch in
+  two parts (7 or 8 of the 401), and it may have started on the first. A sooner send means more of them (the numbers
+  are by `FAST_TEXT` in `listener.py`).
 - On waking it says a short line, never one of the last twenty, and the time of day when it's been a while. They're rendered once
   per voice, so they play at once with no turn of the boss, and you can talk over them. While you're with someone: only the
   chime. `GREETING=off` for the chime always.

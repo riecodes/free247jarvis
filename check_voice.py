@@ -1641,6 +1641,23 @@ def fast_end() -> None:
         e = ears()
         e.read_settings()
         assert e.fast
+    # The key as voice.mjs reads it: a file that holds it alone, or its line in another app's .env. A file with neither is
+    # no key (2026-11-23: all 46 lines of one went out as the key), and a failed call never repeats the error's own words.
+    folder = Path(tempfile.mkdtemp())
+    (folder / "alone").write_text("sk-test-alone\n", encoding="utf-8")
+    (folder / "env").write_bytes(b'OTHER=1\r\nANTHROPIC_API_KEY="sk-test-line"\r\nMORE=two words\r\n')
+    (folder / "none").write_text("OTHER=1\nMORE=two words\n", encoding="utf-8")
+    for name, want in (("alone", "sk-test-alone"), ("env", "sk-test-line"), ("none", "")):
+        with mock.patch.dict(listener.os.environ, {"ANTHROPIC_API_KEY": "", "ANTHROPIC_API_KEY_FILE": str(folder / name)}):
+            assert listener.judge_key() == want, (name, len(listener.judge_key()))
+    events = []
+
+    def leaky(text):
+        raise ValueError("Invalid header value: sk-secret")
+
+    with mock.patch.object(listener, "judge_text", leaky), mock.patch.object(listener, "emit", lambda event, **d: events.append((event, d))):
+        assert listener.judge_words(Done("open notepad")) == "MORE"
+    assert said(events, "Words not judged, waiting as before: ValueError") and "sk-secret" not in str(events), events
     # The window: DONE opens it. Silence goes back to the wake word with no chime and no nothing; the answer is not held by it.
     e, n, events, sent, calls, stubs = hear(lambda text: "DONE", window=True)
     assert e.idle_window and e.on_done == e.resume_done and e.give_up == e.end_quiet - e.ended[1] == listener.END_QUIET - n
