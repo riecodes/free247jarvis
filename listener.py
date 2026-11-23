@@ -215,6 +215,19 @@ EARLY = ThreadPoolExecutor(1)
 # A second look at 3 s of quiet with a lower bar: from the same requests, 0.7 there moved the average wait from 4.19 s to
 # 3.53 s with END_QUIET at 4 s; 0.5 cut 7.2% short, 0.3 7.5%.
 TURN_LATE_GAP, TURN_LATE = 37, 0.7
+# FAST_END=on (2026-11-23), opt-in: the words decide an early end, and a resume window takes what comes after it. In the
+# 401 kept requests, an inner pause of 1.5 s or more is in 49% of them (383 pauses, about one a request); inner pauses of
+# 2 s or more last a median 2.56 s, p90 3.99 s, max 5.84 s, so the window is END_WAIT less the early end (4.5 s at 6 s).
+# 72.6% of requests are under 30 s; past FAST_MAX there is no early text, so a long dictation doesn't re-send itself.
+FAST_TEXT = 19  # chunks: 1.5 s of quiet before the words are judged; also the earliest an early end comes
+FAST_MAX = 375  # chunks: 30 s
+JUDGE_MODEL, JUDGE_TIMEOUT = "claude-haiku-5-5", 2  # as front.mjs (thinking off); a slower answer counts as MORE
+JUDGE_URL = "https://api.anthropic.com/v1/messages"
+JUDGE_SYSTEM = ('You judge a voice request to an assistant. The words are what the speaker has said so far: speech to text, in '
+                'English, Tagalog or Taglish, with mistakes. Answer DONE if they are a whole request, answer or reply as they '
+                'stand ("yes", "A", "deploy the course site", a finished question). Answer MORE if they stop mid-sentence or '
+                'mid-thought (a trailing "and", "so", "kasi", "tapos", "yung", a missing object, a list still being built). '
+                'Answer with one word: DONE or MORE.')
 # Said on waking, with VOICE_TITLE after the comma. Rendered once per voice, in tmp/, so they play with no wait. Longer than
 # GREETING_MAX and it's skipped: it would talk over the request. No "Jarvis", and two words or more, so
 # strip_echo can tell one when the mic hears it. After GREETING_AWAY of nothing, the time of day leads.
@@ -353,6 +366,10 @@ def story_word(text: str) -> tuple[str, str, str]:
     return "", text, ""
 
 
+# VOICE_MATCH=on: a request whose voice scores under this bar against the user's voiceprint is someone else's, and is dropped.
+# It is the bar from 4 s of speech on; less speech gets a share of it (0.15 at 1 s), and under half a second nothing is judged.
+# 2026-11-23: at 0.3 the user's own 4 s cuts are dropped 0.5% of the time, strangers' 99% (the table is in voiceprint.py).
+VOICE_MATCH_MIN = 0.3
 GIVE_UP = 62  # about 5s without speech after waking: nobody is talking
 MAX_CLIP = 22500  # 30 min cap on one request; past 10 min it goes as Opus (WAV tops Groq's free 25 MB at 13 min)
 # Free voice's live words, in chunks: every 4 s is 15 requests a minute, leaving room in Groq's 20 for the request itself.
@@ -1240,6 +1257,45 @@ def keep_clip(clip: np.ndarray, transcript: str, text: str, score: float, level:
         emit("status", text=f"Voice data not kept: {e}")
 
 
+def judge_key() -> str:
+    """The Anthropic key for the words judge (FAST_END): ANTHROPIC_API_KEY, or the file ANTHROPIC_API_KEY_FILE names."""
+    key, path = os.environ.get("ANTHROPIC_API_KEY", ""), os.environ.get("ANTHROPIC_API_KEY_FILE", "")
+    if not key and path and Path(path).is_file():
+        key = Path(path).read_text(encoding="utf-8").strip()
+    return key
+
+
+def judge_text(text: str) -> str:
+    """One small Haiku call on the words so far, over plain HTTP (this venv has no Anthropic SDK). Raises on any failure."""
+    import requests
+
+    key = judge_key()
+    if not key:
+        raise RuntimeError("no ANTHROPIC_API_KEY")
+    body = {"model": JUDGE_MODEL, "max_tokens": 8, "thinking": {"type": "disabled"}, "system": JUDGE_SYSTEM,
+            "messages": [{"role": "user", "content": text}]}
+    reply = requests.post(JUDGE_URL, json=body, timeout=JUDGE_TIMEOUT, headers={
+        "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+    reply.raise_for_status()
+    return "".join(b.get("text", "") for b in reply.json().get("content", []) if b.get("type") == "text").strip()
+
+
+def judge_words(early, said: str = "") -> str:
+    """FAST_END: DONE when the judge says the words are a whole request, else MORE. Only an answer that starts with DONE
+    counts. `said`: its own last line, whose end can open the clip and is not the user's. No words, no call. An error, a
+    timeout or a late answer is MORE, so the request waits as it does today."""
+    try:
+        text = " ".join(strip_wake(early.result()).split())
+        if said:
+            text = strip_echo(text, said, True)
+        if not re.search(r"\w", text):
+            return "MORE"
+        return "DONE" if judge_text(text).startswith("DONE") else "MORE"
+    except Exception as e:
+        emit("status", text=f"Words not judged, waiting as before: {e}")
+        return "MORE"
+
+
 class ScribeLive:
     """Words on screen while the user speaks, from ElevenLabs Scribe Realtime. For show only: the request's text still
     comes from transcribe(), which got more Taglish right on the far-mic test, so a failure here loses nothing."""
@@ -1393,6 +1449,10 @@ class Ears:
     end_quiet = END_QUIET  # END_WAIT in .env
     listen_all, mic_open = True, True  # listen_all: a window after every line (LISTEN_AFTER=asked: only after a question)
     closing_gap, voiced_at, turn = round(CLOSING_GAP / 0.08), 0, None  # voiced_at: chunks in when the speech last was
+    fast = False  # FAST_END=on with a key, read in read_settings
+    fast_on = False  # this request is eligible for FAST_END (set in record)
+    verdict = None  # the words judge's future for this request's words, from FAST_TEXT of quiet
+    cut_early, resumed = False, False  # this request ended on DONE words; this clip is what a resume window heard
     greetings, greetings_at, greeted, last_greetings = (), {}, 0.0, []  # all rendered; greetings is empty with GREETING=off
     strict, talk_share = WAKE_STRICT, TALK_SHARE
     quiet_why, next_quiet = "", 0.0
@@ -1406,6 +1466,8 @@ class Ears:
     window_from = 0.0  # when the clip being recorded began, if it follows a reply: from the mic, not worked out from its length
     barge, play_began, cut_rest = 0.0, 0.0, None  # when someone began talking over the reply; what's left of it, if it was nobody
     story = None  # story mode's transcript file while it is on; see story_start
+    match = False  # VOICE_MATCH=on: each request clip is checked against the user's voiceprint (voiceprint.py)
+    match_bar = VOICE_MATCH_MIN  # a clip under this score is someone else
 
     def phase(self) -> str:
         if self.story:
@@ -1684,10 +1746,23 @@ class Ears:
         self.over_ratio = float(env.get("TALK_OVER_RATIO") or TALK_OVER_RATIO)
         self.listen_all = env.get("LISTEN_AFTER", "").lower() != "asked"
         self.claps = Claps(float(env.get("CLAP_LEVEL") or CLAP_LEVEL)) if env.get("CLAP", "").lower() == "on" else None
+        self.match, self.match_bar = env.get("VOICE_MATCH", "").lower() == "on", VOICE_MATCH_MIN
+        if self.match:  # the speaker model loads (and is fetched, once) on a thread now, not on the first request
+            try:
+                self.match_bar = float(env.get("VOICE_MATCH_MIN") or VOICE_MATCH_MIN)  # not a number: off, and it says so
+                import voiceprint
+                threading.Thread(target=voiceprint.warm, daemon=True).start()
+            except Exception as e:  # every request goes as before
+                self.match = False
+                emit("status", text=f"VOICE_MATCH is on but can't start, so off: {e}")
         self.followup = round(float(env.get("FOLLOWUP_SECONDS") or 8) / 0.08)  # in chunks; 0: off
         # 0 chunks: no cut-off.
         self.closing_gap = 0 if env.get("CLOSING_CUT", "").lower() == "off" else round(float(env.get("CLOSING_GAP") or CLOSING_GAP) / 0.08)
         self.end_quiet = round(float(env.get("END_WAIT") or END_QUIET * 0.08) / 0.08)
+        self.fast = env.get("FAST_END", "").lower() == "on"
+        if self.fast and not judge_key():  # the words judge needs a key; without one, today's rule alone
+            self.fast = False
+            emit("status", text="FAST_END is on but there is no ANTHROPIC_API_KEY: off")
         if env.get("GREETING", "").lower() == "off":
             self.greetings, self.greetings_at = (), {}
         elif not self.greetings:
@@ -1784,13 +1859,16 @@ class Ears:
         self.voiced_at, self.window_from, self.early = 0, 0.0, None
         self.cap = MAX_CLIP if self.woke and not self.sure else SHORT_CLIP
         self.ran_long = False
+        # FAST_END: not for a call, people talking, a staying-quiet wake, voice training or no follow-up window.
+        self.fast_on = self.fast and bool(self.followup) and not self.sure and self.on_done != self.take_done and not self.busy()
+        self.verdict, self.cut_early, self.resumed = None, False, False
         self.on_chunk = self.record_chunk
 
     def record_chunk(self, chunk: np.ndarray) -> None:
         self.clip.append(chunk)
         if self.is_speech(chunk):
             self.voiced, self.quiet = self.voiced + 1, 0
-            self.voiced_at, self.early = len(self.clip), None  # they went on: the early text is short of it
+            self.voiced_at, self.early, self.verdict = len(self.clip), None, None  # they went on: the early text and its verdict are short of it
             self.last_speech = time.monotonic()
             # From the first speech, so a false wake or an unused follow-up window costs nothing. Not voice training.
             if self.voiced == 1 and self.watching and not self.live and self.on_done != self.take_done:
@@ -1805,14 +1883,26 @@ class Ears:
         if self.cap < MAX_CLIP and len(self.clip) >= self.cap:  # see SHORT_CLIP
             emit("status", text="Long for a reply: recording to the pause, and the orch hears it may be people talking")
             self.cap, self.ran_long = MAX_CLIP, True
+        words = spoke and self.words_done()  # FAST_END: the judge said DONE, so the request goes now
         if (spoke and self.quiet >= self.end_quiet) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP \
                 or (spoke and self.quiet == self.closing_gap and self.sounds_done(TURN_SURE)) \
-                or (spoke and self.closing_gap and self.quiet == TURN_LATE_GAP and self.sounds_done(TURN_LATE)):
+                or (spoke and self.closing_gap and self.quiet == TURN_LATE_GAP and self.sounds_done(TURN_LATE)) or words:
             self.stop_live()
+            self.cut_early = bool(words)
+            if words:
+                emit("status", text=f"Words done after {self.quiet * CHUNK / RATE:.1f} s: sent, still listening for more")
             self.ended = (time.monotonic(), self.quiet)  # for the log: how long the quiet ran, and when the text came
             self.on_done(np.concatenate(self.clip) if spoke else None)
-        elif spoke and self.quiet == EARLY_TEXT and self.on_done != self.take_done and groq_room(2):  # not voice training
+        elif spoke and self.early is None and self.on_done != self.take_done and (  # not voice training
+                self.quiet == EARLY_TEXT or (self.fast_on and self.quiet == FAST_TEXT and len(self.clip) < FAST_MAX)) and groq_room(2):
             self.early = (EARLY.submit(transcribe, np.concatenate(self.clip)), len(self.clip))
+            began = self.window_from or time.monotonic() - len(self.clip) * CHUNK / RATE
+            # FAST_END: the judge reads that text, on the same thread. Only with speech after its own last word (as `late` in
+            # request_done): the echo of a greeting or a question is a whole sentence too, and would end the listening for it.
+            # ponytail: one EARLY thread, so a judge that runs to its 2 s timeout holds the next early text that long; a
+            # pool of its own if "Text ... after" in the log shows it.
+            if self.quiet < EARLY_TEXT and began + self.voiced_at * CHUNK / RATE > self.words_end + ECHO_ROOM:
+                self.verdict = EARLY.submit(judge_words, self.early[0], self.said if began < self.words_end + 2 else "")
 
     def sounds_done(self, sure: float) -> bool:
         """Smart Turn hears the request finished, at least `sure` (CLOSING_GAP above). Blocks for about 0.1 s; the mic's
@@ -1829,6 +1919,18 @@ class Ears:
             return False
         emit("status", text=f"Sounds done ({done:.2f} after {self.quiet * CHUNK / RATE:.1f} s): sent without waiting for the silence")
         return True
+
+    def words_done(self) -> bool:
+        """FAST_END: the judge read this request's words (from FAST_TEXT of quiet, no speech since) and said DONE."""
+        return bool(self.fast_on and self.verdict and self.quiet >= FAST_TEXT and self.verdict.done()
+                    and self.verdict.result() == "DONE")
+
+    def resume_done(self, clip: np.ndarray | None) -> None:
+        """The window after an early end: quiet goes back to the wake word with no sound; speech is the rest of the request."""
+        if clip is None:
+            return self.wait_for_wake(keep=True)  # media stays paused for the reply
+        self.resumed = True
+        self.request_done(clip)
 
     def early_text(self, early: tuple | None, clip: np.ndarray) -> str:
         """The text started at EARLY_TEXT of quiet, when nothing was said after it (else it was dropped); a failed one is
@@ -1848,7 +1950,16 @@ class Ears:
         self.play(*(CHIME_DOWN if clip is not None else CHIME_CLOSE), tail=0.1)  # heard you, or stopped listening
         woke, sure = self.woke, self.sure
         ran_long = self.ran_long
+        cut_early, resumed = self.cut_early, self.resumed  # FAST_END, read before any reset
         self.wait_for_wake(keep=clip is not None)  # first, so a failed transcription still leaves the ears listening
+        match = None
+        if self.match and clip is not None:  # the speaker check runs while the text is made, and is collected below
+            try:
+                import voiceprint
+                # Its own voice opens the clip and is not judged: the greeting, or the end of the reply before a window.
+                match = voiceprint.start(clip, self.match_bar, min(len(clip), max(0, int((self.words_end + ECHO_ROOM - began) * RATE))))
+            except Exception as e:  # sent as before
+                emit("status", text=f"Voice match: unsure, {e}")
         early, self.early = getattr(self, "early", None), None
         kept = keep_recent(clip) if clip is not None else None
         try:
@@ -1871,6 +1982,18 @@ class Ears:
         words = re.findall(r"\w+", text.lower())
         if set(words) <= set(re.findall(r"\w+", VOCAB.lower())) or phantom(text) or handed_back(text):
             text = ""  # nothing, Whisper's prompt handed back, or what Whisper says for noise
+        rejected = False
+        if match is not None:  # clearly someone else's voice: dropped as a clip with no words is, and still resendable (keep_recent)
+            try:
+                verdict, score, line = match.result(timeout=5)
+            except Exception as e:  # a model that hangs must not hold this request, nor 5 s of each one after it
+                verdict, score, line = "unsure", None, f"Voice match: no answer in 5 s ({e or 'timed out'}), so off until the settings are saved or the voice restarts"
+                self.match = False
+            emit("status", text=line)
+            if verdict == "other" and text:
+                rejected, text = True, ""
+                emit("caption", text=f"That didn't sound like you (voice match {score:.2f}), so nothing was sent. "
+                                     "If it was you, say it again, or send it anyway with POST /resend-last.")
         if clip is not None and woke and not sure:  # staying quiet: other people may be on the clip
             keep_clip(clip, transcript, text, *woke)
         if text and story_asked(text):  # by the wake word or in a follow-up window; never mid-story (story_chunk has it)
@@ -1894,13 +2017,21 @@ class Ears:
             self.cut_rest = None
             self.heard_last, self.heard_at, self.saved_at = fixed, time.time(), 0.0  # saved_at: on disk right away
             self.routing_until = time.monotonic() + ROUTE_WAIT
-            emit("heard", text=fixed, **({"raw": text} if fixed != text else {}), **({"long": True} if ran_long else {}))  # raw: for the window
-        elif clip is not None and re.search(r"\bwake\W+up\b", transcript, re.IGNORECASE):  # "Jarvis, wake up": listen for the request
+            emit("heard", text=fixed, **({"raw": text} if fixed != text else {}), **({"long": True} if ran_long else {}),
+                 **({"more": True} if resumed else {}))  # raw: for the window; more: the rest of a request sent already
+            if cut_early and not sure and self.fast and self.followup and not self.busy():  # FAST_END: the rest, up to END_WAIT in all
+                self.record(self.resume_done, give_up=max(1, self.end_quiet - self.ended[1]))
+                self.idle_window, self.window_from = True, time.monotonic()  # a line may go out now while nobody speaks
+        elif clip is not None and not rejected and re.search(r"\bwake\W+up\b", transcript, re.IGNORECASE):  # "Jarvis, wake up": listen for the request
             self.woke, self.sure = woke, sure
             emit("status", text="Awake: listening for the request")
             self.play(*CHIME_UP, tail=0.05, drain=False)
             self.record(self.request_done)
         else:
+            if resumed:  # the rest of a request with no words (noise, a phantom): quiet, nothing released or answered
+                if self.watching:
+                    emit("nothing")  # the window: clears the live words that clip started
+                return
             if self.cut_rest:  # it stopped for nobody: the rest of the reply, so a false alarm costs a pause and no words
                 (rest, rate, turn), self.cut_rest = self.cut_rest, None
                 emit("status", text="Nobody was talking over it: back to the reply")
@@ -1910,7 +2041,8 @@ class Ears:
             self.release()  # a false wake: the video is back at once
             emit("nothing")
             self.after_turn()
-            self.tried()  # such as "Jarvis, Jarvis", which leaves no words once the wake word is taken out
+            if not rejected:  # not a rejected voice: that is someone else, not a wake word the user is looking for
+                self.tried()  # such as "Jarvis, Jarvis", which leaves no words once the wake word is taken out
 
     def story_start(self) -> None:
         """Story mode on: the start cue, then every chunk goes to story_chunk until an end word, POST /story end or

@@ -251,11 +251,12 @@ try {
   // The router, end to end with a stand-in Jev: progress finds the worker's line, from either machine, with its age; a topic
   // with no line, or a plain status, doesn't use the bank. Lines and ages are rendered ahead, and what waits is passed on.
   const { createServer } = await import('node:http')
-  let jevSays = 'progress', haikuCalls = 0
+  let jevSays = 'progress', haikuCalls = 0, asked = 0  // asked: of Jev or Haiku, either one
   // Also a stand-in Haiku, at /haiku: with the board it knows only "research", and says NOT_IN_NOTES to anything else.
   const jev = createServer((req, res) => {
     let body = ''
     req.on('data', d => { body += d })
+    asked++
     if (req.url === '/haiku') haikuCalls++
     req.on('end', () => {
       const ask = req.url === '/haiku' ? JSON.parse(body) : null
@@ -274,7 +275,9 @@ try {
   rmSync(IN, { force: true })
   writeFileSync(join(BANK, 'OtherPC', 'status.jsonl'), `${row('vlog', 'The vlog is rendering.', 2.5)}\n`)
   const STUB2 = join(TMP, 'stub2.py')
-  writeFileSync(STUB2, `import sys\nfor line in sys.stdin:\n    open(${JSON.stringify(IN)}, "a", encoding="utf-8").write(line)\n`)
+  // It writes down what the voice tells it; when the mic goes on, it says the rest of a request (FAST_END's `more`).
+  writeFileSync(STUB2, `import sys\nfor line in sys.stdin:\n    open(${JSON.stringify(IN)}, "a", encoding="utf-8").write(line)
+    if line.strip() == "on":\n        print('{"event":"heard","text":"and tell me when it is live","more":true}', flush=True)\n`)
   const port3 = PORT + 2
   const router = spawn('node', ['voice.mjs'], {
     cwd: HERE, stdio: ['pipe', 'pipe', 'ignore'],
@@ -392,6 +395,20 @@ try {
     assert.match(said8[2], /^end Done[^\t]*\tAbout your earlier request:$/, said8.join(' | '))  // two in, no topic: only if needed
     assert.match(unnamed.result.content[0].text, /pass re/)
     assert.match(said8[3], /^tell About the vlog: it renders[^\t]*$/, said8.join(' | '))  // it named its topic itself
+    // FAST_END: a request went out as soon as its words were whole, and the user went on. The rest (more) skips the
+    // router, where half a sentence could pass for room talk, and reaches the orch with the first part beside it.
+    await heard('deploy the course site')
+    const asked9 = asked
+    await fetch(`http://127.0.0.1:${port3}/mic`, { method: 'POST', body: 'on' })
+    const rest = (async () => {
+      for (;;) {
+        const m = JSON.parse((await out.next()).value)
+        if (m.method === 'notifications/claude/channel' && /went on after a pause/.test(m.params.content)) return m.params.content
+      }
+    })()
+    const got = await Promise.race([rest, sleep(5000).then(() => '')])
+    assert.match(got, /just before, "deploy the course site", was taken as a whole request then[^)]*\) and tell me when it is live\n/, got)
+    assert.strictEqual(asked, asked9, 'the rest of a request is not sorted again')
   } finally {
     router.stdin.end()
     router.kill()

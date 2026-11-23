@@ -21,6 +21,11 @@ says English words), and so does the pro voice. When a terminal finishes, the bo
 
 ## What's new
 
+- **It can send as soon as your words are whole.** With `FAST_END=on` and an Anthropic key, Claude Haiku reads your
+  words at each pause, and a whole request goes about 2.5 seconds after your last word instead of waiting out the
+  quiet. You can still go on: what you add follows as the rest of the same request. Off by default ("Good to know").
+- **Only your voice.** With `VOICE_MATCH=on`, a request that is clearly not in your voice is dropped, by a small model
+  on this PC and a voiceprint made from your kept requests. Unsure, it goes as before. Off by default ("Voice match").
 - **Story mode.** Say "Hey Jarvis, story mode" (or "start story"), or type `/story`, and tell something long: no wake
   word, pauses never end it, and every part is written to `tmp/stories/<date-time>.txt` as it is heard. "End story",
   "I'm done, Jarvis", or a plain "that's it" followed by 5 seconds of quiet sends the whole telling to the orch as one
@@ -376,6 +381,18 @@ boss -> SendMessage to t2                  "tell terminal 2 ..."
   sixth of a second. Its languages include English but not Tagalog; those numbers are from English and Taglish requests both. `CLOSING_GAP=` sets the pause,
   `CLOSING_CUT=off` leaves it all to the silence. Speech to text starts in the background at 2 seconds of quiet, so the
   text is ready when the wait ends (about a second sooner); if you go on talking, that try is dropped.
+- `FAST_END=on` (off by default; "Send when your words are whole" in the window's Settings) lets the words decide,
+  not the sound. At 1.5 seconds of quiet, speech to text runs on what you've said so far and Claude Haiku answers one
+  word, DONE or MORE, for English, Tagalog or Taglish. On DONE the request goes at once, about 2.5 seconds after your
+  last word, and the mic stays open until `END_WAIT` of quiet in all: what you say then goes to the orch as the rest of
+  the same request, with the first part quoted beside it. On MORE, no answer in 2 seconds, an error or no key, the
+  rules above decide as before. It stays out of calls, people talking, story mode, voice training, requests past 30
+  seconds, and `FOLLOWUP_SECONDS=0`. It needs `ANTHROPIC_API_KEY`, sends the words of each request to Anthropic, and
+  costs one small Haiku request and one more speech-to-text request per pause of 1.5 seconds or more: about two a
+  request here, since half of 401 kept requests hold such a pause. Sound alone can't do this for this voice: at 2
+  seconds of quiet Smart Turn tells a pause from an ending with an AUC of 0.69, so every earlier bar cut more requests
+  short. Not measured yet: how often Haiku is right on real requests. A wrong DONE means the orch gets a request in
+  two parts, and may have started on the first.
 - On waking it says a short line, never one of the last twenty, and the time of day when it's been a while. They're rendered once
   per voice, so they play at once with no turn of the boss, and you can talk over them. While you're with someone: only the
   chime. `GREETING=off` for the chime always.
@@ -486,6 +503,44 @@ The free voice mispronounces a word? Put `# say:` and its sounds after it in `wo
 (`vlog  # say: vlˈɒɡ`, one syllable where it said "vee-log"). Plurals and "-ing" follow. Print what it says now with
 `.venv\Scripts\python -c "from kokoro_onnx.tokenizer import Tokenizer; print(Tokenizer().phonemize('vlog', 'en-gb'))"`.
 
+## Voice match (optional)
+
+Off unless you choose it: `VOICE_MATCH=on` in `.env`, or "Only my voice" in the window's Settings. A request that is
+clearly not in your voice is then dropped: nothing goes to the orch, the window says so with its score, and
+`POST /resend-last` sends it anyway.
+
+It needs a voiceprint, made from your kept requests (so `VOICE_DATA=on` for a while first):
+
+```
+.venv\Scripts\python voiceprint.py enroll
+```
+
+That reads the kept clips past their greeting, leaves out the ones that aren't the main voice (a video, someone
+else), and saves 192 numbers to `%LOCALAPPDATA%\free247jarvis\voiceprint.npz`, next to the voice data: outside git and
+any synced folder, so each PC makes its own. Run it again after a new mic or room. Delete the file to erase it.
+
+Each request is compared with it on this PC, on the processor, in about a tenth of a second while speech to text
+runs: [3D-Speaker](https://github.com/modelscope/3D-Speaker) CAM++ (Apache-2.0, 28 MB, downloaded once from the
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) releases and checked against a pinned SHA-256). Only the speech
+is compared, never Jarvis's own voice at the start of a clip, and nothing is uploaded.
+
+How sure it is depends on how much was said. Measured 2026-11-23 on 330 kept requests, each half's voiceprint scoring
+the other half, against 22 strangers from LibriSpeech:
+
+| Speech | You, dropped | A stranger, dropped |
+| --- | --- | --- |
+| 0.5 s | 0.9% | 63% |
+| 1 s | 0.4% | 89% |
+| 2 s | 0.4% | 97% |
+| 4 s or more | 0.5% | 99% |
+
+Under half a second of speech nothing is judged, so someone else's bare "yes" can still get through. The strangers
+were on other mics: someone in your room, on your mic, may score nearer to you. A clone of your voice passes. Of the
+last 50 things heard that morning it dropped 3: Jarvis's own voice twice, and a one-word sound. Unsure in any way (no
+voiceprint, too little speech, the model missing or failing, no answer in 5 seconds): the request goes as before.
+`VOICE_MATCH_MIN=` moves the bar (0.3; shorter speech gets a share of it), and `tmp\voice.log` shows each request's
+score as "Voice match".
+
 ## Check
 
 `.venv\Scripts\python check_boss.py` runs end to end against real sessions and prints
@@ -513,6 +568,7 @@ free247jarvis/
   gemini.py      trial: listener.py with Gemini Live hearing the end and answering small talk
   words.txt      words speech to text should spell right
   mishears.py    lists likely mishears from the voice data, for review
+  voiceprint.py  voice match: makes your voiceprint, and scores each request against it
   spawn.ps1      opens worker terminals t1 to t6 in their grid cells
   spawn.sh       the same on macOS, without the grid
   gui.ps1        screenshots, typing, keys, and clicks for Windows apps

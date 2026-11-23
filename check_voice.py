@@ -12,7 +12,9 @@
   rules  rules.mjs picks say, late or tell, and knows what asks for a held line
   scan   the real WASAPI and media session calls run on this machine (nothing is paused)
   data   only wake word clips are kept, and pruned; words.txt feeds the prompt; a prompt handed back goes nowhere
+  fast   FAST_END: the words decide an early end, and a resume window takes the rest; no key, followup 0, a call or off change nothing
   story  story mode writes each part down as heard, and ends on its words, a request, cancel, POST end or long silence
+  match  VOICE_MATCH: someone else's voice is dropped with a note, nothing sent, the clip still resendable; unsure or off is as before
 """
 import json
 import os
@@ -1519,6 +1521,157 @@ def resend(folder: Path) -> None:
         assert events[0][0] == "caption"
 
 
+def fast_end() -> None:
+    """FAST_END: the words decide an early end from FAST_TEXT of quiet, MORE, an error or a timeout wait as today, and a
+    resume window takes the rest up to END_WAIT in all. The judge and speech to text are stubbed; no key, followup 0, a
+    call, or off changes nothing."""
+    chunk = np.ones(listener.CHUNK, np.int16)
+
+    class Done:  # a future that is ready at once
+        def __init__(self, value):
+            self.value = value
+
+        def done(self):
+            return True
+
+        def result(self):
+            return self.value
+
+    class Pending:  # the judge still thinking
+        def done(self):
+            return False
+
+        def result(self):
+            raise RuntimeError("not yet")
+
+    def hear(judge, window=False, call=False, fast=True, followup=100, pending=False, speech=listener.TURN_SKIP, echo=False):
+        """Speech, then quiet until the request goes (or the window's heard event). Returns the ears, the chunks of quiet,
+        the events, the requests sent, the judge's calls, and the stubs, which stay on until the caller closes them."""
+        import contextlib
+
+        events, sent, calls = [], [], []
+
+        def judged(text):
+            calls.append(text)
+            return judge(text)
+
+        stubs = contextlib.ExitStack()
+        stubs.enter_context(mock.patch.object(listener, "transcribe", lambda clip: "open notepad"))
+        stubs.enter_context(mock.patch.object(listener, "judge_text", judged))
+        stubs.enter_context(mock.patch.object(listener.EARLY, "submit", lambda fn, *a: Pending() if pending and fn is listener.judge_words else Done(fn(*a))))
+        stubs.enter_context(mock.patch.object(listener, "groq_room", lambda spare: True))
+        stubs.enter_context(mock.patch.object(listener, "in_call", lambda: call))
+        stubs.enter_context(mock.patch.object(listener, "keep_recent", lambda clip: None))
+        stubs.enter_context(mock.patch.object(listener, "emit", lambda event, **d: events.append((event, d))))
+        e = ears()
+        e.fast, e.followup, e.closing_gap, e.turn = fast, followup, 0, None
+        e.record(e.request_done if window else sent.append)
+        if echo:  # its own line is still ending: what the mic hears is that, not the user
+            e.said, e.words_end = "Should I deploy it now?", listener.time.monotonic() + 60
+        e.vad.predict = lambda *a, **k: 0.9
+        for _ in range(speech):
+            e.on_chunk(chunk)
+        e.vad.predict = lambda *a, **k: 0.0
+        n = 0
+        while n < 200 and not sent and not any(ev == "heard" for ev, _ in events):
+            e.on_chunk(chunk)
+            n += 1
+        return e, n, events, sent, calls, stubs
+
+    def said(events, text):
+        return any(ev == "status" and text in d["text"] for ev, d in events)
+
+    # DONE: the request goes at the first chunk after the verdict (FAST_TEXT of quiet), one status line, and the judge saw the words.
+    e, n, events, sent, calls, stubs = hear(lambda text: "DONE")
+    stubs.close()
+    assert n == listener.FAST_TEXT + 1 and len(sent) == 1 and said(events, "Words done after"), n
+    assert calls == ["open notepad"], calls
+
+    def boom(text):
+        raise RuntimeError("boom")
+
+    def slow(text):
+        raise TimeoutError("slow")
+
+    # MORE, an error, and a timeout wait as today: the silence decides (END_QUIET, as closing_cut's checks without Smart Turn).
+    for judge in (lambda text: "MORE", lambda text: "done", boom, slow):
+        e, n, events, sent, calls, stubs = hear(judge)
+        stubs.close()
+        assert n == listener.END_QUIET and len(sent) == 1 and not said(events, "Words done"), (n, calls)
+    e, n, events, sent, calls, stubs = hear(slow)
+    stubs.close()
+    assert said(events, "Words not judged"), events
+    # Speech resuming before the verdict drops it: the judge is still out when the mic hears the words go on.
+    e = ears()
+    e.fast, e.followup, e.closing_gap, e.turn = True, 100, 0, None
+    sent = []
+    with mock.patch.object(listener, "transcribe", lambda clip: "open notepad"), mock.patch.object(listener, "in_call", lambda: False), \
+            mock.patch.object(listener, "groq_room", lambda spare: True), mock.patch.object(listener, "emit", lambda *a, **k: None), \
+            mock.patch.object(listener.EARLY, "submit", lambda fn, *a: Pending() if fn is listener.judge_words else Done(fn(*a))):
+        e.record(sent.append)
+        e.vad.predict = lambda *a, **k: 0.9
+        for _ in range(listener.TURN_SKIP):
+            e.on_chunk(chunk)
+        e.vad.predict = lambda *a, **k: 0.0
+        for _ in range(listener.FAST_TEXT + 2):
+            e.on_chunk(chunk)
+        assert e.verdict is not None and not sent
+        e.vad.predict = lambda *a, **k: 0.9
+        e.on_chunk(chunk)
+        assert e.verdict is None and e.early is None
+    # Off, no key, followup 0, a call: the judge is never asked and the silence decides, as today. The same with nothing
+    # heard after its own last word (its echo is a whole sentence too), and past FAST_MAX (a long dictation).
+    for kw in ({"fast": False}, {"followup": 0}, {"call": True}, {"echo": True}, {"speech": listener.FAST_MAX}):
+        e, n, events, sent, calls, stubs = hear(lambda text: "DONE", **kw)
+        stubs.close()
+        assert n == listener.END_QUIET and not calls and len(sent) == 1, (kw, n, calls)
+    # The end of its own line at the start of the words is taken out before the judge reads them; all echo, no call.
+    asked = []
+    with mock.patch.object(listener, "judge_text", lambda text: asked.append(text) or "DONE"):
+        assert listener.judge_words(Done("Hey Jarvis, yes or no. Yes, do it."), "Deploy it now, yes or no?") == "DONE"
+        assert listener.judge_words(Done("Deploy it now, yes or no?"), "Deploy it now, yes or no?") == "MORE"
+    assert asked == ["Yes, do it."], asked
+    with mock.patch.dict(listener.os.environ, {"FAST_END": "on", "ANTHROPIC_API_KEY": "", "ANTHROPIC_API_KEY_FILE": "", "GREETING": "off"}):
+        events = []
+        with mock.patch.object(listener, "emit", lambda event, **d: events.append((event, d))):
+            e = ears()
+            e.read_settings()
+        assert not e.fast and said(events, "no ANTHROPIC_API_KEY"), events
+    with mock.patch.dict(listener.os.environ, {"FAST_END": "on", "ANTHROPIC_API_KEY": "test-key", "GREETING": "off"}):
+        e = ears()
+        e.read_settings()
+        assert e.fast
+    # The window: DONE opens it. Silence goes back to the wake word with no chime and no nothing; the answer is not held by it.
+    e, n, events, sent, calls, stubs = hear(lambda text: "DONE", window=True)
+    assert e.idle_window and e.on_done == e.resume_done and e.give_up == e.end_quiet - e.ended[1] == listener.END_QUIET - n
+    first = [d for ev, d in events if ev == "heard"]
+    assert len(first) == 1 and "more" not in first[0]
+    e.routing_until = 0.0
+    assert not e.user_turn()  # a line can go out now: nobody is speaking into the window
+    played = len(e.played)
+    for _ in range(e.give_up):
+        e.on_chunk(chunk)
+    assert e.on_chunk == e.wake_chunk and len(e.played) == played and not any(ev == "nothing" for ev, _ in events)
+    # Speech in the window is the rest of the request: heard again with more, and it can end early and open another window.
+    stubs.close()
+    e, n, events, sent, calls, stubs = hear(lambda text: "DONE", window=True)
+    e.vad.predict = lambda *a, **k: 0.9
+    for _ in range(3):
+        e.on_chunk(chunk)
+    e.vad.predict = lambda *a, **k: 0.0
+    for _ in range(listener.END_QUIET + 2):
+        e.on_chunk(chunk)
+        if sum(1 for ev, _ in events if ev == "heard") == 2:
+            break
+    heard = [d for ev, d in events if ev == "heard"]
+    assert len(heard) == 2 and heard[1].get("more") is True and e.idle_window, heard
+    # Off: the same request with FAST_END off opens no window at all.
+    stubs.close()
+    e, n, events, sent, calls, stubs = hear(lambda text: "DONE", window=True, fast=False)
+    stubs.close()
+    assert not e.idle_window and e.on_done != e.resume_done
+
+
 def story() -> None:
     """Story mode: started by voice or POST; each part lands in the file as it is heard; pauses never end it; an end word,
     a request after it, cancel, POST end and long silence each end it the right way."""
@@ -1638,6 +1791,64 @@ def story() -> None:
         e.story_end()
     told = [d["text"] for ev, d in events if ev == "story"][0]
     assert told.startswith("Part one. [2 s not heard") and list(story_file.parent.glob("*-2.wav")), told
+
+
+def voice_match() -> None:
+    """VOICE_MATCH: a request clip from someone else is dropped with a note and nothing is sent; the clip stays resendable.
+    Unsure, and the switch off, go on as before. The speaker score itself is stubbed (it needs the model)."""
+    import voiceprint
+    from concurrent.futures import Future
+    recent = Path(tempfile.mkdtemp())
+
+    def run(match: bool, verdict: str = "same", score: float | None = 0.9, said: str = "Yes, open Notepad.", replied: bool = False, **stub):
+        events, done = [], Future()
+        done.set_result((verdict, score, f"Voice match: {verdict} {score or 0:.2f} over 1.0 s of speech"))
+        start = mock.Mock(**(stub or {"return_value": done}))
+        with mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))), mock.patch.object(listener, "transcribe", lambda clip: said), \
+                mock.patch.object(listener, "recent_dir", lambda: recent), mock.patch.object(voiceprint, "start", start):
+            e = ears()
+            e.match, e.match_bar = match, 0.3
+            if replied:  # its own reply ended just now, half a second into this clip
+                e.words_end = listener.time.monotonic() - 0.5
+            e.request_done(np.full(16000, 3000, np.int16))
+        return e, events, start
+
+    # The bar depends on the speech in the clip: 0.05 at half a second, 0.15 at 1 s, 0.25 at 2 s, 0.3 from 4 s (2026-11-23 table).
+    assert [round(voiceprint.bar_for(secs, 0.3), 2) for secs in (0.5, 1, 2, 4, 9)] == [0.05, 0.15, 0.25, 0.3, 0.3]
+    # Switch off: the check never runs, and the request goes on as before.
+    e, events, start = run(False)
+    assert not start.called and ("heard", {"text": "Yes, open Notepad."}) in events, events
+    # Someone else (0.21): nothing is sent, the window shows the score, and no "looking" tries are counted.
+    e, events, start = run(True, "other", 0.21, said="Yes.")
+    assert start.called and not [1 for ev, _ in events if ev == "heard"], events
+    assert any(ev == "caption" and "0.21" in d["text"] for ev, d in events) and not e.tries, events
+    assert ("status", {"text": "Voice match: other 0.21 over 1.0 s of speech"}) in events, events
+    # Still resendable: the newest kept clip goes again as a request, and is not judged a second time.
+    again = []
+    with mock.patch.object(listener, "emit", lambda ev, **d: again.append((ev, d))), mock.patch.object(listener, "recent_dir", lambda: recent):
+        e.resend()
+    assert ("heard", {"text": "Yes."}) in again, again
+    # Unsure, or the user: sent as before, no note about a voice. The whole clip is judged: nothing of its own opens it.
+    for verdict, score in [("unsure", None), ("same", 0.9)]:
+        e, events, start = run(True, verdict, score, said="Yes, open Notepad.")
+        assert ("heard", {"text": "Yes, open Notepad."}) in events and start.call_args[0][2] == 0, (verdict, events)
+        assert not any(ev == "caption" and "sound like you" in d["text"] for ev, d in events), events
+    # The check itself failing to start: sent as before, with one line in the log.
+    e, events, start = run(True, side_effect=RuntimeError("no model"))
+    assert ("heard", {"text": "Yes, open Notepad."}) in events and ("status", {"text": "Voice match: unsure, no model"}) in events, events
+    # After a reply, the clip opens with the reply's own last words: that stretch (and ECHO_ROOM past it) is not judged.
+    e, events, start = run(True, replied=True)
+    assert 0.7 * 16000 < start.call_args[0][2] < 0.9 * 16000, start.call_args
+    # No answer in 5 s: sent as before, and the match turns itself off, so the next requests don't each wait 5 s for it.
+    e, events, start = run(True, return_value=mock.Mock(result=mock.Mock(side_effect=TimeoutError())))
+    assert ("heard", {"text": "Yes, open Notepad."}) in events and not e.match, events
+    # A VOICE_MATCH_MIN that is not a number: off, with a line in the log, and the settings are still read.
+    with mock.patch.dict(listener.os.environ, {"VOICE_MATCH": "on", "VOICE_MATCH_MIN": "high", "GREETING": "off"}):
+        events = []
+        with mock.patch.object(listener, "emit", lambda ev, **d: events.append((ev, d))):
+            e = ears()
+            e.read_settings()
+        assert not e.match and any("can't start" in d.get("text", "") for _, d in events), events
 
 
 def main() -> None:
@@ -1950,7 +2161,9 @@ def main() -> None:
     mic_names()
     mic_stall()
     staying_quiet()
+    fast_end()
     story()
+    voice_match()
     print("ok")
 
 

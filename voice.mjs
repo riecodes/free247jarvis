@@ -379,8 +379,16 @@ const toBoss = text => send(text, 'mic').then(() => 'boss')
 // "restart all the workers" got "switching Barker's main app waits on your A or B"). `routed told` when the answer just
 // read the waiting lines: the reminder would repeat one. long: past 90 s without the wake word, so the orch judges and
 // the router doesn't guess.
-function heardSaid(text, long = false) {
-  const routed = long ? toBoss(`${LONG_NOTE} ${text}`)
+// more (FAST_END in listener.py): a request went out as soon as its words sounded whole, and the user then went on. The
+// rest goes straight to the orch with what came before it, so no router takes half a sentence for a new request. The
+// orch may not have seen the first part (an answer from the board, small talk), so it is quoted whole.
+let heardLast = ''
+const moreNote = first => `(From the voice: the user went on after a pause. What they said just before, "${first.replace(/["\s]+/g, ' ').trim()}", ` +
+  'was taken as a whole request then, and this is the rest of it: treat the two as one request.)'
+function heardSaid(text, long = false, more = false) {
+  const note = more ? moreNote(heardLast) : long ? LONG_NOTE : ''
+  heardLast = more ? `${heardLast} ${text}` : text
+  const routed = note ? toBoss(`${note} ${text}`)
     : route(text).catch(err => (log(`router: ${err.message}`), toBoss(text)))
   return routed.catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
     .then(to => ears.stdin.write(`routed${to === 'boss' || to === 'told' ? ` ${to}` : ''}\n`))
@@ -516,7 +524,7 @@ function startEars() {
     if (e.event !== 'caption') show(e.event, e)
     if (e.event === 'spoken' || e.event === 'partial') return
     if (e.event === 'quiet') quiet = e.on
-    if (e.event === 'heard') heardSaid(e.text, e.long)
+    if (e.event === 'heard') heardSaid(e.text, e.long, e.more)
     else if (e.event === 'story') {  // story mode ended: the whole telling as one message, straight to the orch
       log(`story: ${e.words} words, ${e.minutes} min, ${e.file}`)
       send(`(From the voice: story mode. The user told this in one go, ${e.words} words over ${e.minutes} min, also saved ` +
@@ -634,10 +642,12 @@ const SETTINGS = [
   { key: 'LISTEN_AFTER', label: 'Listen after every line', hint: 'Off: only after a line that asks you something.', options: ['all', 'asked'] },
   { key: 'FOLLOWUP_SECONDS', label: 'Listening window', hint: 'Seconds it waits for you after speaking. 0: none.', min: 0, max: 120, fallback: '8' },
   { key: 'CLOSING_CUT', label: 'Send when you sound done', hint: 'A finished request goes after 2 s of quiet, not 5. Unsure, it waits.', options: ['on', 'off'] },
+  { key: 'FAST_END', label: 'Send when your words are whole', hint: 'About 2.5 s after your last word, and you can still go on. Needs an Anthropic key.', options: ['on', 'off'], fallback: 'off' },
   { key: 'REMINDERS', label: 'Reminders', hint: 'After a greeting, one thing that is waiting on you.', options: ['on', 'off'] },
   { key: 'CLAP', label: 'Clap twice to wake it', hint: 'Works like "Hey Jarvis". Two snaps or tongue clicks wake it too.', options: ['on', 'off'], fallback: 'off' },
   { key: 'TALK_OVER', label: 'Talk over it to stop it', hint: 'Off: only "Hey Jarvis" stops a reply.', options: ['on', 'off'] },
   { key: 'CUT_OFF', label: 'Say when it got cut off', hint: 'After its ears stop, or a request is lost: says so, and the last thing it heard.', options: ['on', 'off'] },
+  { key: 'VOICE_MATCH', label: 'Only my voice', hint: 'A request that is clearly not in your voice is dropped. Unsure, it goes as before.', options: ['on', 'off'], fallback: 'off' },
   { key: 'MIC_DEVICE', label: 'Microphone', hint: 'Applies at once, on this computer only.', device: 'input' },
   { key: 'OUTPUT_DEVICE', label: 'Output', hint: 'Windows default follows Windows when it switches.', device: 'output' },
 ]
