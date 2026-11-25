@@ -1,4 +1,4 @@
-"""The ears and voice of the boss: waits for "Hey Jarvis", answers "Jarvis here", records the request that follows, turns it into text, and speaks the boss's replies.
+"""The ears and voice of Jarvis: waits for "Hey Jarvis", answers "Jarvis here", records the request that follows, turns it into text, and speaks Jarvis's replies.
 
 voice.mjs (the channel server) starts this and talks to it over pipes. It reads one command per stdin line
 and writes one JSON event per stdout line:
@@ -39,16 +39,16 @@ Everything but speech to text runs on the CPU: openWakeWord (its own hey_jarvis,
 user's voice, once trained), Silero VAD to hear when a request ends, and Kokoro 82M for
 the voice. Speech to text is Groq's whisper-large-v3-turbo, which handles Tagalog and Taglish.
 
-With VOICE_ENGINE=elevenlabs and an ElevenLabs key, speech to text is ElevenLabs Scribe v2 and the voice is an
-ElevenLabs voice (your own clone, or a stock one). If ElevenLabs fails (no credits, no internet), it falls back
-to Groq and Kokoro for that request.
+The pro voice is a separate, private repo (projarvis). With JARVIS_PRO set to its folder, its engine.py hears and
+speaks instead (see pro()); if it fails (no credits, no internet), that request falls back to Groq and Kokoro.
 
 Run `python listener.py train` once to train the verifier on your voice, `python listener.py fetch` to
 download the models ahead of time.
 """
 import asyncio
-import base64
 import difflib
+import functools
+import importlib.util
 import io
 import json
 import os
@@ -159,10 +159,6 @@ KOKORO = ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
 TURN_MODEL = "smart-turn-v3.2-cpu.onnx"
 TURN_URL = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/"
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-EL_URL = "https://api.elevenlabs.io/v1"
-EL_VOICE = "JBFqnCBsd6RMkjVDRZzb"  # George, a stock British ElevenLabs voice, when ELEVENLABS_VOICE_ID is empty
-SCRIBE_LIVE_URL = ("wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime"
-                   "&audio_format=pcm_16000&commit_strategy=manual&keyterms=Hey%20Jarvis")
 
 RATE = 16000
 CHUNK = 1280  # 80 ms, the frame openWakeWord expects
@@ -700,7 +696,7 @@ def raise_orch() -> tuple[int, bool] | None:
         user32.SetWindowPos(h, HWND(-2), 0, 0, 0, 0, SWP_KEEP)
         return h, minimized
     except Exception as e:
-        emit("error", message=f"Can't show the orch's window: {e}")
+        emit("error", message=f"Can't show Jarvis's window: {e}")
         return None
 
 
@@ -720,7 +716,7 @@ def lower_orch(raised: tuple[int, bool]) -> None:
         else:
             user32.SetWindowPos(h, HWND(front), 0, 0, 0, 0, SWP_KEEP)
     except Exception as e:
-        emit("error", message=f"Can't put the orch's window back: {e}")
+        emit("error", message=f"Can't put Jarvis's window back: {e}")
 
 
 def load_env() -> None:
@@ -758,7 +754,13 @@ def greeting_text(word: str, title: str, front: bool = False) -> str:
     """ "I'm here, sir." or, in front, "Sir, I'm here." """
     if not title:
         return f"{word}."
-    return f"{title}, {word if word.startswith('I') else word[0].lower() + word[1:]}." if front else f"{word}, {title.lower()}."
+    return f"{title}, {word if word.startswith('I') else word[0].lower() + word[1:]}." if front else f"{word}, {mid_title(title)}."
+
+
+def mid_title(title: str) -> str:
+    """Mid-sentence "sir" and "madam" are lowercase; a first name keeps its capital ("I'm here, Maria."), as midTitle in
+    rules.mjs."""
+    return title.lower() if title.lower() in ("sir", "madam", "ma'am") else title
 
 
 def split_lead(text: str) -> tuple[str, str]:
@@ -796,7 +798,7 @@ def turn_features(audio: np.ndarray) -> np.ndarray:
 
 
 def sorry(title: str) -> str:
-    return f"Sorry {title.lower()}," if title else "Sorry,"
+    return f"Sorry {mid_title(title)}," if title else "Sorry,"
 
 
 def last_heard(heard: str, heard_at: float, now: float) -> str:
@@ -816,7 +818,7 @@ def cut_off_line(state: dict, why: str, now: float, title: str = "") -> tuple[st
     if phase == "talking":
         parts.append("I lost what you were just saying.")
     if phase == "story":
-        parts.append("Story mode stopped. What I wrote down is in the stories folder, and the orch didn't get it.")
+        parts.append("Story mode stopped. What I wrote down is in the stories folder, and nothing was sent.")
     if said := last_heard(state.get("heard", ""), state.get("heard_at", 0), now):
         parts.append(said)
     if phase in ("talking", "window"):
@@ -928,7 +930,7 @@ def envelope(samples: np.ndarray, rate: int) -> np.ndarray:
 
 def asks_again(heard: str) -> bool:
     """A short "what?", as anyone says it to someone who just spoke: not a request, and nothing to ask the orch."""
-    said = " ".join(w for w in re.findall(r"[\w']+", heard.lower()) if w not in ("um", "uh", "sir", "please", "jarvis", "ulit"))
+    said = " ".join(w for w in re.findall(r"[\w']+", heard.lower()) if w not in ("um", "uh", "sir", "madam", "maam", "ma'am", "please", "jarvis", "ulit"))
     return bool(ASK_AGAIN.fullmatch(said)) or (not said and "ulit" in heard.lower()) or heard.strip().lower() == "sorry?"
 
 
@@ -942,7 +944,7 @@ BRUSH_OFF = """later | talk later | talk to you later | see you later | catch yo
   saka na | hindi ikaw | di ikaw | sa susunod na lang"""
 SOFT = """im good | thats all | thats it | cancel | wag na | huwag na | wag na lang | huwag na lang | wala lang | okay na | ayos na
   nothing | wala | thank you | thanks | no thanks | salamat"""
-DISMISS_FILLER = set("um uh oh ah hmm yeah yes yep sorry okay ok alright sir jarvis jervis please no nah hey well actually just "
+DISMISS_FILLER = set("um uh oh ah hmm yeah yes yep sorry okay ok alright sir madam maam jarvis jervis please no nah hey well actually just "
                      "oops sige po".split())
 
 
@@ -1085,47 +1087,47 @@ def audio_file(clip: np.ndarray) -> tuple[str, bytes, str]:
     return "request.ogg", buf.getvalue(), "audio/ogg"
 
 
-def el_key() -> str:
-    """The ElevenLabs key when VOICE_ENGINE=elevenlabs: ELEVENLABS_API_KEY, or the file ELEVENLABS_API_KEY_FILE names."""
-    if os.environ.get("VOICE_ENGINE", "").lower() != "elevenlabs":
-        return ""
-    key, path = os.environ.get("ELEVENLABS_API_KEY", ""), os.environ.get("ELEVENLABS_API_KEY_FILE", "")
-    if not key and path and Path(path).is_file():
-        key = Path(path).read_text(encoding="utf-8").strip()
-    return key
+def pro():
+    """The pro voice's engine (projarvis, a separate private repo) when JARVIS_PRO names its folder, else None: Groq
+    hears and Kokoro speaks. The engine gives key() (empty: off for now), voice() ("<engine>_<voice>" or empty),
+    transcribe(clip, timeout) -> (text, heard_how, heard_first), live_words() (feed/stop, or None) and
+    speak(text, voice, speed) -> (samples, rate); any of them may raise, and the free path takes over. Read at call
+    time, not at import: .env is loaded after this module."""
+    folder = os.environ.get("JARVIS_PRO", "").strip()
+    return load_pro(folder) if folder else None
+
+
+@functools.cache
+def load_pro(folder: str):
+    try:
+        spec = importlib.util.spec_from_file_location("projarvis", Path(folder) / "engine.py")
+        engine = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(engine)
+        engine.L = sys.modules[__name__]  # this module, for its helpers (emit, audio_file, TERMS ...)
+        return engine
+    except Exception as e:
+        emit("error", message=f"No pro voice from JARVIS_PRO, so Groq and Kokoro: {e}")
+        return None
 
 
 def voice_key() -> str:
-    """The voice that speaks: elevenlabs_<voice ID> when ElevenLabs is set up, else kokoro_<Kokoro voice> (see
-    voices-v1.0.bin). Read at call time, not at import: .env is loaded after this module."""
-    if el_key() and os.environ.get("VOICE_TTS", "").lower() != "kokoro":  # VOICE_TTS=kokoro: ElevenLabs only hears
-        return "elevenlabs_" + (os.environ.get("ELEVENLABS_VOICE_ID") or EL_VOICE)
+    """The voice that speaks: the pro engine's when it is on, else kokoro_<Kokoro voice> (see voices-v1.0.bin)."""
+    if (p := pro()) and (v := p.voice()):
+        return v
     return "kokoro_" + (os.environ.get("VOICE") or "bm_george")
 
 
 def transcribe(clip: np.ndarray, timeout: int = 600) -> str:
-    """ElevenLabs Scribe v2 when set up, else (or when it fails) Groq. Both detect English, Tagalog and Taglish.
+    """The pro engine's ears when on, else (or when they fail) Groq. Both detect English, Tagalog and Taglish.
     What the engine said about the clip stays in heard_how, for keep_clip, and when its first word began in heard_first."""
-    import requests
-
     global heard_how, heard_first
     heard_first = None
-    if key := el_key():
+    if (p := pro()) and p.key():
         try:
-            r = requests.post(f"{EL_URL}/speech-to-text", headers={"xi-api-key": key},
-                              files={"file": audio_file(clip)},
-                              # The clip can start mid wake word; without the keyterm Scribe mishears it.
-                              data={"model_id": "scribe_v2", "tag_audio_events": "false",
-                                    "keyterms": [w.replace("_", " ").title() for w in wake_words()] + TERMS[:99]},
-                              timeout=timeout)
-            r.raise_for_status()
-            j = r.json()
-            heard_how = {"engine": "scribe", "language": j.get("language_code"),
-                         "language_probability": j.get("language_probability")}
-            heard_first = next((w.get("start") for w in j.get("words", []) if w.get("type") == "word"), None)
-            return j["text"].strip()
+            text, heard_how, heard_first = p.transcribe(clip, timeout)
+            return text
         except Exception as e:
-            emit("error", message=f"ElevenLabs speech to text failed, trying Groq: {e}")
+            emit("error", message=f"Pro speech to text failed, trying Groq: {e}")
     j = groq_json(clip, timeout)
     heard_how = {"engine": "groq", "language": j.get("language"),
                  "segments": [{k: s.get(k) for k in ("text", "avg_logprob", "compression_ratio", "no_speech_prob")}
@@ -1311,52 +1313,9 @@ def judge_words(early, said: str = "") -> str:
         return "MORE"
 
 
-class ScribeLive:
-    """Words on screen while the user speaks, from ElevenLabs Scribe Realtime. For show only: the request's text still
-    comes from transcribe(), which got more Taglish right on the far-mic test, so a failure here loses nothing."""
-
-    def __init__(self, key: str) -> None:
-        self.key, self.chunks, self.stopped = key, queue.Queue(), False
-        threading.Thread(target=self.run, daemon=True).start()
-
-    def feed(self, chunk: np.ndarray) -> None:
-        self.chunks.put(chunk)
-
-    def stop(self) -> None:
-        self.stopped = True
-        self.chunks.put(None)
-
-    def run(self) -> None:
-        try:
-            from websockets.sync.client import connect
-
-            with connect(SCRIBE_LIVE_URL, additional_headers={"xi-api-key": self.key}, open_timeout=5) as ws:
-                threading.Thread(target=self.receive, args=(ws,), daemon=True).start()
-                while (chunk := self.chunks.get()) is not None:
-                    ws.send(json.dumps({"message_type": "input_audio_chunk", "commit": False, "sample_rate": RATE,
-                                        "audio_base_64": base64.b64encode(chunk.tobytes()).decode()}))
-        except Exception as e:
-            if not self.stopped:
-                emit("status", text=f"Live words stopped: {e}")
-
-    def receive(self, ws) -> None:
-        try:
-            for message in ws:
-                event = json.loads(message)
-                kind = event.get("message_type", "")
-                if self.stopped:
-                    return
-                if kind == "partial_transcript":
-                    emit("partial", text=fix_words(strip_wake(event.get("text", ""))))
-                elif kind.endswith(("error", "exceeded", "limited", "terms")):
-                    emit("status", text=f"Live words: {kind}")
-        except Exception:  # closed: run says why, if it matters
-            pass
-
-
 class GroqLive:
     """The free voice's live words: Groq takes only finished files, so the last LIVE_CLIP chunks go up every LIVE_EVERY
-    chunks, one at a time. For show only, as in ScribeLive."""
+    chunks, one at a time. For show only: the request's text comes from transcribe(), so a failure here loses nothing."""
 
     def __init__(self, spare: int = LIVE_SPARE) -> None:
         self.clip: deque[np.ndarray] = deque(maxlen=LIVE_CLIP)
@@ -1385,8 +1344,8 @@ class GroqLive:
 
 def live_words(spare: int = LIVE_SPARE):
     """Live words for the voice in use; None when there is no key for them. spare: Groq requests a minute they leave free."""
-    if key := el_key():
-        return ScribeLive(key)
+    if (p := pro()) and p.key() and (live := p.live_words()):
+        return live
     return GroqLive(spare) if os.environ.get("GROQ_API_KEY") else None
 
 
@@ -1585,9 +1544,9 @@ class Ears:
         except Exception as e:  # silence ends every request, as before
             emit("error", message=f"No Smart Turn, so the full pause: {e}")
         self.vad_boost = float(os.environ.get("VAD_BOOST") or 1)  # the wake word and speech to text cope without it
-        self.tts = Kokoro.from_session(kokoro_session(), str(MODELS / KOKORO[1]))  # also the fallback for ElevenLabs
-        ears, mouth = "Scribe" if el_key() else "Groq", "ElevenLabs" if voice_key().startswith("elevenlabs") else "Kokoro"
-        emit("status", text=f"Voice: {ears} and {mouth}")
+        self.tts = Kokoro.from_session(kokoro_session(), str(MODELS / KOKORO[1]))  # also the fallback for the pro voice
+        ears = "pro" if (p := pro()) and p.key() else "Groq"
+        emit("status", text=f"Voice: {ears} ears and {voice_key().partition('_')[0]}")
         emit("status", text=f"Kokoro on the {'GPU' if 'CUDA' in self.tts.sess.get_providers()[0] else 'CPU'}")
         # A silent file in sounds/local mutes that cue for good, so the log says which: on 2026-11-13 the heard and done
         # sounds had been silent for eleven days, and nothing told why.
@@ -1896,7 +1855,7 @@ class Ears:
             self.live.feed(chunk)
         spoke = self.voiced >= MIN_VOICED
         if self.cap < MAX_CLIP and len(self.clip) >= self.cap:  # see SHORT_CLIP
-            emit("status", text="Long for a reply: recording to the pause, and the orch hears it may be people talking")
+            emit("status", text="Long for a reply: recording to the pause, and Jarvis hears it may be people talking")
             self.cap, self.ran_long = MAX_CLIP, True
         words = spoke and self.words_done()  # FAST_END: the judge said DONE, so the request goes now
         if (spoke and self.quiet >= self.end_quiet) or (not spoke and len(self.clip) >= self.give_up) or len(self.clip) >= MAX_CLIP \
@@ -2178,7 +2137,7 @@ class Ears:
             cue = "Story mode is off. I heard nothing to send."
         else:
             emit("story", text=text, words=len(text.split()), minutes=minutes, file=str(file))
-            cue = f"Got it, {len(text.split())} words. It's with the orch."
+            cue = f"Got it, {len(text.split())} words. I'm on it."
         self.line(cue, first=True, asked=False, window=False)
         if then:
             self.heard_last, self.heard_at, self.saved_at = then, time.time(), 0.0
@@ -2400,7 +2359,7 @@ class Ears:
         path = HERE / "tmp" / f"{name}_{voice_key()}.wav"
         if not path.is_file():
             samples, rate, used = self.speech(text, speed)
-            path = HERE / "tmp" / f"{name}_{used}.wav"  # Kokoro's when ElevenLabs failed; it is tried again next start
+            path = HERE / "tmp" / f"{name}_{used}.wav"  # Kokoro's when the pro voice failed; it is tried again next start
             path.parent.mkdir(exist_ok=True)
             sf.write(path, samples, rate)
         return sf.read(path, dtype="float32")
@@ -2414,8 +2373,8 @@ class Ears:
         return first, rest and SPEAKER.submit(lambda: self.speech(rest)[:2])
 
     def speech(self, text: str, speed: float = 1.0) -> tuple[np.ndarray, int, str]:
-        """The reply as audio, plus the voice_key() that said it: the ElevenLabs voice when set up, else (or when it
-        fails) Kokoro. A line rendered ahead, with an age after it that is too, needs neither."""
+        """The reply as audio, plus the voice_key() that said it: the pro voice when on, else (or when it fails)
+        Kokoro. A line rendered ahead, with an age after it that is too, needs neither."""
         for line, (samples, rate) in self.banked.items():
             rest = text[len(line):].strip() if text.startswith(line) else None
             if rest == "":
@@ -2424,18 +2383,12 @@ class Ears:
                 pause = np.zeros(rate // 8, np.float32)
                 return np.concatenate([samples.astype(np.float32), pause, self.banked[rest][0].astype(np.float32)]), rate, voice_key()
         engine, _, voice = voice_key().partition("_")
-        if engine == "elevenlabs":
-            import requests
-
+        if engine != "kokoro":
             try:
-                r = requests.post(f"{EL_URL}/text-to-speech/{voice}",
-                                  params={"output_format": "pcm_24000"}, headers={"xi-api-key": el_key()}, timeout=30,
-                                  json={"text": text, "model_id": os.environ.get("ELEVENLABS_MODEL") or "eleven_flash_v2_5",
-                                        **({"voice_settings": {"speed": speed}} if speed != 1 else {})})
-                r.raise_for_status()
-                return np.frombuffer(r.content, np.int16).astype(np.float32) / 32768, 24000, f"elevenlabs_{voice}"
+                samples, rate = pro().speak(text, voice, speed)
+                return samples, rate, f"{engine}_{voice}"
             except Exception as e:
-                emit("error", message=f"ElevenLabs voice failed, using Kokoro: {e}")
+                emit("error", message=f"Pro voice failed, using Kokoro: {e}")
             voice = os.environ.get("VOICE") or "bm_george"
         lang = "en-gb" if voice[0] == "b" else "en-us"  # bm_/bf_ voices are British (a blend: its first voice's)
         with TTS_LOCK:
@@ -2759,6 +2712,8 @@ def main(commands: list[str]) -> None:
         if value.startswith("set "):  # from the window's settings; voice.mjs checks the name and value, and saves them
             _, key, *rest = value.split(" ", 2)
             os.environ[key] = rest[0] if rest else ""
+            if key == "VOICE_TITLE":  # onboarding's "sir or madam": the greetings render again with it, no restart
+                ears.greetings = ()
             ears.read_settings()
             if key in ("MIC_DEVICE", "OUTPUT_DEVICE"):  # picked in the window: on at once, with no restart
                 mic, on_spare = reopen(mic, events), False
@@ -2838,7 +2793,7 @@ def train() -> None:
         if event == "enroll":
             print(f"[{data['done'] + 1}/{data['total']}] {data['retry']} {data['prompt']}".replace("  ", " "))
         elif event == "enrolled":
-            print("Done. The boss now wakes on your voice (restart the boss to load it).")
+            print("Done. Jarvis now wakes on your voice (restart Jarvis to load it).")
             os._exit(0)
         elif event in ("status", "error"):
             print(data.get("text") or data.get("message"))

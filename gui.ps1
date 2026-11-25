@@ -1,5 +1,5 @@
-# Windows GUI control for the boss. Claude Code's computer use runs only on macOS in the CLI, so on Windows
-# the boss looks with screenshots and acts with these commands:
+# Windows GUI control for Jarvis. Claude Code's computer use runs only on macOS in the CLI, so on Windows
+# Jarvis looks with screenshots and acts with these commands:
 #   gui.ps1 shot [file]         screenshot of the whole screen (default tmp\screen.png), physical pixels
 #   gui.ps1 windows             visible windows: handle, process, title
 #   gui.ps1 open <app> [args]   start an app and bring its new window to the front

@@ -4,7 +4,7 @@
 # with it (Claude Code titles the window with the session name); other windows are ignored, so a worker
 # can cover them.
 #   spawn.ps1 [-Count 1] [-Dir folder]   open workers in the lowest free cells, by default in the folder
-#                                        that holds free247jarvis
+#                                        that holds freejarvis
 #   spawn.ps1 -List                      print each worker window and the cell it sits in
 param([int]$Count = 1, [string]$Dir = (Split-Path $PSScriptRoot), [switch]$List)
 
@@ -101,13 +101,13 @@ if ($List) {
 
 if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { "No such folder: $Dir"; exit 1 }
 $Dir = (Resolve-Path -LiteralPath $Dir).Path
-# A worker in the boss folder would load the voice channel too and fight the boss for the microphone.
+# A worker in the jarvis folder would load the voice channel too and fight Jarvis for the microphone.
 if (Test-Path -LiteralPath (Join-Path $Dir '.mcp.json')) {
-    if ((Get-Content -Raw -LiteralPath (Join-Path $Dir '.mcp.json')) -match 'voice\.mjs') { "Not in the boss folder: $Dir"; exit 1 }
+    if ((Get-Content -Raw -LiteralPath (Join-Path $Dir '.mcp.json')) -match 'voice\.mjs') { "Not in the jarvis folder: $Dir"; exit 1 }
 }
 
 # wt.exe hands the caller's environment to the new window. Claude Code sets NO_COLOR and CLAUDE* for its
-# tool shells, which would start a colorless child of the boss session.
+# tool shells, which would start a colorless child of the Jarvis session.
 Get-ChildItem env: | Where-Object Name -match '^(CLAUDE|NO_COLOR$|GIT_TERMINAL_PROMPT$)' | ForEach-Object { Remove-Item "env:$($_.Name)" }
 
 # A worker that is still starting shows "claude" as its title, so names also come from Claude Code's

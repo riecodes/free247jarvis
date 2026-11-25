@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, claimAt, leadFor, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts, yesNoLead } from './rules.mjs'
+import { AGES, ageWords, asksForHeld, asksSomething, asksWaiting, asksYesNo, bankFile, claimAt, leadFor, midTitle, withTitle, isAnswer, isFiller, isLong, isLooking, latestLines, matchLine, shortlist, verbFor, waitingWords, withFacts, yesNoLead } from './rules.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const PORT = Number(process.env.VOICE_PORT || 8790)
@@ -31,8 +31,8 @@ function show(event, data = {}) {
   if (shown.push(line) > 200) shown.shift()
   for (const w of watchers) w.write(line)
 }
-// Both voices answer in plain English: the user wants the pro voice (VOICE_ENGINE=elevenlabs, from start.ps1 -Engine or
-// .env) British too, and Kokoro's British voice only says English words.
+// Both voices answer in plain English: the user wants the pro voice (projarvis, VOICE_ENGINE=elevenlabs from
+// start.ps1 -Engine or .env) British too, and Kokoro's British voice only says English words.
 // .env next to this file, first line wins as in listener.py; real environment variables win over it.
 const env = { ...process.env }
 const ENV_FILE = process.env.VOICE_ENV || join(HERE, '.env')  // VOICE_ENV: another file, in checks
@@ -41,9 +41,10 @@ for (const [, k, v] of dotenv.matchAll(/^([A-Z][A-Z0-9_]*)=(.*)$/gm)) env[k] ??=
 // VOICE_TITLE=Sir: once in every spoken line, at its start or its end (rules.mjs titled).
 const TITLE = env.VOICE_TITLE?.trim() ?? ''
 // The listener's rising chime after a reply that asks something says the mic is open again (FOLLOWUP_SECONDS), so no spoken cue here.
-const titled = text => withTitle(text, TITLE)
+// Read live: onboarding and the window change VOICE_TITLE without a restart (saveSetting updates env).
+const titled = text => withTitle(text, env.VOICE_TITLE?.trim() ?? '')
 const SPEAK = (TITLE ? `Say "${TITLE}" once in every spoken reply, at the start or at the end, and vary it the way a ` +
-  `person would ("${TITLE}, it's done." or "Done, ${TITLE.toLowerCase()}." or "I'm with you, ${TITLE.toLowerCase()}."). ` : '') +
+  `person would ("${TITLE}, it's done." or "Done, ${midTitle(TITLE)}." or "I'm with you, ${midTitle(TITLE)}."). ` : '') +
   'Write times, numbers and dates as English words, the way they are said ("nine seventeen PM", "October ' +
   'twenty-six"), never in Spanish or Tagalog numbers.' +
   ' Whatever language the request is in, answer in plain English only, with no Tagalog or Taglish words at all ' +
@@ -207,7 +208,7 @@ function waitingOn() {
   if (orch) waitTold = askedAt
   return [
     held.length && `I held ${count(held.length, held.length === 1 ? 'line' : 'lines')} for your call: say "what's the update".`,
-    orch && `The orch has had your last request for ${count(minutes, minutes === 1 ? 'minute' : 'minutes')}: check its window if no answer comes.`,
+    orch && `Jarvis has had your last request for ${count(minutes, minutes === 1 ? 'minute' : 'minutes')}: check its terminal if no answer comes.`,
   ].filter(Boolean).join(' ')
 }
 // "I can hear you", shown when tries at the wake word get nowhere: once per LOOK_GAP, not on every try, unless it says
@@ -390,7 +391,7 @@ function heardSaid(text, long = false, more = false) {
   heardLast = more ? `${heardLast} ${text}` : text
   const routed = note ? toBoss(`${note} ${text}`)
     : route(text).catch(err => (log(`router: ${err.message}`), toBoss(text)))
-  return routed.catch(() => showCaption("I heard you, but I can't reach the orch: check its window."))
+  return routed.catch(() => showCaption("I heard you, but I can't reach Jarvis: check its terminal."))
     .then(to => ears.stdin.write(`routed${to === 'boss' || to === 'told' ? ` ${to}` : ''}\n`))
 }
 
@@ -530,7 +531,7 @@ function startEars() {
       send(`(From the voice: story mode. The user told this in one go, ${e.words} words over ${e.minutes} min, also saved ` +
         `in ${e.file}. It is one long story, not a list of requests: say in one short line that you have it, then do what ` +
         `it asks for as a whole, or ask what to do with it.)\n\n${e.text}`, 'story')
-        .catch(() => showCaption(`I couldn't reach the orch with your story. It's saved in ${e.file}.`))
+        .catch(() => showCaption(`I couldn't reach Jarvis with your story. It's saved in${e.file}.`))
     }
     else if (e.event === 'caption') {
       if (e.remind) showToast(e.text)  // the window already has this line as the reply
@@ -598,7 +599,7 @@ let mic = process.env.VOICE_MIC !== 'off' && !heldElsewhere
 if (mic && !claims().length) claim()
 const quietHere = () => {
   log(`the voice is on ${heldElsewhere}: mic closed, nothing said here`)
-  show('caption', { text: `Jarvis is on ${heldElsewhere}. Say "jarvis on" to this orch to move it here.` })
+  show('caption', { text: `Jarvis is on ${heldElsewhere}. Say "jarvis on" here to move it.` })
 }
 if (heldElsewhere) quietHere()
 // The other PC took it (ponytail: as fast as the sync; a transfer also closes this mic by POST, see the /orch skill).
@@ -648,13 +649,17 @@ const SETTINGS = [
   { key: 'TALK_OVER', label: 'Talk over it to stop it', hint: 'Off: only "Hey Jarvis" stops a reply.', options: ['on', 'off'] },
   { key: 'CUT_OFF', label: 'Say when it got cut off', hint: 'After its ears stop, or a request is lost: says so, and the last thing it heard.', options: ['on', 'off'] },
   { key: 'VOICE_MATCH', label: 'Only my voice', hint: 'A request that is clearly not in your voice is dropped. Unsure, it goes as before.', options: ['on', 'off'], fallback: 'off' },
+  { key: 'VOICE_DATA', label: 'Keep voice data', hint: 'Audio and words of each request, on this computer for 30 days, to learn your accent.', options: ['on', 'off'], fallback: 'off' },
+  { key: 'VOICE_TITLE', label: 'Call me', hint: 'Sir, Madam, your first name, or empty for nothing.', text: true },
+  { key: 'ONBOARDED', options: ['1'], hidden: true },  // set when the spoken onboarding is done (jarvis/CLAUDE.md)
   { key: 'MIC_DEVICE', label: 'Microphone', hint: 'Applies at once, on this computer only.', device: 'input' },
   { key: 'OUTPUT_DEVICE', label: 'Output', hint: 'Windows default follows Windows when it switches.', device: 'output' },
 ]
-const settingValue = s => s.device ? env[s.key] ?? '' : env[s.key] || s.fallback || s.options[0]
+const settingValue = s => s.device || s.text ? env[s.key] ?? '' : env[s.key] || s.fallback || s.options[0]
 // A device is saved by its name, or '' for Windows default; nothing that could start another line of .env, and no bare
 // number (a window page from before the pickers drew them as number boxes, and its clicks were saved).
 const settingOk = (s, v) => s && (s.device ? typeof v === 'string' && /^[^\x00-\x1f=#]{0,100}$/.test(v) && !/^\s*-?\d+\s*$/.test(v)
+  : s.text ? typeof v === 'string' && /^[\p{L}' .-]{0,40}$/u.test(v)  // a title or a first name, nothing else
   : s.options ? s.options.includes(v) : /^\d{1,3}$/.test(v) && +v >= s.min && +v <= s.max)
 // The microphones and outputs, listed afresh by the listener's Python (it opens nothing); none if it can't.
 const listDevices = () => new Promise(resolve => execFile(PYTHON, [join(HERE, 'listener.py'), 'devices'],
@@ -700,7 +705,7 @@ const server = createServer((req, res) => {
   if (here && req.method === 'GET' && req.url === '/settings') {
     return listDevices().then(found => {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-      res.end(JSON.stringify(SETTINGS.map(s => ({ ...s, value: settingValue(s), ...(s.device && { choices: found[s.device] ?? [] }) }))))
+      res.end(JSON.stringify(SETTINGS.filter(s => !s.hidden).map(s => ({ ...s, value: settingValue(s), ...(s.device && { choices: found[s.device] ?? [] }) }))))
     })
   }
   if (req.method === 'GET') return res.end(here && req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
@@ -766,7 +771,7 @@ server.listen(PORT, '127.0.0.1')
 // Claude Code exits by closing our stdin; the listener then sees its own stdin close and quits too.
 function quit() {
   quitting = true
-  showCaption('Jarvis is off: the orch closed, so I can\'t hear or answer you.', !quiet)  // the window goes with it
+  showCaption('Jarvis is off: its terminal closed, so I can\'t hear or answer you.', !quiet)  // the window goes with it
   ears?.kill()
   process.exit(0)
 }
@@ -774,3 +779,12 @@ mcp.onclose = quit
 process.stdin.on('end', quit)
 await mcp.connect(new StdioServerTransport())
 log('voice channel up')
+// First start (no ONBOARDED=1 in .env): Jarvis greets and asks the onboarding questions in jarvis/CLAUDE.md. Sent again
+// on each start until it finishes, with what was already chosen, so a start cut short picks up where it stopped.
+if (env.ONBOARDED !== '1') setTimeout(() => {
+  const chosen = SETTINGS.filter(s => !s.hidden && !s.device && env[s.key]?.trim()).map(s => `${s.key}=${env[s.key].trim()}`)
+  const content = `(From the voice: first start. Run the onboarding in your CLAUDE.md now. Settings URL: ` +
+    `http://127.0.0.1:${PORT}/settings. Already chosen: ${chosen.join(', ') || 'none'}.)`
+  mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { via: 'onboard' } } })
+    .then(() => log('onboarding sent'), e => log(`onboarding not sent: ${e.message}`))
+}, Number(process.env.VOICE_ONBOARD_MS ?? 4000))

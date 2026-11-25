@@ -1,4 +1,4 @@
-"""End-to-end check against real Claude Code sessions. Run: .venv\\Scripts\\python check_boss.py
+"""End-to-end check against real Claude Code sessions. Run: .venv\\Scripts\\python check_jarvis.py
 
 Clips are synthesized with Kokoro, so no microphone is needed. Checks, in order:
   wake      the wake word wakes the listener, also after a pause (and plain speech does not)
@@ -7,10 +7,10 @@ Clips are synthesized with Kokoro, so no microphone is needed. Checks, in order:
   free      "give this to whoever is free" goes to an idle session (t2 is kept busy meanwhile)
   spawn     "open one more terminal" opens a window named after its grid cell
   gui       "open Notepad and type hello" leaves a Notepad window containing hello
-  reply     the boss's spoken reply comes out as a Kokoro wav
+  reply     Jarvis's spoken reply comes out as a Kokoro wav
 
-It starts the boss if it is not running (and confirms the development-channel warning for it; on the very
-first start it waits for you to pick "Yes, I trust this folder" in the boss window), opens
+It starts Jarvis if it is not running (and confirms the development-channel warning for it; on the very
+first start it waits for you to pick "Yes, I trust this folder" in the Jarvis window), opens
 workers t1 and t2 in this folder if they are missing, and closes every window it opened at the end.
 Prints ALL PASS when every check passes.
 """
@@ -147,14 +147,14 @@ def notepads() -> dict[int, str]:
 
 
 def ask(text: str) -> None:
-    """Hands the boss a request, as the listener does after hearing one."""
+    """Hands Jarvis a request, as the listener does after hearing one."""
     urllib.request.urlopen(urllib.request.Request(URL, data=text.encode(), method="POST"), timeout=10).read()
     print(f"      asked: {text}", flush=True)
 
 
 def trusted() -> bool:
-    """Whether Claude Code saved "Yes, I trust this folder" for the repo or the boss folder (as start.ps1 checks)."""
-    keys = {str(p).replace("\\", "/").lower() for p in (HERE, HERE / "boss")}
+    """Whether Claude Code saved "Yes, I trust this folder" for the repo or the jarvis folder (as start.ps1 checks)."""
+    keys = {str(p).replace("\\", "/").lower() for p in (HERE, HERE / "jarvis")}
     try:
         projects = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8")).get("projects", {})
     except (OSError, ValueError):  # missing, or caught mid-write
@@ -162,7 +162,7 @@ def trusted() -> bool:
     return any(k.lower() in keys and v.get("hasTrustDialogAccepted") for k, v in projects.items())
 
 
-def boss_up() -> bool:
+def jarvis_up() -> bool:
     try:
         return urllib.request.urlopen(URL, timeout=3).read() == b"ok"
     except OSError:
@@ -222,32 +222,32 @@ tagalog = [w for w in ("paki", "sabi", "kay", "niya", "yung", "tapos", "salamat"
 check("taglish", "terminal" in said and "test" in said and len(tagalog) >= 3, f"{said!r} (Tagalog words: {tagalog})")
 del ears
 
-# 3 to 7: the boss and its workers, for real.
+# 3 to 7: Jarvis and its workers, for real.
 
 start = time.time()
 opened: list[int] = []  # windows this check opened, closed again at the end
 before_workers = workers()
 try:
-    if not boss_up():
-        print("      starting the boss...", flush=True)
+    if not jarvis_up():
+        print("      starting Jarvis...", flush=True)
         old = set(windows())
         out = subprocess.run(PS + ["-File", str(HERE / "start.ps1")], check=True, capture_output=True, text=True).stdout
         print("      " + out.strip().replace("\n", "\n      "), flush=True)
-        boss = wait(lambda: next(iter(set(windows()) - old), None), 30, 0.5)
-        assert boss, "the boss window did not open"
-        opened.append(boss)
+        jarvis = wait(lambda: next(iter(set(windows()) - old), None), 30, 0.5)
+        assert jarvis, "the Jarvis window did not open"
+        opened.append(jarvis)
         if not trusted():  # Enter now would answer the folder trust question; that one is the user's
-            print("      waiting up to 5 minutes for \"Yes, I trust this folder\" in the boss window...", flush=True)
-            assert wait(trusted, 300, 1), "the boss folder was not trusted; pick \"Yes, I trust this folder\" once"
+            print("      waiting up to 5 minutes for \"Yes, I trust this folder\" in the Jarvis window...", flush=True)
+            assert wait(trusted, 300, 1), "the jarvis folder was not trusted; pick \"Yes, I trust this folder\" once"
             time.sleep(3)
         # "I am using this for local development". Enter again is harmless: the prompt is still empty.
         for _ in range(4):
             time.sleep(4)
-            press_enter(boss)
-            if wait(boss_up, 20):
+            press_enter(jarvis)
+            if wait(jarvis_up, 20):
                 break
-        assert boss_up(), "the voice channel did not come up; check tmp\\voice.log"
-    assert wait(lambda: idle("boss"), 120), "the boss is not idle"
+        assert jarvis_up(), "the voice channel did not come up; check tmp\\voice.log"
+    assert wait(lambda: idle("jarvis"), 120), "Jarvis is not idle"
 
     for name in ("t1", "t2"):
         if not titled(name):
@@ -265,7 +265,7 @@ try:
     check("terminal", wait(target.is_file, 240), f"{target} {'exists' if target.is_file() else 'missing'}")
 
     # free: keep t2 busy, then ask for whoever is free.
-    wait(lambda: idle("t2") and idle("boss"), 120)
+    wait(lambda: idle("t2") and idle("jarvis"), 120)
     ask("Tell terminal 2 to run the shell command: sleep 150. Nothing else.")
     busy = wait(lambda: titled("t2") and not idle("t2"), 120, 1)
     free = TMP / "free.txt"
@@ -295,7 +295,7 @@ try:
         if h not in pads:
             close(h)
 
-    # reply: the boss has spoken by now; its last reply is a Kokoro wav (24 kHz).
+    # reply: Jarvis has spoken by now; its last reply is a Kokoro wav (24 kHz).
     reply = TMP / "reply.wav"
     wait(lambda: reply.is_file() and reply.stat().st_mtime > start, 60)
     ok = reply.is_file() and reply.stat().st_mtime > start

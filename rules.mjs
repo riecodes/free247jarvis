@@ -178,5 +178,7 @@ export function withTitle(text, title) {
   for (const c of text) hash = (hash * 31 + c.charCodeAt(0)) >>> 0
   if (hash % 2) return `${title}, ${/^(I\b|[A-Z]{2})/.test(text) ? text : text[0].toLowerCase() + text.slice(1)}`
   const [, words, end] = text.match(/^([\s\S]*?)([.!?]*)$/)
-  return `${words}, ${title.toLowerCase()}${end || '.'}`
+  return `${words}, ${midTitle(title)}${end || '.'}`
 }
+// Mid-sentence "sir" and "madam" are lowercase; a first name keeps its capital ("Done, Maria.").
+export const midTitle = title => /^(sir|madam|ma'am)$/i.test(title) ? title.toLowerCase() : title

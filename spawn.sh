@@ -1,14 +1,14 @@
 #!/bin/sh
 # macOS: opens Claude Code workers t1 to t6, like spawn.ps1 on Windows, each in a new Terminal window. Untested on macOS.
 # A name is free while no running claude has it. The windows open where Terminal puts them: no grid.
-#   sh spawn.sh [count] [folder]   by default one, in the folder that holds free247jarvis
+#   sh spawn.sh [count] [folder]   by default one, in the folder that holds freejarvis
 here="$(cd "$(dirname "$0")" && pwd)"
 count="${1:-1}"
 dir="${2:-$(dirname "$here")}"
 [ -d "$dir" ] || { echo "No such folder: $dir"; exit 1; }
 dir="$(cd "$dir" && pwd)"
-# A worker in the boss folder would load the voice channel too and fight the boss for the microphone.
-if grep -qs 'voice\.mjs' "$dir/.mcp.json"; then echo "Not in the boss folder: $dir"; exit 1; fi
+# A worker in the jarvis folder would load the voice channel too and fight Jarvis for the microphone.
+if grep -qs 'voice\.mjs' "$dir/.mcp.json"; then echo "Not in the jarvis folder: $dir"; exit 1; fi
 
 opened=""
 i=0

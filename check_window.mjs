@@ -88,7 +88,8 @@ rmSync(CLAIMS, { recursive: true, force: true })
 mkdirSync(CLAIMS)
 const start = (port = PORT, mic = 'off', stdout = 'ignore') => spawn('node', ['voice.mjs'], {
   cwd: HERE, stdio: ['pipe', stdout, 'ignore'],
-  env: { ...process.env, VOICE_PORT: String(port), VOICE_MIC: mic, VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG, VOICE_TOAST: 'off', VOICE_SHARED: CLAIMS, VOICE_ENV: ENV_COPY },
+  env: { ...process.env, VOICE_PORT: String(port), VOICE_MIC: mic, VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG, VOICE_TOAST: 'off', VOICE_SHARED: CLAIMS, VOICE_ENV: ENV_COPY,
+    VOICE_ONBOARD_MS: '600000' },  // no first-start message in the middle of these: the onboarding check at the end has its own
 })
 const voice = start()
 let second, third
@@ -283,7 +284,7 @@ try {
     cwd: HERE, stdio: ['pipe', 'pipe', 'ignore'],
     env: { ...process.env, VOICE_PORT: String(port3), VOICE_MIC: 'off', VOICE_WINDOW: 'off', VOICE_LISTENER: STUB2, VOICE_LOG: LOG, VOICE_TOAST: 'off',
       VOICE_SHARED: BANK, VOICE_ENV: ENV_COPY, VOICE_JEV_URL: `http://127.0.0.1:${jev.address().port}/`, TYPESAFE_API_KEY: 'stand-in', VOICE_TITLE: 'Sir',
-      VOICE_HAIKU_URL: `http://127.0.0.1:${jev.address().port}/haiku`, ANTHROPIC_API_KEY: 'stand-in' },
+      VOICE_HAIKU_URL: `http://127.0.0.1:${jev.address().port}/haiku`, ANTHROPIC_API_KEY: 'stand-in', VOICE_ONBOARD_MS: '600000' },
   })
   const heard = async text => {
     for (let i = 0; i < 50; i++) {
@@ -515,6 +516,41 @@ try {
   await sleep(3500)
   assert.strictEqual(await micState(), 'off')
   assert(!existsSync(mine))
+  await stop()
+
+  // First start: one onboarding message to Jarvis, with what was already chosen. Its answers save through /settings:
+  // a title or a first name (nothing that could start another .env line), and ONBOARDED, which the panel never lists.
+  rmSync(CLAIMS, { recursive: true, force: true })
+  mkdirSync(CLAIMS)
+  const FIRST = join(TMP, 'env-first')
+  writeFileSync(FIRST, 'GROQ_API_KEY=secret\nSOUNDS=on\nVOICE_TITLE=\n')
+  third = spawn('node', ['voice.mjs'], {
+    cwd: HERE, stdio: ['pipe', 'pipe', 'ignore'],
+    env: { ...process.env, VOICE_PORT: String(port2), VOICE_MIC: 'off', VOICE_WINDOW: 'off', VOICE_LISTENER: STUB, VOICE_LOG: LOG,
+      VOICE_TOAST: 'off', VOICE_SHARED: CLAIMS, VOICE_ENV: FIRST, VOICE_ONBOARD_MS: '300' },
+  })
+  const lines = createInterface({ input: third.stdout })[Symbol.asyncIterator]()
+  third.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'check', version: '1' } } }) + '\n')
+  let first
+  for (let i = 0; i < 5 && !first; i++) {
+    const m = JSON.parse((await lines.next()).value)
+    if (m.method === 'notifications/claude/channel') first = m
+  }
+  assert(first && first.params.meta.via === 'onboard', JSON.stringify(first))
+  assert.match(first.params.content, /^\(From the voice: first start\. .*settings\. Already chosen: SOUNDS=on\.\)$/)
+  await up()
+  const set = (key, value) => fetch(`http://127.0.0.1:${port2}/settings`, { method: 'POST', body: JSON.stringify({ key, value }) })
+  assert.strictEqual((await set('VOICE_TITLE', 'Madam')).status, 200)
+  assert.strictEqual((await set('VOICE_TITLE', 'Sir\nGROQ_API_KEY=x')).status, 400)
+  assert.strictEqual((await set('ONBOARDED', '1')).status, 200)
+  assert.strictEqual(readFileSync(FIRST, 'utf8'), 'GROQ_API_KEY=secret\nSOUNDS=on\nVOICE_TITLE=Madam\nONBOARDED=1\n')
+  const panel = await (await fetch(`http://127.0.0.1:${port2}/settings`)).json()
+  assert(panel.some(s => s.key === 'VOICE_TITLE' && s.value === 'Madam' && s.text) && !panel.some(s => s.key === 'ONBOARDED'))
+  // The new title applies to the very next reply, with no restart.
+  third.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'reply', arguments: { text: 'Done.' } } }) + '\n')
+  await lines.next()
+  assert(/reply: (Madam, done\.|Done, madam\.)/.test(readFileSync(LOG, 'utf8')), 'the title saved by onboarding is used at once')
+  assert.strictEqual(withTitle('Done.', 'Maria').replace('Maria, done.', 'Done, Maria.'), 'Done, Maria.')  // a name keeps its capital
   console.log('ok')
 } finally {
   second?.kill()

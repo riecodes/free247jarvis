@@ -5,7 +5,7 @@
   say    a line that wants an answer opens the follow-up window, prompted or not; an acknowledgment or plain news does not
   call   in a call: the line held unsaid; never a window
   media  what was playing resumes after the line, or after the window when one opens
-  hush   the wake word pauses the video and shows the orch's window until the reply; a false wake puts both back at once
+  hush   the wake word pauses the video and shows Jarvis's window until the reply; a false wake puts both back at once
   tries  wake word peaks are logged; a near miss ticks, except in a call; the wake word also works mid-task
   wake   "Jarvis, ..." first in a phrase wakes it when alone, never in passing; so does a double clap, but not typing or knocks
   look   repeated tries, and each failure the user can't hear, go on screen; nothing else does
@@ -710,7 +710,7 @@ def bank() -> None:
     line, age = (np.ones(10, np.float32), RATE), (np.ones(5, np.float32) * 2, RATE)
     e.banked = {"Sir, the vlog is rendering.": line, "As of two minutes ago.": age}
     e.tts = mock.Mock()
-    with mock.patch.dict(listener.os.environ, {"VOICE_ENGINE": ""}):
+    with mock.patch.dict(listener.os.environ, {"JARVIS_PRO": ""}):
         samples, rate, _ = listener.Ears.speech(e, "Sir, the vlog is rendering. As of two minutes ago.")
         assert rate == RATE and len(samples) == 10 + RATE // 8 + 5 and not e.tts.create.called
         assert len(listener.Ears.speech(e, "Sir, the vlog is rendering.")[0]) == 10 and not e.tts.create.called
@@ -827,14 +827,51 @@ def again() -> None:
     assert e.last_line == "The first line."
 
 
+def pro_seam() -> None:
+    """No JARVIS_PRO: Groq hears and Kokoro speaks. JARVIS_PRO naming a folder loads its engine.py, which hears and speaks,
+    and every engine failure (load, ears, voice) falls back to the free path for that request."""
+    with mock.patch.dict(os.environ, {"JARVIS_PRO": "", "VOICE": "bm_george"}):
+        assert listener.pro() is None and listener.voice_key() == "kokoro_bm_george"
+    with tempfile.TemporaryDirectory() as folder:
+        Path(folder, "engine.py").write_text(
+            "import numpy as np\n"
+            "L = None  # as projarvis's engine.py has it: the listener sets it once this has run\n"
+            "on = True\n"
+            "def key(): return 'k' if on else ''\n"
+            "def voice(): return 'fake_v' if on else ''\n"
+            "def transcribe(clip, timeout=600):\n"
+            "    if clip is None: raise RuntimeError('down')\n"
+            "    return 'pro heard', {'engine': 'fake', 'helper': L.RATE}, 0.25\n"
+            "def speak(text, voice, speed=1.0):\n"
+            "    if text == 'fail': raise RuntimeError('no credits')\n"
+            "    return np.ones(4, np.float32), 24000\n"
+            "def live_words(): return 'live'\n", encoding="utf-8")
+        listener.load_pro.cache_clear()
+        with mock.patch.dict(os.environ, {"JARVIS_PRO": folder, "VOICE": "bm_george"}), \
+                mock.patch.object(listener, "emit"), mock.patch.object(listener, "groq_json", return_value={"segments": []}):
+            p = listener.pro()
+            assert p is listener.pro() and p.L is listener  # loaded once, with the listener's helpers
+            assert listener.voice_key() == "fake_v" and listener.live_words() == "live"
+            assert listener.transcribe(np.zeros(3)) == "pro heard" and listener.heard_how["helper"] == listener.RATE
+            assert listener.heard_first == 0.25
+            assert listener.transcribe(None) == "" and listener.heard_how["engine"] == "groq"  # ears down: Groq
+            e = ears()
+            e.banked = {}
+            del e.speech
+            assert e.speech("hello")[1:] == (24000, "fake_v")
+            e.tts = mock.Mock()
+            e.tts.tokenizer.phonemize.return_value = ""
+            e.tts.create.return_value = (np.zeros(2, np.float32), RATE)
+            assert e.speech("fail")[2] == "kokoro_bm_george"  # voice down: Kokoro
+            p.on = False  # VOICE_ENGINE off in a real engine: the free path
+            assert listener.voice_key() == "kokoro_bm_george" and listener.live_words() is not p.live_words()
+        with mock.patch.dict(os.environ, {"JARVIS_PRO": str(Path(folder, "missing"))}), mock.patch.object(listener, "emit") as sent:
+            assert listener.pro() is None and "No pro voice" in sent.call_args.kwargs["message"]
+        listener.load_pro.cache_clear()
+
+
 def talk_over() -> None:
     """Talking over a reply stops it, and its own echo, a video, a call or a reply that says the name don't."""
-    # VOICE_TTS=kokoro: ElevenLabs goes on hearing, Kokoro speaks.
-    with mock.patch.dict(os.environ, {"VOICE_ENGINE": "elevenlabs", "ELEVENLABS_API_KEY": "k", "VOICE": "bm_george", "ELEVENLABS_VOICE_ID": "v"}):
-        os.environ.pop("VOICE_TTS", None)
-        assert listener.voice_key() == "elevenlabs_v"
-        os.environ["VOICE_TTS"] = "kokoro"
-        assert listener.voice_key() == "kokoro_bm_george" and listener.el_key() == "k"  # el_key: Scribe and its live words
     # VOICE=am_puck+af_heart: one voice between the two, their styles averaged (2026-11-13, "androgynous").
     got = {}
     tts = mock.Mock(get_voice_style=lambda v: np.full(3, {"am_puck": 1.0, "af_heart": 3.0, "bm_george": 5.0}[v], np.float32))
@@ -844,10 +881,10 @@ def talk_over() -> None:
     e.tts, e.banked = tts, {}
     del e.speech  # the real one, not ears()'s stand-in
     for voice, style, lang in [("am_puck+af_heart", [2.0] * 3, "en-us"), ("bm_george+bm_george+af_heart", [13 / 3] * 3, "en-gb")]:
-        with mock.patch.dict(os.environ, {"VOICE": voice, "VOICE_TTS": "kokoro"}):
+        with mock.patch.dict(os.environ, {"VOICE": voice, "JARVIS_PRO": ""}):
             assert e.speech("Sir, the vlog is up.")[2] == f"kokoro_{voice}"
         assert np.allclose(got["voice"], style) and got["lang"] == lang, got
-    with mock.patch.dict(os.environ, {"VOICE": "bm_george", "VOICE_TTS": "kokoro"}):
+    with mock.patch.dict(os.environ, {"VOICE": "bm_george", "JARVIS_PRO": ""}):
         e.speech("Sir, the vlog is up.")
     assert got["voice"] == "bm_george"  # one voice: by name, as before
 
@@ -1053,6 +1090,9 @@ def cut_off() -> None:
 
 def greeting() -> None:
     """Waking says a few words, not the same ones twice running, and never in a call or over the request."""
+    # Mid-sentence sir and madam go lowercase; a first name keeps its capital.
+    assert listener.greeting_text("I'm here", "Sir") == "I'm here, sir." and listener.sorry("Madam") == "Sorry madam,"
+    assert listener.greeting_text("I'm here", "Maria") == "I'm here, Maria." and listener.sorry("Maria") == "Sorry Maria,"
     chunk = np.ones(listener.CHUNK, np.int16)
     sound = lambda: np.ones(RATE // 2, np.float32)
     lines = [(f"Line {i}, sir.", sound(), RATE) for i in range(3)]
@@ -2181,6 +2221,7 @@ def main() -> None:
     fast_end()
     story()
     voice_match()
+    pro_seam()
     print("ok")
 
 

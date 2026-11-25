@@ -1,7 +1,7 @@
 {
   "name": "jarvis",
   "private": true,
-  "description": "Optional window for free247jarvis: wake state, what it heard, and the reply",
+  "description": "Optional window for freejarvis: wake state, what it heard, and the reply",
   "license": "MIT",
   "main": "main.cjs",
   "dependencies": {

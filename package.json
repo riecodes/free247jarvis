@@ -1,8 +1,8 @@
 {
-  "name": "free247jarvis",
+  "name": "freejarvis",
   "private": true,
   "type": "module",
-  "description": "Voice channel for a boss Claude Code session",
+  "description": "Voice channel for Jarvis, a Claude Code session you talk to",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1"

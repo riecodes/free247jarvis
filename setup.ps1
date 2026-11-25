@@ -1,4 +1,4 @@
-# One-time setup for free247jarvis, safe to re-run: checks what it needs, installs the Python and Node
+# One-time setup for freejarvis, safe to re-run: checks what it needs, installs the Python and Node
 # packages, downloads the models (about 125MB), and makes .env for your Groq key.
 #   powershell -ExecutionPolicy Bypass -File setup.ps1
 Set-Location $PSScriptRoot
@@ -27,35 +27,21 @@ if (-not (Test-Path .venv)) { & $py[0] $py[1] -m venv .venv }
 .\.venv\Scripts\python -m pip install --quiet --upgrade pip
 .\.venv\Scripts\python -m pip install --quiet -r requirements.txt
 # An NVIDIA GPU speaks about 3x faster (with the CUDA toolkit and cuDNN installed; without them it runs on the CPU).
-if ((Get-Command nvidia-smi -ErrorAction SilentlyContinue) -and -not (.\.venv\Scripts\python -m pip show onnxruntime-gpu 2>$null)) {
+if ((Get-Command nvidia-smi -ErrorAction SilentlyContinue) -and -not ((.\.venv\Scripts\python -m pip list --format=freeze) -match '^onnxruntime-gpu==')) {
+    # pip list, not pip show: show warns on stderr, which Windows PowerShell 5.1 turns into a stop under 'Stop'.
     .\.venv\Scripts\python -m pip uninstall --quiet -y onnxruntime
-    .\.venv\Scripts\python -m pip install --quiet onnxruntime-gpu
+    'NVIDIA card found: downloading the faster GPU voice (about 300 MB, can take a while on slow internet)...'
+    .\.venv\Scripts\python -m pip install --progress-bar on onnxruntime-gpu
 }
 npm install --silent
 .\.venv\Scripts\python listener.py fetch
 
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-if ((Get-Content .env -Raw) -notmatch '(GROQ|ELEVENLABS)_API_KEY=\S') {
+if ((Get-Content .env -Raw) -notmatch 'GROQ_API_KEY=\S') {
     'Almost done: put your free Groq key (https://console.groq.com/keys) in .env as GROQ_API_KEY=..., then'
     'run setup.ps1 again.'
     exit 1
 }
 
-# Off unless you say yes. With nobody there to answer (an agent, a pipe) it stays off and asks next time.
-if ((Get-Content .env -Raw) -notmatch '(?m)^VOICE_DATA=[^\s]') {
-    ''
-    'Optional voice data: keep the audio and words of each request that passes the wake word, and each try it ignored, to tune how'
-    'Jarvis hears you, your accent and your tone. Anyone near the mic is in those clips. They stay on this PC,'
-    'in %LOCALAPPDATA%\free247jarvis\voicedata, for 30 days. No clip is kept in a call. Either way, tmp\voice.log'
-    'keeps the words as text on this PC. README, "Voice data".'
-    try { $answer = Read-Host 'Keep them? y or n (n if unsure; change it any time with VOICE_DATA in .env)' } catch { $answer = '' }
-    $choice = switch -Regex ($answer) { '^\s*y' { 'on' } '^\s*n' { 'off' } default { '' } }
-    if ($choice) {
-        $text = [IO.File]::ReadAllText("$PSScriptRoot\.env")
-        if ($text -match '(?m)^VOICE_DATA=') { $text = $text -replace '(?m)^VOICE_DATA=[ \t]*', "VOICE_DATA=$choice" }
-        else { $text = $text.TrimEnd() + "`r`nVOICE_DATA=$choice`r`n" }
-        [IO.File]::WriteAllText("$PSScriptRoot\.env", $text)
-        "VOICE_DATA=$choice saved in .env."
-    } else { 'No answer: voice data stays off. Run setup.ps1 again to choose.' }
-}
-'Setup done. Start the boss with: powershell -ExecutionPolicy Bypass -File start.ps1'
+# Voice data (VOICE_DATA) and the other choices are asked out loud by Jarvis on its first start.
+'Setup done. Start Jarvis with: powershell -ExecutionPolicy Bypass -File start.ps1'
