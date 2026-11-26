@@ -681,7 +681,7 @@ function saveSetting(key, value) {
 
 // POST /: a typed request for the boss. POST /heard: as if spoken (through the router). POST /choice: a choice clicked in
 // the window, the same. POST /resend-last: the last thing the user said, sent again. POST /window: the window opened, or
-// brought to the front. POST /mic: on or off. POST /story: start, end or cancel story mode.
+// brought to the front. POST /mic: on or off. POST /stop: cut the speech being said. POST /story: start, end or cancel story mode.
 // GET and POST /settings: the window's settings panel.
 // GET /window and /events: the window and its live events, for this address only, so a web page can't read them
 // by pointing its own domain name at this machine.
@@ -739,6 +739,9 @@ const server = createServer((req, res) => {
       if (mic) (claim(), heldElsewhere = '')
       log(`mic ${text}`)
       ears.stdin.write(`${text}\n`)
+    } else if (req.url === '/stop') {  // the window's Stop chip: cut the speech being said
+      log('stop speaking')
+      ears.stdin.write('stop' + String.fromCharCode(10))
     } else if (req.url === '/story' && /^(start|end|cancel)$/.test(text)) {  // the /story skill
       if (text === 'start' && !mic) return (res.writeHead(409), res.end(heldElsewhere ? `the voice is on ${heldElsewhere}` : 'the mic is off'))
       log(`story ${text}`)

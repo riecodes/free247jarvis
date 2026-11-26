@@ -6,6 +6,7 @@ and writes one JSON event per stdout line:
   commands  on | off | enroll | cancel | listen (record without the wake word) | set NAME value | bank LINE | waiting JSON | quit
             clicked                             a choice clicked in the window answered: the listening window closes
             resend                              the newest utterance kept (keep_recent) goes again as a request
+            stop                                cut the line being spoken, at once (POST /stop, the window's Stop chip)
             watch on | watch off                the window opened or closed: live words only while it is open
             looking                             the user is checking that it's there: show why they may not hear it
             say <text>                          answers a request just heard: said in full, then the follow-up window
@@ -2639,6 +2640,14 @@ def main(commands: list[str]) -> None:
 
     def read_commands() -> None:
         for line in pipe:
+            if line.strip() == "stop":  # POST /stop: cut the speech now. The main loop is busy playing it, so this can't wait in the queue
+                try:
+                    import sounddevice as sd
+
+                    sd.stop()
+                except Exception:
+                    pass
+                continue
             events.put(("command", line.strip(), 0))
         events.put(("command", "quit", 0))  # the pipe closed: the boss has exited
 

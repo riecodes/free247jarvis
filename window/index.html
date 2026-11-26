@@ -132,6 +132,7 @@
   #pilllvl b { display: block; height: 100%; border-radius: 2px; background: var(--accent); transform-origin: left; transform: scaleX(0); }
   #pillin .chip { flex: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 14px; background: transparent; font-size: 12px; cursor: pointer; transition: background-color .15s, color .15s; }
   #pillin .chip:hover { background: var(--line); }
+  #pillin .chip[hidden] { display: none; }
   #pillin .chip[aria-pressed=true] { background: var(--mine); color: var(--mine-text); border-color: var(--mine); }
   /* The dock: the microphone, picked here, with a bar that moves when it hears you. */
   #dock { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; border-radius: 20px; }
@@ -206,7 +207,7 @@
   <span id="detail"></span>
 </header>
 <div id="quiet"></div>
-<div id="stage"><div id="pill" class="glass" inert><div id="pillin"><div class="pt"><span id="pillstate"></span><i id="pilllvl"><b></b></i></div><button id="pillmic" class="chip" type="button" aria-pressed="true">Mic on</button><button id="pilllook" class="chip" type="button">Style</button></div></div>
+<div id="stage"><div id="pill" class="glass" inert><div id="pillin"><div class="pt"><span id="pillstate"></span><i id="pilllvl"><b></b></i></div><button id="pillmic" class="chip" type="button" aria-pressed="true">Mic on</button><button id="pillstop" class="chip" type="button" hidden>Stop</button><button id="pilllook" class="chip" type="button">Style</button></div></div>
   <div id="orbbox" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false" aria-label="Jarvis orb. Press and hold, or press Enter, for controls"><canvas id="orb" aria-hidden="true"></canvas></div>
   <button id="look" class="glass" type="button" aria-label="Orb style" aria-expanded="false" hidden><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 6.5c2-1.2 5 .8 7-.3M4.5 10c2-1.2 5 .8 7-.3"/></svg></button>
 </div>
@@ -589,6 +590,7 @@ void main() {
         $('pillin').style.opacity = Math.max(0, Math.min(1, (m - .6) * 3))
         $('pilllvl').firstChild.style.transform = `scaleX(${Math.min(1, mood === 'speak' ? outLvl : lvl).toFixed(2)})`
         $('pillstate').textContent = $('state').textContent
+        $('pillstop').hidden = mood !== 'speak'  // only while Jarvis is speaking
       } else pill.classList.remove('open')
       requestAnimationFrame(swell)
     }
@@ -1014,6 +1016,7 @@ void main() {
       const want = !on
       await fetch('/mic', { method: 'POST', body: want ? 'on' : 'off' }).catch(() => {})
     }
+    $('pillstop').onclick = () => fetch('/stop', { method: 'POST', body: 'stop' }).catch(() => {})
     $('pilllook').onclick = e => { e.stopPropagation(); orb.pill.open(false); looks(true) }
     setInterval(() => {
       $('pillmic').textContent = on ? 'Mic on' : 'Mic off'
