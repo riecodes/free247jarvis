@@ -156,7 +156,7 @@
   #first[hidden] { display: none; }
   #first h2 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
   #first p { margin: 0 0 16px; color: var(--dim); }
-  #first small { display: block; margin-top: 12px; color: var(--dim); font-size: 11px; }
+  #first p:empty { display: none; }
   #start { width: 100%; padding: 12px 16px; border: 0; border-radius: 14px; background: var(--mine); color: var(--mine-text); font-weight: 500; cursor: pointer; transition: transform .15s, opacity .15s; }
   #start:active { transform: scale(.97); }
   #start:disabled { opacity: .5; cursor: default; }
@@ -183,7 +183,6 @@
   .set:last-child { border-bottom: 0; }
   .set span { flex: 1; min-width: 0; }
   .set b { display: block; font-weight: 500; }
-  .set small { display: block; color: var(--dim); font-size: 11px; }
   .set select, .set input[type=text], .set input[type=number] { padding: 6px 8px; flex: none; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
   .set select { max-width: 50%; }
   .set input[type=text] { width: 120px; }
@@ -217,10 +216,9 @@
   <button id="newest" class="glass" type="button" hidden>Newest</button>
   <div id="first" class="glass" hidden>
     <h2 id="firsttitle">Set up Jarvis</h2>
-    <p id="firstbody">A few quick questions, by voice or by tapping. About a minute.</p>
+    <p id="firstbody"></p>
     <button id="start" type="button">Start setup</button>
     <button id="skip" type="button">Skip for now</button>
-    <small id="firsthint">If the terminal asks whether you trust this folder, answer that first.</small>
   </div>
   <div id="dock" class="glass">
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2"/></svg>
@@ -908,18 +906,18 @@ void main() {
       } else rest()
     },
     held: e => add('note', `Held for after your call: ${e.text}`, e.at),
-    queued: () => $('detail').textContent = 'A line is waiting for you to finish',
+    queued: () => $('detail').textContent = 'Line waiting',
     peak: e => { if (e.score < 0.5) $('detail').textContent = `Last try ${e.score}` },
     status: e => { if (/^Voice:|^Using |now on /.test(e.text)) add('note', e.text, e.at) },
     caption: e => add('note', e.text, e.at),
-    quiet: e => $('quiet').textContent = e.on ? `Staying quiet: ${e.text}. Lines wait, and the wake word must be clear.` : '',
+    quiet: e => $('quiet').textContent = e.on ? `Staying quiet: ${e.text}` : '',
     error: e => add('note fail', e.message, e.at),
   }
 
   // Settings: every change is saved and applied by the voice at once.
   async function saveSetting(key, value) {
     const r = await fetch('/settings', { method: 'POST', body: JSON.stringify({ key, value }) }).catch(() => null)
-    $('saved').textContent = r?.ok ? 'Saved. It applies now.' : "Couldn't save that."
+    $('saved').textContent = r?.ok ? 'Saved' : "Couldn't save that."
     if (r?.ok && key === 'MIC_DEVICE') loadMics()
     return r?.ok
   }
@@ -927,12 +925,11 @@ void main() {
     const list = (await (await fetch('/settings')).json()).filter(s => s.key !== 'MIC_DEVICE')
     $('rows').firstChild.replaceChildren(...list.map(s => {
       const row = document.createElement('label'), words = document.createElement('span')
-      const name = document.createElement('b'), hint = document.createElement('small')
+      const name = document.createElement('b')
       const input = document.createElement(s.device ? 'select' : 'input')
       row.className = 'set'
       name.textContent = s.label
-      hint.textContent = s.hint
-      words.append(name, hint)
+      words.append(name)
       if (s.device) {  // '' is Windows default; a saved device that's unplugged stays listed, so the pick shows
         const [names, value] = deviceList(s)
         input.append(...['', ...names].map(n => new Option(n || 'Windows default', n)))
@@ -1063,14 +1060,13 @@ void main() {
   // First run: a card with one button, until setup is started or skipped. It is the user pressing it that sends the
   // first message: at startup Claude Code may still be on its trust prompts, and a message sent then is lost.
   let firstTimer = 0
-  function firstCard(title, bodyText, button, hint = '') {
+  function firstCard(title, bodyText, button) {
     document.body.classList.add('first')
     $('first').hidden = false
     $('firsttitle').textContent = title
     $('firstbody').textContent = bodyText
     $('start').textContent = button
     $('start').disabled = false
-    $('firsthint').textContent = hint
     $('skip').hidden = false
   }
   function firstOver() {
@@ -1081,20 +1077,19 @@ void main() {
   async function checkFirst() {
     const todo = await fetch('/onboard').then(r => r.text()).catch(() => 'done') === 'todo'
     if (!todo) return firstOver()
-    firstCard('Set up Jarvis', 'A few quick questions, by voice or by tapping. About a minute.', 'Start setup', 'If the terminal asks whether you trust this folder, answer that first.')
+    firstCard('Set up Jarvis', '', 'Start setup')
   }
   $('start').onclick = async () => {
     $('start').disabled = true
     $('start').textContent = 'Starting'
     clearTimeout(firstTimer)
     const r = await fetch('/onboard', { method: 'POST', body: 'start' }).catch(() => null)
-    if (!r?.ok) return firstCard("Couldn't start", 'Jarvis did not answer. Try again in a moment.', 'Try again')
+    if (!r?.ok) return firstCard("Couldn't start", '', 'Try again')
     $('firsttitle').textContent = 'Jarvis is starting'
-    $('firstbody').textContent = 'Listen for the first question. Your answers show up here as buttons.'
+    $('firstbody').textContent = ''
     $('skip').hidden = true
-    $('firsthint').textContent = ''
-    // Claude Code takes a while to wake up the first time; with nothing by then, say what to check.
-    firstTimer = setTimeout(() => firstCard('Nothing yet', 'Claude Code may be waiting on a question in its terminal. Answer it, then try again.', 'Start again'), 30_000)
+    // Claude Code takes a while to wake up the first time; with nothing by then, offer another go.
+    firstTimer = setTimeout(() => firstCard('Nothing yet', '', 'Start again'), 30_000)
   }
   $('skip').onclick = async () => {
     await fetch('/onboard', { method: 'POST', body: 'skip' }).catch(() => null)

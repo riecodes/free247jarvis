@@ -639,22 +639,22 @@ if (env.VOICE_WINDOW !== 'off') openWindow()
 // The window's settings: the only names it can change, and what each may be. Saved in .env, so they last, and passed to
 // the listener at once. Never any other line of .env, and keys are never read out.
 const SETTINGS = [
-  { key: 'GREETING', label: 'Spoken greeting', hint: 'A few words when it hears its name.', options: ['on', 'off'] },
-  { key: 'SOUNDS', label: 'Sounds', hint: 'The chimes for listening, heard and done.', options: ['on', 'off'] },
-  { key: 'LISTEN_AFTER', label: 'Listen after every line', hint: 'Off: only after a line that asks you something.', options: ['all', 'asked'] },
-  { key: 'FOLLOWUP_SECONDS', label: 'Listening window', hint: 'Seconds it waits for you after speaking. 0: none.', min: 0, max: 120, fallback: '8' },
-  { key: 'CLOSING_CUT', label: 'Send when you sound done', hint: 'A finished request goes after 2 s of quiet, not 5. Unsure, it waits.', options: ['on', 'off'] },
-  { key: 'FAST_END', label: 'Send when your words are whole', hint: 'About 3.6 s after your last word, and you can still go on. Needs an Anthropic key.', options: ['on', 'off'], fallback: 'off' },
-  { key: 'REMINDERS', label: 'Reminders', hint: 'After a greeting, one thing that is waiting on you.', options: ['on', 'off'] },
-  { key: 'CLAP', label: 'Clap twice to wake it', hint: 'Works like "Hey Jarvis". Two snaps or tongue clicks wake it too.', options: ['on', 'off'], fallback: 'off' },
-  { key: 'TALK_OVER', label: 'Talk over it to stop it', hint: 'Off: only "Hey Jarvis" stops a reply.', options: ['on', 'off'] },
-  { key: 'CUT_OFF', label: 'Say when it got cut off', hint: 'After its ears stop, or a request is lost: says so, and the last thing it heard.', options: ['on', 'off'] },
-  { key: 'VOICE_MATCH', label: 'Only my voice', hint: 'A request that is clearly not in your voice is dropped. Unsure, it goes as before.', options: ['on', 'off'], fallback: 'off' },
-  { key: 'VOICE_DATA', label: 'Keep voice data', hint: 'Audio and words of each request, on this computer for 30 days, to learn your accent.', options: ['on', 'off'], fallback: 'off' },
-  { key: 'VOICE_TITLE', label: 'Call me', hint: 'Sir, Madam, your first name, or empty for nothing.', text: true },
+  { key: 'GREETING', label: 'Spoken greeting', options: ['on', 'off'] },
+  { key: 'SOUNDS', label: 'Sounds', options: ['on', 'off'] },
+  { key: 'LISTEN_AFTER', label: 'Listen after every line', options: ['all', 'asked'] },
+  { key: 'FOLLOWUP_SECONDS', label: 'Listening window', min: 0, max: 120, fallback: '8' },
+  { key: 'CLOSING_CUT', label: 'Send when you sound done', options: ['on', 'off'] },
+  { key: 'FAST_END', label: 'Send when your words are whole', options: ['on', 'off'], fallback: 'off' },
+  { key: 'REMINDERS', label: 'Reminders', options: ['on', 'off'] },
+  { key: 'CLAP', label: 'Clap twice to wake it', options: ['on', 'off'], fallback: 'off' },
+  { key: 'TALK_OVER', label: 'Talk over it to stop it', options: ['on', 'off'] },
+  { key: 'CUT_OFF', label: 'Say when it got cut off', options: ['on', 'off'] },
+  { key: 'VOICE_MATCH', label: 'Only my voice', options: ['on', 'off'], fallback: 'off' },
+  { key: 'VOICE_DATA', label: 'Keep voice data', options: ['on', 'off'], fallback: 'off' },
+  { key: 'VOICE_TITLE', label: 'Call me', text: true },
   { key: 'ONBOARDED', options: ['1'], hidden: true },  // set when the spoken onboarding is done (jarvis/CLAUDE.md)
-  { key: 'MIC_DEVICE', label: 'Microphone', hint: 'Applies at once, on this computer only.', device: 'input' },
-  { key: 'OUTPUT_DEVICE', label: 'Output', hint: 'Windows default follows Windows when it switches.', device: 'output' },
+  { key: 'MIC_DEVICE', label: 'Microphone', device: 'input' },
+  { key: 'OUTPUT_DEVICE', label: 'Output', device: 'output' },
 ]
 const settingValue = s => s.device || s.text ? env[s.key] ?? '' : env[s.key] || s.fallback || s.options[0]
 // A device is saved by its name, or '' for Windows default; nothing that could start another line of .env, and no bare
