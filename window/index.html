@@ -176,18 +176,19 @@
   #skip { margin-top: 8px; padding: 8px 12px; border: 0; background: none; color: var(--dim); cursor: pointer; border-radius: 10px; }
   #skip:hover { color: var(--text); }
 
-  /* Settings: a sheet that rises over the chat. */
-  #scrim { position: absolute; inset: 0; z-index: 4; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity .3s; }
+  /* Settings: a sheet that shoots up over the whole window (title bar included), from the bottom edge where the dock is. */
+  #scrim { position: fixed; inset: 0; z-index: 4; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity .3s; }
   #panel {
-    position: absolute; left: 0; right: 0; bottom: 0; top: 24px; z-index: 5; display: flex; flex-direction: column; border-radius: 24px 24px 0 0;
-    background: var(--sheet); border: 1px solid var(--glass-line); border-bottom: 0; box-shadow: inset 0 1px 0 var(--hi);
+    position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column;
+    background: var(--sheet);
     -webkit-backdrop-filter: blur(28px) saturate(1.6); backdrop-filter: blur(28px) saturate(1.6);
     transform: translateY(100%); visibility: hidden; transition: transform .45s var(--ease), visibility 0s .45s;
   }
   body.sheet #panel { transform: none; visibility: visible; transition: transform .45s var(--ease), visibility 0s; }
   body.sheet #scrim { opacity: 1; pointer-events: auto; }
-  .grab { flex: none; width: 36px; height: 4px; margin: 8px auto 0; border-radius: 2px; background: var(--off); }
-  .sheethead { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 8px 16px 8px 20px; }
+  /* Same row as the window header: Done stays clear of the window buttons, and the row still drags the window. */
+  .sheethead { flex: none; height: 46px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; padding: 0 calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 16px) 0 calc(env(titlebar-area-x, 0px) + 20px); -webkit-app-region: drag; app-region: drag; }
+  .sheethead button { -webkit-app-region: no-drag; app-region: no-drag; }
   .sheethead b { font-weight: 500; font-size: 15px; }
   #done { padding: 6px 12px; border: 0; border-radius: 12px; background: var(--line); cursor: pointer; }
   #rows { flex: 1; min-height: 0; overflow-y: auto; margin: 0 16px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); scrollbar-width: thin; }
@@ -241,12 +242,11 @@
     <button id="gear" type="button" aria-label="Settings" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2 4.5h8M13 4.5h1M2 11.5h1M6 11.5h8"/><circle cx="11.5" cy="4.5" r="1.5"/><circle cx="4.5" cy="11.5" r="1.5"/></svg></button>
   </div>
   <div id="scrim"></div>
-  <div id="panel" inert>
-    <div class="grab"></div>
-    <div class="sheethead"><b>Settings</b><button id="done" type="button">Done</button></div>
-    <div id="rows"><div></div></div>
-    <div id="saved"></div>
-  </div>
+</div>
+<div id="panel" inert>
+  <div class="sheethead"><b>Settings</b><button id="done" type="button">Done</button></div>
+  <div id="rows"><div></div></div>
+  <div id="saved"></div>
 </div>
 <script>
   const $ = id => document.getElementById(id);  // the ; matters: the bundle below starts with a parenthesis
@@ -980,11 +980,12 @@ void main() {
     return [value && !s.choices.includes(value) ? [...s.choices, value] : s.choices, value]
   }
   async function sheet(open) {
-    if (open) await openSettings()
+    // Rise at once; the rows fill in as soon as the voice answers (it can take half a second).
     document.body.classList.toggle('sheet', open)
     $('panel').inert = !open
     $('gear').setAttribute('aria-expanded', open)
     if (open) $('done').focus({ preventScroll: true }); else $('gear').focus({ preventScroll: true })
+    if (open) await openSettings()
   }
   $('gear').onclick = () => sheet(true)
   $('done').onclick = $('scrim').onclick = () => sheet(false)
