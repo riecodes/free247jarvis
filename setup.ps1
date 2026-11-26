@@ -12,8 +12,12 @@ elseif ([version]((claude --version) -replace '^(\S+).*', '$1') -lt [version]'2.
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { $missing += 'Node.js 20 or later (https://nodejs.org)' }
 if (-not (Get-Command wt -ErrorAction SilentlyContinue)) { $missing += 'Windows Terminal (winget install Microsoft.WindowsTerminal)' }
 $py = $null
+$old = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
+$pys = if (Get-Command py -ErrorAction SilentlyContinue) { (py -0 2>&1 | Out-String) } else { '' }  # py -0 lists them; asking for one that is missing prints red errors
+$ErrorActionPreference = $old
 foreach ($v in '3.12', '3.11', '3.13', '3.10') {
-    if ((Get-Command py -ErrorAction SilentlyContinue) -and (py "-$v" -c 'print(1)' 2>$null) -eq '1') { $py = @('py', "-$v"); break }
+    if ($pys -match "(-V:|-)$([regex]::Escape($v))\b") { $py = @('py', "-$v"); break }
+}
 }
 if (-not $py) { $missing += 'Python 3.10 to 3.13 (winget install Python.Python.3.11)' }
 if ($missing) {
@@ -44,4 +48,4 @@ if ((Get-Content .env -Raw) -notmatch 'GROQ_API_KEY=\S') {
 }
 
 # Voice data (VOICE_DATA) and the other choices are asked out loud by Jarvis on its first start.
-'Setup done. Start Jarvis with: powershell -ExecutionPolicy Bypass -File start.ps1'
+'Voice packages and models are ready. (Start Jarvis with start.ps1 when the install is finished.)'

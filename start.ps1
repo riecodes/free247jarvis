@@ -3,8 +3,8 @@
 # "I am using this for local development". Then say "Hey Jarvis".
 # Jarvis works in the jarvis folder, whose .mcp.json and CLAUDE.md only it loads.
 # -Engine elevenlabs uses the pro voice (projarvis, JARVIS_PRO in .env) for this run, -Engine free the free one,
-# whatever VOICE_ENGINE in .env says.
-param([string]$Engine)
+# whatever VOICE_ENGINE in .env says. -Quiet (the installer) skips the messages: it prints its own next steps.
+param([string]$Engine, [switch]$Quiet)
 if ($Engine) { $env:VOICE_ENGINE = $Engine }
 $jarvis = Join-Path $PSScriptRoot 'jarvis'
 
@@ -19,7 +19,7 @@ $trusted = (node -e 'try{const p=require(require(`os`).homedir()+`/.claude.json`
 
 Start-Process wt.exe -ArgumentList '-w', 'new', '--title', 'Jarvis', '-d', "`"$jarvis`"", 'claude', '--name', 'jarvis',
     '--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:voice'
-if (-not $trusted) {
+if (-not $trusted -and -not $Quiet) {
     "First start here: in the Jarvis window pick `"Yes, I trust this folder`" (asked only once; `"No, exit`" closes it)."
 }
-"Jarvis starting. Confirm the development channel in its window, then say `"Hey Jarvis`"."
+if (-not $Quiet) { "Jarvis starting. Confirm the development channel in its window, then say `"Hey Jarvis`"." }

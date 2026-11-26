@@ -117,7 +117,7 @@ If you would rather do it by hand:
    voice speaks in about half a second instead of two (that needs the CUDA toolkit and cuDNN;
    without them it runs on the processor).
 3. **Add your Groq key.** Get a free key at <https://console.groq.com/keys> (no card needed) and
-   put it in `.env`: `GROQ_API_KEY=gsk_...`. Run `setup.ps1` again until it says "Setup done".
+   put it in `.env`: `GROQ_API_KEY=gsk_...`. Run `setup.ps1` again until it says "Voice packages and models are ready".
 4. **Start Jarvis.** `powershell -ExecutionPolicy Bypass -File start.ps1`. The very first time,
    the new window asks whether you trust the folder: pick **Yes, I trust this folder** (once; "No,
    exit" closes the window). Then pick **I am using this for local development** (Claude Code asks

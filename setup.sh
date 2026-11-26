@@ -27,4 +27,4 @@ if ! grep -Eq '^GROQ_API_KEY=[^[:space:]]' .env; then
 fi
 
 # Voice data (VOICE_DATA) and the other choices are asked out loud by Jarvis on its first start.
-echo 'Setup done. Start Jarvis with: sh start.sh'
+echo 'Voice packages and models are ready. (Start Jarvis with start.sh when the install is finished.)'

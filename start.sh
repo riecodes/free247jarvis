@@ -2,6 +2,7 @@
 # macOS: starts Jarvis, like start.ps1 on Windows: a Claude Code session named "jarvis" in a new Terminal window, with
 # the voice channel loaded. Pick "I am using this for local development" there, then say "Hey Jarvis". Untested on macOS.
 #   sh start.sh              free voice
+#   sh start.sh "" quiet     free voice, without the closing messages (the installer prints its own)
 #   sh start.sh elevenlabs   the pro voice (projarvis, JARVIS_PRO in .env) for this run, whatever VOICE_ENGINE in .env says
 # Terminal gives claude its own terminal, so nothing here reads from /dev/tty.
 cd "$(dirname "$0")" || exit 1
@@ -17,5 +18,5 @@ on run argv
   end tell
 end run
 EOF
-echo 'Jarvis starting. The first time, pick "Yes, I trust this folder"; then confirm the development channel in its window,'
-echo 'allow Terminal to use the microphone when macOS asks, and say "Hey Jarvis".'
+[ "${2:-}" = quiet ] || echo 'Jarvis starting. The first time, pick "Yes, I trust this folder"; then confirm the development channel in its window,'
+[ "${2:-}" = quiet ] || echo 'allow Terminal to use the microphone when macOS asks, and say "Hey Jarvis".'

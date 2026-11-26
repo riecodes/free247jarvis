@@ -93,13 +93,26 @@ main() {
     npm install --silent --prefix window </dev/null && node window/node_modules/electron/install.js </dev/null
   fi
 
-  say "Jarvis is installed in $dir"
-  if [ "${JARVIS_NO_START:-}" = 1 ]; then say 'Start it any time with: sh start.sh'; return 0; fi
-  if [ "$(uname)" != Darwin ]; then say "Start it with: cd $dir/jarvis && claude --name jarvis --dangerously-skip-permissions --dangerously-load-development-channels server:voice"; return 0; fi
+  if [ "${JARVIS_NO_START:-}" = 1 ]; then say 'Jarvis is installed. Start it any time with: sh start.sh'; return 0; fi
 
-  # 7. Start
-  say 'Starting Jarvis in a new Terminal window. The first time, pick "Yes, I trust this folder", then "I am using this for local development".'
-  say 'New to Claude Code? Log in there with your Claude account first. Then Jarvis greets you.'
-  sh start.sh </dev/null
+  # 7. Start Jarvis, then the finish block. It is the last thing printed, and nothing runs after it.
+  steps='     1. Pick "Yes, I trust this folder".\n     2. Pick "I am using this for local development".\n     3. If Claude Code asks you to log in, log in with your Claude account.\n     4. Wait for Jarvis to greet you, then say "Hey Jarvis".'
+  if [ "$(uname)" = Darwin ]; then
+    sh start.sh "" quiet </dev/null >/dev/null 2>&1
+    where='in the new Terminal window'; again="sh $dir/start.sh"
+    extra='     (Allow Terminal to use the microphone when macOS asks.)'
+  else
+    where="in a new terminal (Jarvis has no window launcher on Linux yet). Run this there"; again="cd $dir/jarvis && claude --name jarvis --dangerously-skip-permissions --dangerously-load-development-channels server:voice"
+    extra=''
+  fi
+  echo
+  printf '\033[32m\xf0\x9f\x92\xa0 Jarvis is installed.\033[0m\n\n'
+  say "Next, $where:"
+  [ "$(uname)" = Darwin ] || printf '     %s\n' "$again"
+  printf "$steps\n"
+  [ -n "$extra" ] && echo "$extra"
+  echo
+  say 'Start it again later:'; printf '     %s\n' "$again"
+  say 'Uninstall it:'; printf '     sh %s/uninstall.sh\n\n' "$dir"
 }
 main

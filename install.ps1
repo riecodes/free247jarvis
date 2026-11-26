@@ -20,7 +20,14 @@
     $env:Path = "$bin;" + [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
     [bool](Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -notlike '*\WindowsApps\claude.exe' })
   }
-  function HasPython { (Has 'py') -and @('3.12', '3.11', '3.13', '3.10' | Where-Object { (py "-$_" -c 'print(1)' 2>$null) -eq '1' }).Count -gt 0 }
+  # py -0 lists the installed Pythons; asking py for one that is not there prints red errors in Windows PowerShell 5.1.
+  function HasPython {
+    if (-not (Has 'py')) { return $false }
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
+    $list = (py -0 2>&1 | Out-String)
+    $ErrorActionPreference = $old
+    [bool]($list -match '(-V:|-)3\.(10|11|12|13)\b')
+  }
   function Winget([string]$id, [string]$label) {
     if (-not (Has 'winget')) { Fail "Can't install $label without WinGet. Install it from the Microsoft Store (App Installer), then run this again."; return }
     Say "Installing $label..."
@@ -73,7 +80,7 @@
     git clone --quiet --branch $branch https://github.com/riecodes/freejarvis.git $dir
     if ($LASTEXITCODE -ne 0) { Fail 'Download failed. Check your internet and run this again.'; return }
   }
-  Set-Location $dir
+  Push-Location $dir
 
   # 4. Groq key (free, no card): the only thing you type.
   $envFile = Join-Path $dir '.env'
@@ -105,7 +112,7 @@
   # 5. Setup: Python and Node packages, models (a few hundred MB the first time).
   Say 'Setting up the voice: packages and models. The first time takes a few minutes.'
   powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'setup.ps1') | Out-Host
-  if ($LASTEXITCODE -ne 0) { Fail 'Setup stopped (see above). Fix that and run this line again.'; return }
+  if ($LASTEXITCODE -ne 0) { Fail 'Setup stopped (see above). Fix that and run this line again.'; Pop-Location; return }
 
   # 6. The window: Jarvis shows its words and buttons there.
   if ($env:JARVIS_NO_WINDOW -ne '1' -and -not (Test-Path (Join-Path $dir 'window\node_modules\electron\dist\electron.exe'))) {
@@ -114,11 +121,27 @@
     node (Join-Path $dir 'window\node_modules\electron\install.js') | Out-Host
   }
 
-  Say "Jarvis is installed in $dir" 'Green'
-  if ($env:JARVIS_NO_START -eq '1') { Say 'Start it any time with: powershell -ExecutionPolicy Bypass -File start.ps1' 'DarkCyan'; return }
+  if ($env:JARVIS_NO_START -eq '1') {
+    Pop-Location
+    Say 'Jarvis is installed. Start it any time with: powershell -ExecutionPolicy Bypass -File start.ps1' 'Green'
+    return
+  }
 
-  # 7. Start
-  Say 'Starting Jarvis in a new window. The first time, pick "Yes, I trust this folder", then "I am using this for local development".'
-  Say 'New to Claude Code? Log in there with your Claude account first. Then Jarvis greets you.'
-  powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'start.ps1') | Out-Host
+  # 7. Start Jarvis in its own window, then the finish block. It is the last thing printed, and nothing runs after it.
+  powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'start.ps1') -Quiet | Out-Null
+  Pop-Location
+  Write-Host ''
+  Say 'Jarvis is installed.' 'Green'
+  Write-Host ''
+  Say 'Next, in the new Jarvis window:' 'White'
+  Write-Host '     1. Pick "Yes, I trust this folder".'
+  Write-Host '     2. Pick "I am using this for local development".'
+  Write-Host '     3. If Claude Code asks you to log in, log in with your Claude account.'
+  Write-Host '     4. Wait for Jarvis to greet you, then say "Hey Jarvis".'
+  Write-Host ''
+  Say 'Start it again later:' 'DarkCyan'
+  Write-Host "     powershell -ExecutionPolicy Bypass -File `"$dir\start.ps1`""
+  Say 'Uninstall it:' 'DarkCyan'
+  Write-Host "     powershell -ExecutionPolicy Bypass -File `"$dir\uninstall.ps1`""
+  Write-Host ''
 }
