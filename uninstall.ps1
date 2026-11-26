@@ -8,14 +8,24 @@ $gem = [char]::ConvertFromUtf32(0x1F4A0)
 function Say([string]$text, [string]$color = 'Cyan') { Write-Host "$gem $text" -ForegroundColor $color }
 
 Say 'Stopping Jarvis...'
-# Its own processes: anything started from this folder, and the voice server on its port (it starts as "node ../voice.mjs").
+# Its own processes: anything started from this folder, and the voice server on its port (it starts as "node ../voice.mjs",
+# so only the port owner whose parent chain reaches Jarvis's own Claude session counts: another app, or another
+# Claude session's voice, may own that port and is left alone).
 $port = if ($env:VOICE_PORT) { [int]$env:VOICE_PORT } else { 8790 }
-$voice = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object OwningProcess)
-Get-CimInstance Win32_Process | Where-Object {
+$all = @(Get-CimInstance Win32_Process)
+$jarvis = { param($p) $p.Name -match '^(claude|node)\.exe$' -and $p.CommandLine -match '--name jarvis\b' }
+$mine = {
+  param($p)
+  for ($i = 0; $p -and $i -lt 8; $i++) { if (& $jarvis $p) { return $true }; $p = $all | Where-Object ProcessId -eq $p.ParentProcessId | Select-Object -First 1 }
+  $false
+}
+$voice = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object OwningProcess |
+  Where-Object { $id = $_; & $mine ($all | Where-Object ProcessId -eq $id | Select-Object -First 1) })
+$all | Where-Object {
   (($_.Name -match '^(node|python|pythonw|electron)\.exe$' -and
     ((($_.ExecutablePath, $_.CommandLine) -join ' ') -like "*$dir*" -or $voice -contains $_.ProcessId)) -or
    # Jarvis's own Claude Code session (start.ps1 names it): it sits in the jarvis folder, which can't be deleted under it
-   ($_.Name -match '^(claude|node)\.exe$' -and $_.CommandLine -match '--name jarvis\b'))
+   (& $jarvis $_))
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 2
 
