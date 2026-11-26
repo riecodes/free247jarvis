@@ -42,6 +42,7 @@ $all | Where-Object {
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 2
 
+& (Join-Path $dir 'shortcut.ps1') -Remove
 Say "Deleting $dir ..."
 Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
 if (Test-Path $dir) {

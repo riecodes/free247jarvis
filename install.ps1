@@ -121,6 +121,9 @@
     node (Join-Path $dir 'window\node_modules\electron\install.js') | Out-Host
   }
 
+  # The Start Menu shortcut, so Win+S finds "Jarvis".
+  try { & (Join-Path $dir 'shortcut.ps1') } catch { Say 'No Start Menu shortcut (not needed to run Jarvis).' 'Yellow' }
+
   if ($env:JARVIS_NO_START -eq '1') {
     Pop-Location
     Say 'Jarvis is installed. Start it any time: tell Claude "start Jarvis from this folder".' 'Green'
