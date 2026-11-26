@@ -4,6 +4,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
+import net from 'node:net'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
@@ -66,6 +67,12 @@ assert.strictEqual(withTitle('The vlog is rendering.', 'Sir'), withTitle('The vl
 const PORT = Number(process.env.CHECK_PORT) || 8797  // CHECK_PORT: another app holds 8797 to 8799 (a wrangler dev server)
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const TMP = join(HERE, 'tmp', 'check')
+// The checks bind PORT to PORT+2. Something already there (a spare-port test server, a dev server) made the vlog check
+// fail much later with no message, so say so now.
+for (const port of [PORT, PORT + 1, PORT + 2]) {
+  const busy = await new Promise(r => { const s = net.connect(port, '127.0.0.1'); s.once('connect', () => { s.destroy(); r(true) }); s.once('error', () => r(false)) })
+  assert(!busy, `port ${port} is in use; stop what holds it, or set CHECK_PORT to a free base (it needs three ports in a row)`)
+}
 mkdirSync(TMP, { recursive: true })
 const STUB = join(TMP, 'stub.py'), STARTS = join(TMP, 'starts.txt'), LOG = join(TMP, 'voice.log')
 rmSync(STARTS, { force: true })
