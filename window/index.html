@@ -119,6 +119,20 @@
   #looks .sw:active { transform: scale(.92); }
   #looks .sw[aria-pressed=true] { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
   #looks input[type=range] { width: 100%; accent-color: var(--accent); }
+  /* Fidget: press, drag and hold the orb. A long press morphs it into this pill (Dynamic Island style); the page's
+     springs drive the size, so it can be grabbed mid-way. The orb itself slides into the pill's left slot. */
+  #orbbox { position: relative; z-index: 2; touch-action: none; user-select: none; cursor: grab; border-radius: 50%; outline-offset: -8px; }
+  #orbbox:active { cursor: grabbing; }
+  #pill { transition: opacity .2s; position: absolute; z-index: 1; left: 50%; top: 50%; overflow: hidden; opacity: 0; visibility: hidden; border-radius: 50%; transform: translate(-50%, -50%); }
+  #pill.open { visibility: visible; }
+  #pillin { position: absolute; left: 0; top: 0; height: 100%; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 72px; box-sizing: border-box; }
+  #pillin .pt { flex: 1 1 0; min-width: 0; display: grid; gap: 6px; }
+  #pillstate { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #pilllvl { display: block; height: 4px; border-radius: 2px; background: var(--off); overflow: hidden; }
+  #pilllvl b { display: block; height: 100%; border-radius: 2px; background: var(--accent); transform-origin: left; transform: scaleX(0); }
+  #pillin .chip { flex: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 14px; background: transparent; font-size: 12px; cursor: pointer; transition: background-color .15s, color .15s; }
+  #pillin .chip:hover { background: var(--line); }
+  #pillin .chip[aria-pressed=true] { background: var(--mine); color: var(--mine-text); border-color: var(--mine); }
   /* The dock: the microphone, picked here, with a bar that moves when it hears you. */
   #dock { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; border-radius: 20px; }
   #dock svg { flex: none; color: var(--dim); }
@@ -180,6 +194,7 @@
   #saved { flex: none; min-height: 32px; padding: 8px 20px 12px; color: var(--dim); font-size: 11px; }
   @media (prefers-reduced-motion: reduce) {
     #stage, #orbbox, #panel, #scrim, #looks { transition: none; }
+    #pill { transition: opacity .2s; }
     .dots i { animation: none; opacity: .7; }
     .set input[type=checkbox]::after { transition: none; }
   }
@@ -191,7 +206,8 @@
   <span id="detail"></span>
 </header>
 <div id="quiet"></div>
-<div id="stage"><div id="orbbox"><canvas id="orb" aria-hidden="true"></canvas></div>
+<div id="stage"><div id="pill" class="glass" inert><div id="pillin"><div class="pt"><span id="pillstate"></span><i id="pilllvl"><b></b></i></div><button id="pillmic" class="chip" type="button" aria-pressed="true">Mic on</button><button id="pilllook" class="chip" type="button">Style</button></div></div>
+  <div id="orbbox" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false" aria-label="Jarvis orb. Press and hold, or press Enter, for controls"><canvas id="orb" aria-hidden="true"></canvas></div>
   <button id="look" class="glass" type="button" aria-label="Orb style" aria-expanded="false" hidden><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 6.5c2-1.2 5 .8 7-.3M4.5 10c2-1.2 5 .8 7-.3"/></svg></button>
 </div>
 <div id="looks" class="glass" hidden><div><span class="cap">Finish</span><div class="row" id="finishes"></div></div><div><span class="cap">Colors</span><div class="row" id="palettes"></div></div><div><label for="grain">Grain</label><input id="grain" type="range" min="0" max="100" step="5"></div></div>
@@ -494,9 +510,63 @@ void main() {
     // The whole orb swells with the voice, the way a voice orb does: Jarvis speaking 1.00 to 1.12 on the smoothed output
     // level, listening up to 1.05 on the mic, a slow breath otherwise. Quick to grow, slower to settle, so it follows
     // syllables without jitter. Reduced motion keeps the colors and drops the scale.
-    const box = $('orbbox')
-    let scale = 1
-    const swell = () => {
+    // On top of that the orb is a toy, like the Dynamic Island: a press squishes it (.94), a drag pulls it like jelly,
+    // a tap bounces it, and a long press (400 ms) or Enter morphs it into the pill. Everything the fingers move is a
+    // spring (position, stretch, morph), so grabbing it mid-bounce carries on from where it is. Each frame is one
+    // transform: fidget x voice x morph. Reduced motion: no bounce or stretch, and the morph is a plain crossfade.
+    const SPHERE = 1  // the sphere fills the canvas box (measured)
+    const box = $('orbbox'), pill = $('pill'), HOLD = 400, PILLH = 72
+    let scale = 1, at = performance.now(), open = false, down = null
+    const sp = (v = 1) => ({ x: v, v: 0, to: v })  // a spring: x chases to
+    const X = sp(0), Y = sp(0), SX = sp(1), SY = sp(1), M = sp(0)
+    const step = (q, k, c, dt) => { q.v += (k * (q.to - q.x) - c * q.v) * dt; q.x += q.v * dt }
+    const setOpen = v => {
+      if (v === open) return
+      open = v
+      M.to = v ? 1 : 0
+      pill.classList.toggle('open', v || M.x > .01)
+      pill.toggleAttribute('inert', !v)
+      box.setAttribute('aria-expanded', v)
+      if (v) pill.classList.add('open')
+      if (v) $('pillstate').textContent = $('state').textContent
+      if (calm.matches) M.x = M.to
+    }
+    const release = () => {
+      down = null
+      SX.to = SY.to = 1; X.to = Y.to = 0
+    }
+    box.addEventListener('pointerdown', e => {
+      if (e.button) return
+      box.setPointerCapture(e.pointerId)
+      down = { x: e.clientX, y: e.clientY, at: performance.now(), moved: false, held: false }
+      if (!calm.matches) SX.to = SY.to = .94
+      down.timer = setTimeout(() => { if (down && !down.moved) { down.held = true; setOpen(true); release(); down = { held: true } } }, HOLD)
+    })
+    box.addEventListener('pointermove', e => {
+      if (!down || down.held) return
+      if (!e.buttons) return up(e)  // the button came up somewhere we did not hear
+      const dx = e.clientX - down.x, dy = e.clientY - down.y
+      if (!down.moved && Math.hypot(dx, dy) < 8) return
+      down.moved = true
+      clearTimeout(down.timer)
+      if (calm.matches || open) return
+      X.to = 30 * Math.tanh(dx / 80); Y.to = 30 * Math.tanh(dy / 80)  // rubber band: always a little further, never far
+      SX.to = .94 + Math.min(.14, Math.abs(dx) / 300); SY.to = .94 + Math.min(.14, Math.abs(dy) / 300)
+    })
+    const up = e => {
+      if (!down) return
+      clearTimeout(down.timer)
+      const tap = !down.held && !down.moved && performance.now() - down.at < 300
+      release()
+      if (tap && !calm.matches) SX.v = SY.v = 2.4  // a plain tap: only a bounce, never an action
+    }
+    box.addEventListener('pointerup', up)
+    box.addEventListener('pointercancel', up)
+    box.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!open) } })
+    document.addEventListener('pointerdown', e => { if (open && !pill.contains(e.target) && !box.contains(e.target)) setOpen(false) })
+    addEventListener('keydown', e => { if (e.key === 'Escape' && open) { setOpen(false); box.focus({ preventScroll: true }) } })
+    const swell = now => {
+      const dt = Math.min(1 / 30, (now - at) / 1000 || 1 / 60); at = now
       let to = 1
       if (!calm.matches) {
         if (mood === 'speak') to = 1 + .12 * Math.min(1, Date.now() - outAt < 400 ? outLvl : .25 + .5 * wave())
@@ -504,11 +574,27 @@ void main() {
         else to = 1.01 + .01 * Math.sin(Date.now() / 1000 * 1.3)
       }
       scale += (to - scale) * (to > scale ? .4 : .1)
-      box.style.transform = `scale(${scale.toFixed(4)})`
+      if (calm.matches) { X.x = Y.x = 0; SX.x = SY.x = 1; M.x = M.to } else {
+        step(X, 220, 14, dt); step(Y, 220, 14, dt); step(SX, 220, 12, dt); step(SY, 220, 12, dt); step(M, 240, 26, dt)
+      }
+      const m = Math.max(0, M.x), d = box.offsetHeight, sphere = d * SPHERE
+      const W = Math.min(340, $('stage').clientWidth - 24)
+      // the orb's own sphere becomes the pill's left slot (48 px wide), and the pill grows out from the sphere's size
+      const ms = 1 + (48 / sphere - 1) * m, slot = (48 - W) / 2 + 12
+      box.style.transform = `translate(${(X.x + m * slot).toFixed(2)}px, ${Y.x.toFixed(2)}px) scale(${(scale * SX.x * ms).toFixed(4)}, ${(scale * SY.x * ms).toFixed(4)})`
+      if (m > .004 || open) {
+        const w = sphere + (W - sphere) * m, h = sphere + (PILLH - sphere) * m
+        Object.assign(pill.style, { width: w + 'px', height: h + 'px', borderRadius: Math.min(w, h) / 2 + (24 - Math.min(w, h) / 2) * Math.min(1, m) + 'px', opacity: calm.matches ? (open ? 1 : 0) : Math.min(1, m * 5) })
+        $('pillin').style.width = W + 'px'
+        $('pillin').style.opacity = Math.max(0, Math.min(1, (m - .6) * 3))
+        $('pilllvl').firstChild.style.transform = `scaleX(${Math.min(1, mood === 'speak' ? outLvl : lvl).toFixed(2)})`
+        $('pillstate').textContent = $('state').textContent
+      } else pill.classList.remove('open')
       requestAnimationFrame(swell)
     }
-    swell()
+    requestAnimationFrame(swell)
     return {
+      pill: { open: setOpen, get isOpen() { return open } },
       set(m) { mood = m; r.update({ state: STATES[m] ?? 'idle' }); draw() },
       look: () => look, palettes: orbPalettes, field,
       change(next) {  // live while choosing, and kept for the next run
@@ -922,6 +1008,18 @@ void main() {
   document.addEventListener('click', e => { if (!$('looks').hidden && !$('looks').contains(e.target)) looks(false) })
   addEventListener('keydown', e => { if (e.key === 'Escape') looks(false) })
   lookPanel()
+  // The pill's controls: the microphone and the orb's style, nothing that sends anything.
+  if (orb) {
+    $('pillmic').onclick = async () => {
+      const want = !on
+      await fetch('/mic', { method: 'POST', body: want ? 'on' : 'off' }).catch(() => {})
+    }
+    $('pilllook').onclick = e => { e.stopPropagation(); orb.pill.open(false); looks(true) }
+    setInterval(() => {
+      $('pillmic').textContent = on ? 'Mic on' : 'Mic off'
+      $('pillmic').setAttribute('aria-pressed', on)
+    }, 200)
+  }
 
   // The dock: pick the microphone, and see it hear you. The listener sends a level about ten times a second while this
   // window is open and Jarvis is waiting for its name; the bar and the orb follow it, and a silent mic says so.
