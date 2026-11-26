@@ -18,7 +18,6 @@ $ErrorActionPreference = $old
 foreach ($v in '3.12', '3.11', '3.13', '3.10') {
     if ($pys -match "(-V:|-)$([regex]::Escape($v))\b") { $py = @('py', "-$v"); break }
 }
-}
 if (-not $py) { $missing += 'Python 3.10 to 3.13 (winget install Python.Python.3.11)' }
 if ($missing) {
     'Missing:'
