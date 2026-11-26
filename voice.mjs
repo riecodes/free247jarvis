@@ -183,7 +183,7 @@ function showCaption(text, toast = false) {
   log(`caption: ${text}`)
   if (text === captioned && Date.now() - captionedAt < CAPTION_GAP) return
   [captioned, captionedAt] = [text, Date.now()]
-  show('caption', { text })
+  show('caption', { text, looking: toast })
   if (toast || (!watchers.size && !quiet)) showToast(text)
 }
 let quiet = false // the listener thinks the user is with someone: no notification unless they asked for it

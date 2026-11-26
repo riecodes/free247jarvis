@@ -56,7 +56,7 @@
   #orbbox { flex: none; height: calc(var(--s) - 36px); aspect-ratio: 1; will-change: transform; transition: height .55s var(--ease); }  /* the box sizes the canvas, never the other way round */
   #orb { display: block; width: 100%; height: 100%; }
   @media (max-height: 460px) { #stage { display: none; } }
-  #wrap { flex: 1; position: relative; min-height: 0; overflow: hidden; }
+  #wrap { flex: 1; position: relative; min-height: 0; overflow: clip; }  /* clip, not hidden: focusing something in the off-screen sheet must not scroll this */
   #chat { height: 100%; overflow-y: auto; padding: 12px 16px 84px; display: flex; flex-direction: column; gap: 8px; scrollbar-width: thin; }
   #chat:empty::before { content: "Say \201CHey Jarvis\201D"; margin: auto; color: var(--dim); }
   body.first #chat:empty::before { content: none; }
@@ -100,13 +100,20 @@
   .dots i:nth-child(2) { animation-delay: .2s; }
   .dots i:nth-child(3) { animation-delay: .4s; }
   @keyframes dot { 30% { opacity: 1; } }
-  #newest { position: absolute; bottom: 84px; left: 50%; transform: translateX(-50%); padding: 4px 12px; border-radius: 14px; font-size: 12px; cursor: pointer; }
+  #newest { position: absolute; bottom: 84px; left: 50%; width: 36px; height: 36px; margin-left: -18px; display: grid; place-items: center; padding: 0; border-radius: 50%; color: var(--text); cursor: pointer; transition: transform .15s; }
+  #newest:active { transform: scale(.92); }
   #newest[hidden] { display: none; }
+  #newest.fresh::after { content: ""; position: absolute; top: 2px; right: 2px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg); }
+  .msg { position: relative; }
+  .copy { position: absolute; top: 4px; right: 4px; padding: 2px 8px; border: 0; border-radius: 8px; background: var(--line); color: var(--dim); font-size: 11px; cursor: pointer; opacity: 0; transition: opacity .15s; }
+  .msg:hover .copy, .copy:focus-visible { opacity: 1; }
+  .you .copy { color: var(--mine-text); background: rgba(127, 127, 127, .3); }
 
   /* The orb's look: one small button on the orb, a popover with the choices, applied live and remembered. */
   #stage { position: relative; }
-  #look { position: absolute; top: 10px; right: 12px; width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border-radius: 50%; color: var(--dim); cursor: pointer; transition: color .15s, transform .15s; }
-  #look:hover { color: var(--text); }
+  #look { position: absolute; top: 10px; right: 12px; width: 36px; height: 36px; display: grid; place-items: center; padding: 0; border-radius: 50%; color: var(--dim); cursor: pointer; transition: color .15s, transform .15s; }
+  #look:hover, #look[aria-expanded=true] { color: var(--text); }
+  #look .b { fill: var(--accent); stroke: none; opacity: .9; }
   #look:active { transform: scale(.94); }
   #looks { position: fixed; bottom: 76px; left: 12px; right: 12px; margin: 0 auto; z-index: 3; max-width: 360px; padding: 14px 16px; border-radius: 20px; display: grid; gap: 12px; transform-origin: bottom center; transition: opacity .2s, transform .35s var(--ease), visibility 0s; }
   #looks[hidden] { display: grid; opacity: 0; transform: scale(.92); visibility: hidden; pointer-events: none; transition: opacity .2s, transform .35s var(--ease), visibility 0s .35s; }
@@ -136,7 +143,13 @@
   #pillin .chip[aria-pressed=true] { background: var(--mine); color: var(--mine-text); border-color: var(--mine); }
   /* The dock: the microphone, picked here, with a bar that moves when it hears you. */
   #dock { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; border-radius: 20px; }
-  #dock svg { flex: none; color: var(--dim); }
+  #dock svg { flex: none; }
+  #micbtn { flex: none; width: 32px; height: 32px; display: grid; place-items: center; margin: -4px 0 -4px -6px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--dim); cursor: pointer; transition: background-color .15s, color .15s, transform .15s; }
+  #micbtn:hover { background: var(--line); color: var(--text); }
+  #micbtn:active { transform: scale(.92); }
+  #micbtn .slash { display: none; }
+  #micbtn[aria-pressed=false] { color: var(--bad); opacity: .85; }
+  #micbtn[aria-pressed=false] .slash { display: block; }
   #micpick { flex: 1 1 0; min-width: 0; padding: 6px 8px; border: 0; border-radius: 10px; background: transparent; font-size: 12px; text-overflow: ellipsis; cursor: pointer; }
   #micpick:hover { background: var(--line); }
   #micpick option { background: var(--panel); color: var(--text); }
@@ -208,12 +221,12 @@
 <div id="quiet"></div>
 <div id="stage"><div id="pill" class="glass" inert><div id="pillin"><div class="pt"><span id="pillstate"></span><i id="pilllvl"><b></b></i></div><button id="pillmic" class="chip" type="button" aria-pressed="true">Mic on</button><button id="pillstop" class="chip" type="button" hidden>Stop</button><button id="pilllook" class="chip" type="button">Style</button></div></div>
   <div id="orbbox" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false" aria-label="Jarvis orb. Press and hold, or press Enter, for controls"><canvas id="orb" aria-hidden="true"></canvas></div>
-  <button id="look" class="glass" type="button" aria-label="Orb style" aria-expanded="false" hidden><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 6.5c2-1.2 5 .8 7-.3M4.5 10c2-1.2 5 .8 7-.3"/></svg></button>
+  <button id="look" class="glass" type="button" aria-label="Orb style" title="Orb style" aria-expanded="false" hidden><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="9" r="5"/><circle class="b" cx="11.5" cy="9" r="3.5"/><circle cx="11.5" cy="9" r="3.5"/></svg></button>
 </div>
 <div id="looks" class="glass" hidden><div><span class="cap">Finish</span><div class="row" id="finishes"></div></div><div><span class="cap">Colors</span><div class="row" id="palettes"></div></div><div><label for="grain">Grain</label><input id="grain" type="range" min="0" max="100" step="5"></div></div>
 <div id="wrap">
   <div id="chat" role="log" aria-live="polite"></div>
-  <button id="newest" class="glass" type="button" hidden>Newest</button>
+  <button id="newest" class="glass" type="button" aria-label="Jump to latest" title="Jump to latest" hidden><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3.5 8.5L8 13l4.5-4.5"/></svg></button>
   <div id="first" class="glass" hidden>
     <h2 id="firsttitle">Set up Jarvis</h2>
     <p id="firstbody"></p>
@@ -221,7 +234,7 @@
     <button id="skip" type="button">Skip for now</button>
   </div>
   <div id="dock" class="glass">
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2"/></svg>
+    <button id="micbtn" type="button" aria-pressed="true" aria-label="Microphone" title="Mute microphone (Ctrl+M)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2"/><path class="slash" d="M2.5 2.5l11 11"/></svg></button>
     <select id="micpick" aria-label="Microphone"></select>
     <div id="meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="1"></div>
     <span id="hear" aria-live="polite"></span>
@@ -621,17 +634,14 @@ void main() {
 
   function follow() {
     if (stuck) chat.scrollTop = chat.scrollHeight
-    else newest.hidden = false
+    else newest.classList.add('fresh')  // something arrived while they read further up
   }
   chat.addEventListener('scroll', () => {
     stuck = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60
-    if (stuck) newest.hidden = true
+    newest.hidden = stuck
+    if (stuck) newest.classList.remove('fresh')
   })
-  newest.onclick = () => {
-    stuck = true
-    newest.hidden = true
-    follow()
-  }
+  newest.onclick = () => chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' })  // the scroll event then marks it stuck
 
   // What's in progress stays last in the chat: their words as they come, and the dots while it works.
   const draft = document.createElement('div'), dots = document.createElement('div')
@@ -793,6 +803,12 @@ void main() {
     else if (rich) m.append(...parse(text).map(b => RENDER[b.t](b)))
     else m.textContent = text
     if (raw && raw !== text) m.title = `Heard as: ${raw}`
+    if (cls.startsWith('msg') && !cls.includes('hello')) {
+      const text = m.innerText, b = document.createElement('button')
+      Object.assign(b, { type: 'button', className: 'copy', textContent: 'Copy', title: 'Copy this message' })
+      b.onclick = async () => { await navigator.clipboard.writeText(text).catch(() => {}); b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy'), 1200) }
+      m.append(b)
+    }
     chat.insertBefore(m, chat.contains(draft) ? draft : chat.contains(dots) ? dots : null)
     while (chat.children.length > 200) chat.firstChild.remove()
     follow()
@@ -909,7 +925,11 @@ void main() {
     queued: () => $('detail').textContent = 'Line waiting',
     peak: e => { if (e.score < 0.5) $('detail').textContent = `Last try ${e.score}` },
     status: e => { if (/^Voice:|^Using |now on /.test(e.text)) add('note', e.text, e.at) },
-    caption: e => add('note', e.text, e.at),
+    caption: e => {
+      if (!e.looking) return add('note', e.text, e.at)
+      const cut = e.text.indexOf('. ') + 1  // "Hello, I'm Jarvis, and I can hear you." then the help
+      for (const t of cut ? [e.text.slice(0, cut), e.text.slice(cut).trim()] : [e.text]) add('msg me', t, e.at)
+    },
     quiet: e => $('quiet').textContent = e.on ? `Staying quiet: ${e.text}` : '',
     error: e => add('note fail', e.message, e.at),
   }
@@ -964,7 +984,7 @@ void main() {
     document.body.classList.toggle('sheet', open)
     $('panel').inert = !open
     $('gear').setAttribute('aria-expanded', open)
-    if (open) $('done').focus(); else $('gear').focus()
+    if (open) $('done').focus({ preventScroll: true }); else $('gear').focus({ preventScroll: true })
   }
   $('gear').onclick = () => sheet(true)
   $('done').onclick = $('scrim').onclick = () => sheet(false)
@@ -1031,6 +1051,8 @@ void main() {
     ;[...meter.children].forEach((s, i) => s.classList.toggle('on', i < n))
     meter.setAttribute('aria-valuenow', lvl.toFixed(2))
     meter.classList.toggle('off', !on)
+    $('micbtn').setAttribute('aria-pressed', on)
+    $('micbtn').title = on ? 'Mute microphone (Ctrl+M)' : 'Unmute microphone (Ctrl+M)'
   }
   function hearing() {
     const el = $('hear'), now = Date.now(), live = now - lastIn < 1500
@@ -1043,6 +1065,12 @@ void main() {
     el.textContent = text
     el.className = cls
   }
+  const setMic = want => fetch('/mic', { method: 'POST', body: want ? 'on' : 'off' }).catch(() => {})
+  $('micbtn').onclick = () => setMic(!on)
+  addEventListener('keydown', e => {
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'm') { e.preventDefault(); setMic(!on) }
+    else if (e.key === 'Escape' && !body.classList.contains('sheet') && $('looks').hidden && body.dataset.mood === 'speak') fetch('/stop', { method: 'POST', body: 'stop' }).catch(() => {})
+  })
   setInterval(() => { lvl = lvl < .04 ? 0 : lvl * .72; paint(); hearing() }, 100)
   async function loadMics() {
     const s = (await (await fetch('/settings')).json().catch(() => [])).find(x => x.key === 'MIC_DEVICE')
@@ -1097,7 +1125,7 @@ void main() {
   }
 
   const source = new EventSource('/events')
-  source.onopen = () => { chat.replaceChildren(); lastAt = 0; stuck = true; newest.hidden = true; rest(); loadMics(); checkFirst() }  // the server replays what happened
+  source.onopen = () => { chat.replaceChildren(); lastAt = 0; stuck = true; newest.hidden = true; newest.classList.remove('fresh'); rest(); loadMics(); checkFirst() }  // the server replays what happened
   source.onerror = () => { state('bad', 'Jarvis is off', 'Reconnecting'); $('quiet').textContent = ''; lvl = 0; paint(); hearing(); hide(draft); hide(dots) }
   source.onmessage = m => {
     const e = JSON.parse(m.data)
