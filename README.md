@@ -118,7 +118,7 @@ If you would rather do it by hand:
    without them it runs on the processor).
 3. **Add your Groq key.** Get a free key at <https://console.groq.com/keys> (no card needed) and
    put it in `.env`: `GROQ_API_KEY=gsk_...`. Run `setup.ps1` again until it says "Voice packages and models are ready".
-4. **Start Jarvis.** `powershell -ExecutionPolicy Bypass -File start.ps1`. The very first time,
+4. **Start Jarvis.** Tell Claude "start Jarvis from <this folder>" (or run `powershell -ExecutionPolicy Bypass -File start.ps1`). The very first time,
    the new window asks whether you trust the folder: pick **Yes, I trust this folder** (once; "No,
    exit" closes the window). Then pick **I am using this for local development** (Claude Code asks
    every time, because the voice channel is not on its approved list yet).

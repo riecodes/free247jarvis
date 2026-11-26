@@ -1,4 +1,4 @@
-# Starts Jarvis: a Claude Code session named "jarvis" in its own Windows Terminal window, with the voice
+# Starts Jarvis (tell Claude "start Jarvis from <this folder>" and it runs this file): a Claude Code session named "jarvis" in its own Windows Terminal window, with the voice
 # channel loaded. Claude Code asks you to confirm the development channel each time; pick
 # "I am using this for local development". Then say "Hey Jarvis".
 # Jarvis works in the jarvis folder, whose .mcp.json and CLAUDE.md only it loads.

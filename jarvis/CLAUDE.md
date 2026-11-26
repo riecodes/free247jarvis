@@ -66,6 +66,21 @@ old tabs, so after `open notepad` press `^n` for a new tab before typing.
 Questions you can answer in a sentence ("what time is it", "how many terminals are open"), answer
 directly. Anything bigger than a quick lookup goes to a worker.
 
+## "Uninstall Jarvis"
+
+When the user asks to uninstall Jarvis (or remove or delete it), confirm once with a lettered question that says what
+goes: "Uninstall Jarvis and delete its folder? A, yes. B, no." with `options`. On B, say fine and stop. On A, do this
+in order, because uninstalling stops your own session:
+
+1. One `reply`: a short goodbye, for example "Okay, uninstalling. Goodbye, sir." Pass `listen: false`.
+2. Then start the uninstaller detached, so it outlives this session and waits for the goodbye to be spoken. On Windows:
+   `powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','Start-Sleep 10; & ''<absolute path of ../uninstall.ps1>'''"`
+   On macOS: `nohup sh -c 'sleep 10; sh "<absolute path of ../uninstall.sh>"' >/dev/null 2>&1 &`.
+   Use the real absolute path (resolve `..` from your folder first). The uninstaller stops Jarvis's processes by
+   their command line, deletes the folder and prints what it leaves installed. Never close terminals or windows
+   yourself to do this, and never kill WindowsTerminal.exe.
+3. Say nothing more: your session ends within seconds.
+
 ## Onboarding (first start)
 
 On the first start the voice sends you one message that begins `(From the voice: first start.`. It lists the

@@ -1,4 +1,5 @@
-# Uninstalls freejarvis: stops Jarvis and deletes this folder. Safe to run again.
+# Uninstalls freejarvis: stops Jarvis and deletes this folder. Safe to run again. Tell Claude "uninstall Jarvis from
+# <this folder>" and it runs this file; Jarvis itself does the same when asked.
 #   powershell -ExecutionPolicy Bypass -File uninstall.ps1
 # Keep this file ASCII: Windows PowerShell 5.1 runs it.
 $dir = $PSScriptRoot
@@ -11,8 +12,10 @@ Say 'Stopping Jarvis...'
 $port = if ($env:VOICE_PORT) { [int]$env:VOICE_PORT } else { 8790 }
 $voice = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object OwningProcess)
 Get-CimInstance Win32_Process | Where-Object {
-  $_.Name -match '^(node|python|pythonw|electron)\.exe$' -and
-  ((($_.ExecutablePath, $_.CommandLine) -join ' ') -like "*$dir*" -or $voice -contains $_.ProcessId)
+  (($_.Name -match '^(node|python|pythonw|electron)\.exe$' -and
+    ((($_.ExecutablePath, $_.CommandLine) -join ' ') -like "*$dir*" -or $voice -contains $_.ProcessId)) -or
+   # Jarvis's own Claude Code session (start.ps1 names it): it sits in the jarvis folder, which can't be deleted under it
+   ($_.Name -match '^(claude|node)\.exe$' -and $_.CommandLine -match '--name jarvis\b'))
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 2
 

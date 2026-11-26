@@ -112,7 +112,6 @@ main() {
   printf "$steps\n"
   [ -n "$extra" ] && echo "$extra"
   echo
-  say 'Start it again later:'; printf '     %s\n' "$again"
-  say 'Uninstall it:'; printf '     sh %s/uninstall.sh\n\n' "$dir"
+  say "Later, just tell Claude: \"start Jarvis from $dir\" or \"uninstall Jarvis from $dir\"."; echo
 }
 main

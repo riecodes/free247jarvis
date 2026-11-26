@@ -7,6 +7,7 @@ say() { printf '\033[36m\xf0\x9f\x92\xa0 %s\033[0m\n' "$1"; }
 say 'Stopping Jarvis...'
 # Its own processes: anything started from this folder, and the voice server on its port (it starts as "node ../voice.mjs").
 pkill -f "$dir" 2>/dev/null
+pkill -f -- "--name jarvis" 2>/dev/null  # Jarvis's own Claude Code session, which sits in the jarvis folder
 port="${VOICE_PORT:-8790}"
 pid="$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null)"
 [ -n "$pid" ] && kill $pid 2>/dev/null

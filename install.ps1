@@ -123,7 +123,7 @@
 
   if ($env:JARVIS_NO_START -eq '1') {
     Pop-Location
-    Say 'Jarvis is installed. Start it any time with: powershell -ExecutionPolicy Bypass -File start.ps1' 'Green'
+    Say 'Jarvis is installed. Start it any time: tell Claude "start Jarvis from this folder".' 'Green'
     return
   }
 
@@ -139,9 +139,6 @@
   Write-Host '     3. If Claude Code asks you to log in, log in with your Claude account.'
   Write-Host '     4. Wait for Jarvis to greet you, then say "Hey Jarvis".'
   Write-Host ''
-  Say 'Start it again later:' 'DarkCyan'
-  Write-Host "     powershell -ExecutionPolicy Bypass -File `"$dir\start.ps1`""
-  Say 'Uninstall it:' 'DarkCyan'
-  Write-Host "     powershell -ExecutionPolicy Bypass -File `"$dir\uninstall.ps1`""
+  Say "Later, just tell Claude: `"start Jarvis from $dir`" or `"uninstall Jarvis from $dir`"." 'DarkCyan'
   Write-Host ''
 }
