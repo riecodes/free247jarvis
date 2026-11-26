@@ -272,8 +272,8 @@ npm install --prefix window
 node window/node_modules/electron/install.js
 ```
 
-It opens with the voice from then on, without taking the keyboard, and stays out of screen shares and
-recordings (`CAPTION_VISIBLE=1` in `.env` shows it there). Its minimize, maximize and close buttons sit at the right of
+It opens with the voice from then on, without taking the keyboard, and shows in screen shares and
+recordings (Settings > Hide from screen shares, or `HIDE_FROM_SHARES=on` in `.env`, keeps it out of them). Its minimize, maximize and close buttons sit at the right of
 its header, which you drag to move it; drag an edge to resize. Closing it closes only the window, and the voice goes on:
 `curl -X POST http://127.0.0.1:8790/window` opens it again, or brings it to the front. `VOICE_WINDOW=off` skips it. To check it without
 a mic: `node check_window.mjs`.

@@ -629,7 +629,7 @@ function openWindow(show = false) {
   if (!existsSync(ELECTRON)) return false
   const { ELECTRON_RUN_AS_NODE, ...plain } = process.env // set, it would run Electron as plain Node
   spawn(ELECTRON, [join(HERE, 'window'), ...(show ? ['--show'] : [])], {
-    env: { ...plain, VOICE_PORT: String(PORT), CAPTION_VISIBLE: env.CAPTION_VISIBLE ?? '' },
+    env: { ...plain, VOICE_PORT: String(PORT) },
     detached: true, stdio: 'ignore',
   }).on('error', e => log(`window failed: ${e.message}`)).unref()
   return true
@@ -646,6 +646,7 @@ const SETTINGS = [
   { key: 'CLOSING_CUT', label: 'Send when you sound done', options: ['on', 'off'] },
   { key: 'FAST_END', label: 'Send when your words are whole', options: ['on', 'off'], fallback: 'off' },
   { key: 'REMINDERS', label: 'Reminders', options: ['on', 'off'] },
+  { key: 'HIDE_FROM_SHARES', label: 'Hide from screen shares', options: ['on', 'off'], fallback: 'off' },  // read by window/main.cjs
   { key: 'CLAP', label: 'Clap twice to wake it', options: ['on', 'off'], fallback: 'off' },
   { key: 'TALK_OVER', label: 'Talk over it to stop it', options: ['on', 'off'] },
   { key: 'CUT_OFF', label: 'Say when it got cut off', options: ['on', 'off'] },

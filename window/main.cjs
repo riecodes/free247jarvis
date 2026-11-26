@@ -1,5 +1,5 @@
-// The Jarvis window: only a frame around the page voice.mjs serves. It opens without taking the keyboard, and stays
-// out of screen shares and recordings (CAPTION_VISIBLE=1 shows it there). Its minimize, maximize and close buttons
+// The Jarvis window: only a frame around the page voice.mjs serves. It opens without taking the keyboard, and shows
+// in screen shares and recordings; Settings > Hide from screen shares (HIDE_FROM_SHARES in .env) keeps it out of them. Its minimize, maximize and close buttons
 // are drawn over the page's header, in the page's colors, and the header drags it. Closing it closes only the window:
 // the voice is another process and goes on. POST /window (voice.mjs) opens it again, or brings it to the front.
 const { app, BrowserWindow, nativeTheme } = require('electron')
@@ -20,7 +20,15 @@ else app.whenReady().then(() => {
   })
   // macOS draws its own buttons in its own colors, and can't recolor them.
   if (process.platform !== 'darwin') nativeTheme.on('updated', () => win.setTitleBarOverlay(overlay()))
-  win.setContentProtection(process.env.CAPTION_VISIBLE !== '1')
+  // Visible by default. The setting is read from the voice now and then, so the switch applies within a couple of seconds.
+  let hidden = false
+  const sync = async () => {
+    const list = await fetch(URL.replace('/window', '/settings')).then(r => r.json()).catch(() => null)
+    const want = list?.find(s => s.key === 'HIDE_FROM_SHARES')?.value === 'on'
+    if (list && want !== hidden) win.setContentProtection((hidden = want))
+  }
+  sync()
+  setInterval(sync, 2000)
   win.once('ready-to-show', () => win.showInactive())
   // A second copy quits at once. Started by a restart of the voice it changes nothing; asked for (--show), the window comes up.
   app.on('second-instance', (event, argv) => {
