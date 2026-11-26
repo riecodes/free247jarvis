@@ -1,11 +1,24 @@
 # Uninstalls freejarvis: stops Jarvis and deletes this folder. Safe to run again. Tell Claude "uninstall Jarvis from
 # <this folder>" and it runs this file; Jarvis itself does the same when asked.
 #   powershell -ExecutionPolicy Bypass -File uninstall.ps1
+# The usual folder (%USERPROFILE%\freejarvis) is only deleted after you type y, or when run with -Force (Jarvis does
+# that after its own lettered question). With nobody to ask and no -Force it stops, so a stray run deletes nothing.
 # Keep this file ASCII: Windows PowerShell 5.1 runs it.
+param([switch]$Force)
 $dir = $PSScriptRoot
 Set-Location $HOME   # a folder you stand in can't be deleted
 $gem = [char]::ConvertFromUtf32(0x1F4A0)
 function Say([string]$text, [string]$color = 'Cyan') { Write-Host "$gem $text" -ForegroundColor $color }
+
+if (-not $Force -and $dir.TrimEnd('\') -ieq (Join-Path $env:USERPROFILE 'freejarvis')) {
+  if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+    Write-Host "$gem This deletes $dir and stops Jarvis." -ForegroundColor Yellow
+    if ((Read-Host 'Type y to continue') -ne 'y') { Say 'Nothing was deleted.'; exit 1 }
+  } else {
+    Write-Host "$gem Not deleting $dir without -Force: nobody is here to confirm." -ForegroundColor Yellow
+    exit 1
+  }
+}
 
 Say 'Stopping Jarvis...'
 # Its own processes: anything started from this folder, and the voice server on its port (it starts as "node ../voice.mjs",

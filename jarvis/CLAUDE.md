@@ -74,7 +74,7 @@ in order, because uninstalling stops your own session:
 
 1. One `reply`: a short goodbye, for example "Okay, uninstalling. Goodbye, sir." Pass `listen: false`.
 2. Then start the uninstaller detached, so it outlives this session and waits for the goodbye to be spoken. On Windows:
-   `powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','Start-Sleep 10; & ''<absolute path of ../uninstall.ps1>'''"`
+   `powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','Start-Sleep 10; & ''<absolute path of ../uninstall.ps1>'' -Force'"`
    On macOS: `nohup sh -c 'sleep 10; sh "<absolute path of ../uninstall.sh>"' >/dev/null 2>&1 &`.
    Use the real absolute path (resolve `..` from your folder first). The uninstaller stops Jarvis's processes by
    their command line, deletes the folder and prints what it leaves installed. Never close terminals or windows
