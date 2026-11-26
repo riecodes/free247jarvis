@@ -928,6 +928,14 @@ def envelope(samples: np.ndarray, rate: int) -> np.ndarray:
     return np.sqrt((s ** 2).mean(axis=1))
 
 
+def speak_levels(env: np.ndarray, began: float) -> None:
+    """Tells the window how loud the reply is, every mic chunk as it leaves the speaker (the same envelope the talk-over check uses)."""
+    for i, e in enumerate(env):
+        time.sleep(max(0.0, began + i * CHUNK / RATE - time.monotonic()))
+        emit("out", v=round(min(1.0, float(e) / 0.12), 2))
+    emit("out", v=0)
+
+
 def asks_again(heard: str) -> bool:
     """A short "what?", as anyone says it to someone who just spoke: not a request, and nothing to ask the orch."""
     said = " ".join(w for w in re.findall(r"[\w']+", heard.lower()) if w not in ("um", "uh", "sir", "madam", "maam", "ma'am", "please", "jarvis", "ulit"))
@@ -2340,6 +2348,8 @@ class Ears:
 
             self.play_began = time.monotonic()
             sd.play(np.concatenate([samples, np.zeros(int(rate * DRAIN), samples.dtype)]) if drain else samples, rate, device=speaker())
+            if self.watching and len(samples) > rate // 3:  # the window's orb pulses with the voice itself
+                threading.Thread(target=speak_levels, args=(envelope(samples, rate), self.play_began), daemon=True).start()
             if over:
                 stream = sd.get_stream()
                 self.listen_over(*over, lambda: stream.active, sd.stop, envelope(samples, rate))

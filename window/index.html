@@ -103,6 +103,22 @@
   #newest { position: absolute; bottom: 84px; left: 50%; transform: translateX(-50%); padding: 4px 12px; border-radius: 14px; font-size: 12px; cursor: pointer; }
   #newest[hidden] { display: none; }
 
+  /* The orb's look: one small button on the orb, a popover with the choices, applied live and remembered. */
+  #stage { position: relative; }
+  #look { position: absolute; top: 10px; right: 12px; width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border-radius: 50%; color: var(--dim); cursor: pointer; transition: color .15s, transform .15s; }
+  #look:hover { color: var(--text); }
+  #look:active { transform: scale(.94); }
+  #looks { position: fixed; bottom: 76px; left: 12px; right: 12px; margin: 0 auto; z-index: 3; max-width: 360px; padding: 14px 16px; border-radius: 20px; display: grid; gap: 12px; transform-origin: bottom center; transition: opacity .2s, transform .35s var(--ease), visibility 0s; }
+  #looks[hidden] { display: grid; opacity: 0; transform: scale(.92); visibility: hidden; pointer-events: none; transition: opacity .2s, transform .35s var(--ease), visibility 0s .35s; }
+  #looks label, #looks .cap { display: block; margin-bottom: 6px; color: var(--dim); font-size: 12px; }
+  #looks .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  #looks .chip { padding: 6px 12px; border: 1px solid var(--line); border-radius: 14px; background: transparent; font-size: 12px; cursor: pointer; transition: background-color .15s, color .15s; }
+  #looks .chip:hover { background: var(--line); }
+  #looks .chip[aria-pressed=true] { background: var(--mine); color: var(--mine-text); border-color: var(--mine); }
+  #looks .sw { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; box-shadow: inset 0 0 0 1px var(--glass-line); transition: transform .15s; }
+  #looks .sw:active { transform: scale(.92); }
+  #looks .sw[aria-pressed=true] { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+  #looks input[type=range] { width: 100%; accent-color: var(--accent); }
   /* The dock: the microphone, picked here, with a bar that moves when it hears you. */
   #dock { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; border-radius: 20px; }
   #dock svg { flex: none; color: var(--dim); }
@@ -163,7 +179,7 @@
   .set input[type=checkbox]:checked::after { transform: translateX(16px); }
   #saved { flex: none; min-height: 32px; padding: 8px 20px 12px; color: var(--dim); font-size: 11px; }
   @media (prefers-reduced-motion: reduce) {
-    #stage, #orbbox, #panel, #scrim { transition: none; }
+    #stage, #orbbox, #panel, #scrim, #looks { transition: none; }
     .dots i { animation: none; opacity: .7; }
     .set input[type=checkbox]::after { transition: none; }
   }
@@ -175,7 +191,10 @@
   <span id="detail"></span>
 </header>
 <div id="quiet"></div>
-<div id="stage"><div id="orbbox"><canvas id="orb" aria-hidden="true"></canvas></div></div>
+<div id="stage"><div id="orbbox"><canvas id="orb" aria-hidden="true"></canvas></div>
+  <button id="look" class="glass" type="button" aria-label="Orb style" aria-expanded="false" hidden><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 6.5c2-1.2 5 .8 7-.3M4.5 10c2-1.2 5 .8 7-.3"/></svg></button>
+</div>
+<div id="looks" class="glass" hidden><div><span class="cap">Finish</span><div class="row" id="finishes"></div></div><div><span class="cap">Colors</span><div class="row" id="palettes"></div></div><div><label for="grain">Grain</label><input id="grain" type="range" min="0" max="100" step="5"></div></div>
 <div id="wrap">
   <div id="chat" role="log" aria-live="polite"></div>
   <button id="newest" class="glass" type="button" hidden>Newest</button>
@@ -203,6 +222,7 @@
 </div>
 <script>
   const $ = id => document.getElementById(id);  // the ; matters: the bundle below starts with a parenthesis
+  let outLvl = 0, outAt = 0;  // how loud Jarvis's own voice is, from the listener (out events); the orb pulses with it
   let lvl = 0;  // the mic level, 0 to 1, from the listener (level events); the orb and the meter follow it
   // orb:start (build: node orb/build.mjs, which refreshes the bundle below from orb/*.ts)
   // orb:bundle
@@ -461,13 +481,25 @@ void main() {
     let mood = 'idle'
     const wave = () => { const t = Date.now() / 1000; return .5 + .5 * Math.sin(t * 7.3) * Math.sin(t * 3.1 + 1) }
     const field = () => dark.matches ? 'dark' : 'light'
-    const r = new OrbRenderer($('orb'), { finish: 'aurora', field: field(), colors: orbPalettes.iris[field()], state: 'idle', grain: .5, seed: 1, speed: 1, still: calm.matches },
-      { getOutputLevel: () => mood === 'speak' ? .25 + .5 * wave() : 0, getInputLevel: () => Math.max(mood === 'listen' ? .2 + .35 * wave() : 0, mood === 'idle' || mood === 'listen' ? lvl : 0) })
+    let look = { finish: 'aurora', palette: 'iris', grain: 0 }  // grain 0: smooth; the picker can raise it
+    try { Object.assign(look, JSON.parse(localStorage.getItem('orb'))) } catch {}
+    if (!orbPalettes[look.palette]) look.palette = 'iris'
+    const colors = () => orbPalettes[look.palette][field()]
+    const r = new OrbRenderer($('orb'), { finish: look.finish, field: field(), colors: colors(), state: 'idle', grain: look.grain / 100, seed: 1, speed: 1, still: calm.matches },
+      { getOutputLevel: () => mood === 'speak' ? (Date.now() - outAt < 400 ? outLvl : .25 + .5 * wave()) : 0, getInputLevel: () => Math.max(mood === 'listen' ? .2 + .35 * wave() : 0, mood === 'idle' || mood === 'listen' ? lvl : 0) })
     if (!r.supported) { $('stage').hidden = true; return null }
     const draw = () => calm.matches && r.renderStill()
-    dark.onchange = () => { r.update({ field: field(), colors: orbPalettes.iris[field()] }); draw() }
+    dark.onchange = () => { r.update({ field: field(), colors: colors() }); draw() }
     r.start()
-    return { set(m) { mood = m; r.update({ state: STATES[m] ?? 'idle' }); draw() } }
+    return {
+      set(m) { mood = m; r.update({ state: STATES[m] ?? 'idle' }); draw() },
+      look: () => look, palettes: orbPalettes, field,
+      change(next) {  // live while choosing, and kept for the next run
+        Object.assign(look, next)
+        r.update({ finish: look.finish, colors: colors(), grain: look.grain / 100 }); draw()
+        try { localStorage.setItem('orb', JSON.stringify(look)) } catch {}
+      },
+    }
   })()
   // orb:end
 
@@ -742,6 +774,7 @@ void main() {
     },
     wake: () => { hide(dots); listening(); state('listen', 'Listening') },
     greeting: e => add('msg me hello', e.text, e.at),
+    out: e => { outLvl = e.v; outAt = Date.now() },
     level: e => { lvl = Math.max(lvl, e.v); lastIn = Date.now(); if (e.v > .3) heardAt = lastIn; paint(); hearing() },
     reminder: e => add('msg me', e.text, e.at, '', true),
     partial: e => liveWords(e.text),
@@ -834,6 +867,44 @@ void main() {
   $('gear').onclick = () => sheet(true)
   $('done').onclick = $('scrim').onclick = () => sheet(false)
   addEventListener('keydown', e => { if (e.key === 'Escape' && document.body.classList.contains('sheet')) sheet(false) })
+
+  // The orb's look: Finish, Colors and Grain behind one button, each change shown at once.
+  const FINISHES = ['ink', 'pearl', 'vessel', 'aurora', 'plasma']
+  function lookPanel() {
+    if (!orb) return
+    const cur = orb.look(), mark = () => {
+      for (const b of document.querySelectorAll('#finishes .chip')) b.setAttribute('aria-pressed', b.dataset.v === orb.look().finish)
+      for (const b of document.querySelectorAll('#palettes .sw')) b.setAttribute('aria-pressed', b.dataset.v === orb.look().palette)
+    }
+    $('finishes').replaceChildren(...FINISHES.map(f => {
+      const b = make('button', f[0].toUpperCase() + f.slice(1))
+      Object.assign(b, { type: 'button', className: 'chip' })
+      b.dataset.v = f
+      b.onclick = () => { orb.change({ finish: f }); mark() }
+      return b
+    }))
+    $('palettes').replaceChildren(...Object.keys(orb.palettes).map(n => {
+      const b = make('button'), stops = orb.palettes[n][orb.field()].stops
+      Object.assign(b, { type: 'button', className: 'sw', title: n[0].toUpperCase() + n.slice(1) })
+      b.setAttribute('aria-label', b.title)
+      b.style.background = `linear-gradient(135deg, ${stops.join(', ')})`
+      b.dataset.v = n
+      b.onclick = () => { orb.change({ palette: n }); mark() }
+      return b
+    }))
+    $('grain').value = cur.grain
+    $('grain').oninput = () => orb.change({ grain: +$('grain').value })
+    mark()
+    $('look').hidden = false
+  }
+  const looks = open => {
+    $('looks').hidden = !open
+    $('look').setAttribute('aria-expanded', open)
+  }
+  $('look').onclick = e => { e.stopPropagation(); looks($('looks').hidden) }
+  document.addEventListener('click', e => { if (!$('looks').hidden && !$('looks').contains(e.target)) looks(false) })
+  addEventListener('keydown', e => { if (e.key === 'Escape') looks(false) })
+  lookPanel()
 
   // The dock: pick the microphone, and see it hear you. The listener sends a level about ten times a second while this
   // window is open and Jarvis is waiting for its name; the bar and the orb follow it, and a silent mic says so.

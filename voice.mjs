@@ -522,7 +522,7 @@ function startEars() {
   createInterface({ input: ears.stdout }).on('line', line => {
     let e
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
-    if (e.event === 'level') { for (const w of watchers) w.write('data: ' + line + String.fromCharCode(10, 10)); return }  // the mic bar: live only, never replayed
+    if (e.event === 'level' || e.event === 'out') { for (const w of watchers) w.write('data: ' + line + String.fromCharCode(10, 10)); return }  // the mic bar: live only, never replayed
     if (e.event !== 'caption') show(e.event, e)
     if (e.event === 'spoken' || e.event === 'partial') return
     if (e.event === 'quiet') quiet = e.on
