@@ -522,6 +522,7 @@ function startEars() {
   createInterface({ input: ears.stdout }).on('line', line => {
     let e
     try { e = JSON.parse(line) } catch { return log(`listener: ${line}`) }
+    if (e.event === 'level') { for (const w of watchers) w.write('data: ' + line + String.fromCharCode(10, 10)); return }  // the mic bar: live only, never replayed
     if (e.event !== 'caption') show(e.event, e)
     if (e.event === 'spoken' || e.event === 'partial') return
     if (e.event === 'quiet') quiet = e.on
@@ -708,6 +709,7 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify(SETTINGS.filter(s => !s.hidden).map(s => ({ ...s, value: settingValue(s), ...(s.device && { choices: found[s.device] ?? [] }) }))))
     })
   }
+  if (here && req.method === 'GET' && req.url === '/onboard') return res.end(env.ONBOARDED === '1' ? 'done' : 'todo')
   if (req.method === 'GET') return res.end(here && req.url === '/mic' ? (mic ? 'on' : 'off') : 'ok')  // health check
   // Every POST reaches a session with permissions off, so only from this address and never from a web page: a browser
   // adds an Origin to every POST (curl and scripts send none), and the Host check stops DNS rebinding.
@@ -728,6 +730,10 @@ const server = createServer((req, res) => {
         return res.end('no such setting or value')
       }
       saveSetting(asked.key, asked.value)
+    } else if (req.url === '/onboard') {  // the window's first-run buttons
+      if (!/^(start|skip)$/.test(text)) return (res.writeHead(400), res.end('start or skip'))
+      if (text === 'start') await sendOnboarding()
+      else saveSetting('ONBOARDED', '1')
     } else if (req.url === '/mic' && /^(on|off)$/.test(text)) {
       mic = text === 'on'
       if (mic) (claim(), heldElsewhere = '')
@@ -779,12 +785,15 @@ mcp.onclose = quit
 process.stdin.on('end', quit)
 await mcp.connect(new StdioServerTransport())
 log('voice channel up')
-// First start (no ONBOARDED=1 in .env): Jarvis greets and asks the onboarding questions in jarvis/CLAUDE.md. Sent again
-// on each start until it finishes, with what was already chosen, so a start cut short picks up where it stopped.
-if (env.ONBOARDED !== '1') setTimeout(() => {
+// First start (no ONBOARDED=1 in .env): the window shows a Start setup button (POST /onboard start), and Jarvis then asks
+// the onboarding questions in jarvis/CLAUDE.md, with what was already chosen, so a start cut short picks up where it stopped.
+// Not sent on its own: at startup Claude Code is still on its trust prompts, and a message sent then is lost. VOICE_ONBOARD_MS
+// (a check) sends it by itself after that many ms.
+function sendOnboarding() {
   const chosen = SETTINGS.filter(s => !s.hidden && !s.device && env[s.key]?.trim()).map(s => `${s.key}=${env[s.key].trim()}`)
   const content = `(From the voice: first start. Run the onboarding in your CLAUDE.md now. Settings URL: ` +
     `http://127.0.0.1:${PORT}/settings. Already chosen: ${chosen.join(', ') || 'none'}.)`
-  mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { via: 'onboard' } } })
+  return mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { via: 'onboard' } } })
     .then(() => log('onboarding sent'), e => log(`onboarding not sent: ${e.message}`))
-}, Number(process.env.VOICE_ONBOARD_MS ?? 4000))
+}
+if (env.ONBOARDED !== '1' && process.env.VOICE_ONBOARD_MS) setTimeout(sendOnboarding, Number(process.env.VOICE_ONBOARD_MS))

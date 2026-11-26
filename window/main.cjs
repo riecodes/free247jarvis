@@ -7,14 +7,14 @@ const { app, BrowserWindow, nativeTheme } = require('electron')
 const URL = `http://127.0.0.1:${process.env.VOICE_PORT || 8790}/window`
 const HEADER = 45 // px: the page's header (46) less its bottom border, which stays in sight
 const overlay = () => nativeTheme.shouldUseDarkColors
-  ? { color: '#050c16', symbolColor: '#dcf4ff', height: HEADER }  // index.html --bg and --text
-  : { color: '#f1f8fd', symbolColor: '#0a1b2c', height: HEADER }
+  ? { color: '#0c0d0f', symbolColor: '#ececee', height: HEADER }  // index.html --bg and --text
+  : { color: '#f4f4f2', symbolColor: '#17181a', height: HEADER }
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else app.whenReady().then(() => {
   const win = new BrowserWindow({
     width: 480, height: 600, minWidth: 280, minHeight: 240, show: false, autoHideMenuBar: true, title: 'Jarvis',
-    backgroundColor: '#050c16', titleBarStyle: 'hidden', titleBarOverlay: overlay(),
+    backgroundColor: '#0c0d0f', titleBarStyle: 'hidden', titleBarOverlay: overlay(),
     trafficLightPosition: { x: 16, y: 16 }, // macOS: its three buttons at the left, centered on the header
     webPreferences: { sandbox: true, contextIsolation: true },
   })

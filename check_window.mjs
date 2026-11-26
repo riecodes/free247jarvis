@@ -183,7 +183,9 @@ try {
   assert(seen.includes('Plain note'), 'a note must reach the window')
   await sleep(100)
   assert(!seen.includes('Needs you'), 'a reminder is already in the window as the reply')
-  assert.match(html, /id="mic"/)
+  assert.match(html, /id="micpick"/)
+  assert.match(html, /id="meter"/)
+  assert.match(html, /id="start"/)
   reader.cancel()
 
   // Another Host: a web page pointing its own domain at this machine gets neither the page nor the events.
@@ -539,10 +541,23 @@ try {
   assert(first && first.params.meta.via === 'onboard', JSON.stringify(first))
   assert.match(first.params.content, /^\(From the voice: first start\. .*settings\. Already chosen: SOUNDS=on\.\)$/)
   await up()
+  // The window's Start setup button: the same message again, on request; the state it shows is todo until ONBOARDED.
+  const onboard = body => body ? fetch(`http://127.0.0.1:${port2}/onboard`, { method: 'POST', body }) : fetch(`http://127.0.0.1:${port2}/onboard`).then(r => r.text())
+  assert.strictEqual(await onboard(), 'todo')
+  assert.strictEqual((await onboard('start')).status, 200)
+  let again
+  for (let i = 0; i < 5 && !again; i++) {
+    const m = JSON.parse((await lines.next()).value)
+    if (m.method === 'notifications/claude/channel') again = m
+  }
+  assert(again && again.params.meta.via === 'onboard', 'Start setup must send the onboarding message')
+  assert.strictEqual((await onboard('nonsense')).status, 400)  // and nothing else goes to Claude as a request
+  assert.strictEqual(await onboard(), 'todo')
   const set = (key, value) => fetch(`http://127.0.0.1:${port2}/settings`, { method: 'POST', body: JSON.stringify({ key, value }) })
   assert.strictEqual((await set('VOICE_TITLE', 'Madam')).status, 200)
   assert.strictEqual((await set('VOICE_TITLE', 'Sir\nGROQ_API_KEY=x')).status, 400)
   assert.strictEqual((await set('ONBOARDED', '1')).status, 200)
+  assert.strictEqual(await onboard(), 'done')
   assert.strictEqual(readFileSync(FIRST, 'utf8'), 'GROQ_API_KEY=secret\nSOUNDS=on\nVOICE_TITLE=Madam\nONBOARDED=1\n')
   const panel = await (await fetch(`http://127.0.0.1:${port2}/settings`)).json()
   assert(panel.some(s => s.key === 'VOICE_TITLE' && s.value === 'Madam' && s.text) && !panel.some(s => s.key === 'ONBOARDED'))

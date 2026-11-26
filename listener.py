@@ -1635,6 +1635,9 @@ class Ears:
                 emit("quiet", on=bool(why), text=why)
 
     def wake_chunk(self, chunk: np.ndarray) -> None:
+        if self.watching and time.monotonic() - getattr(self, "level_at", 0) > 0.08:  # the window's level bar: is the mic alive?
+            self.level_at = time.monotonic()
+            emit("level", v=round(min(1.0, (float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))) / 4000) ** 0.5), 2))
         speech = self.is_speech(chunk)
         if speech:
             self.last_speech = time.monotonic()
